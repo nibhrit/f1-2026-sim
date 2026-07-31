@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>F1 2026 Simulator — Max Verstappen</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#05060a; font-family:'Segoe UI',Arial,sans-serif; color:#fff; user-select:none; }
+  #game-canvas { display:block; width:100%; height:100%; }
+
+  /* ---------- MENUS ---------- */
+  .screen { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    background:radial-gradient(ellipse at 50% 30%, #10182e 0%, #05060a 70%); z-index:20; }
+  .hidden { display:none !important; }
+  .title { font-size:52px; font-weight:900; letter-spacing:4px; font-style:italic;
+    background:linear-gradient(90deg,#3671c6,#ffd12e,#e10600); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  .subtitle { font-size:16px; letter-spacing:6px; color:#8fa3c8; margin-top:6px; text-transform:uppercase; }
+  .menu-box { margin-top:44px; display:flex; flex-direction:column; gap:14px; width:340px; }
+  .btn { padding:15px 22px; font-size:18px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:#fff;
+    background:linear-gradient(90deg,#121c34,#1b2a4d); border:1px solid #2c4270; border-radius:6px; cursor:pointer; transition:all .15s; text-align:left; }
+  .btn:hover { background:linear-gradient(90deg,#1e3054,#2c4a85); border-color:#4d7dd6; transform:translateX(6px); }
+  .btn.small { padding:10px 16px; font-size:14px; }
+  .btn.accent { border-color:#e10600; }
+  .btn.accent:hover { background:linear-gradient(90deg,#4d1010,#8a1616); border-color:#ff4d4d; }
+  .btn.selected { background:linear-gradient(90deg,#1a3a6b,#2f5ca8); border-color:#6fa0ff; }
+  .back-link { margin-top:26px; color:#7d8db0; cursor:pointer; font-size:14px; letter-spacing:2px; }
+  .back-link:hover { color:#fff; }
+  h2.screen-head { font-size:26px; letter-spacing:3px; text-transform:uppercase; color:#dfe8ff; margin-bottom:8px; }
+  .screen-sub { color:#7d8db0; font-size:13px; letter-spacing:1px; margin-bottom:22px; }
+
+  /* track grid */
+  #track-grid { display:grid; grid-template-columns:repeat(6,150px); gap:10px; max-height:62vh; overflow-y:auto; padding:6px; }
+  .track-card { background:#101a30; border:1px solid #24365c; border-radius:8px; padding:10px; cursor:pointer; transition:all .12s; text-align:center; }
+  .track-card:hover { border-color:#5c8ae6; background:#182648; transform:scale(1.04); }
+  .track-card canvas { width:120px; height:78px; display:block; margin:0 auto 6px; }
+  .track-card .t-round { font-size:10px; color:#e8b64c; letter-spacing:1px; }
+  .track-card .t-name { font-size:12.5px; font-weight:700; margin-top:2px; line-height:1.25; }
+  .track-card .t-len { font-size:10px; color:#7d8db0; margin-top:2px; }
+
+  /* opponent grid */
+  #opp-grid { display:grid; grid-template-columns:repeat(3,220px); gap:10px; max-height:60vh; overflow-y:auto; padding:6px; }
+  .opp-card { display:flex; align-items:center; gap:10px; background:#101a30; border:1px solid #24365c; border-radius:8px; padding:10px 12px; cursor:pointer; transition:all .12s; }
+  .opp-card:hover { border-color:#5c8ae6; background:#182648; }
+  .opp-swatch { width:14px; height:34px; border-radius:3px; flex-shrink:0; }
+  .opp-name { font-size:14px; font-weight:700; }
+  .opp-team { font-size:11px; color:#7d8db0; }
+
+  .row-opts { display:flex; gap:12px; margin-top:8px; }
+
+  /* ---------- HUD ---------- */
+  #hud { position:absolute; inset:0; pointer-events:none; z-index:10; display:none; }
+  #hud.active { display:block; }
+  #vignette { position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(ellipse at 50% 45%, transparent 62%, rgba(0,0,10,0.42) 100%); }
+  .hud-panel { position:absolute; background:rgba(8,12,24,.72); border:1px solid rgba(80,110,170,.35); border-radius:8px; backdrop-filter:blur(3px); }
+  #speedo { right:24px; bottom:24px; padding:12px 20px; text-align:right; min-width:170px; }
+  #speed-val { font-size:46px; font-weight:900; font-style:italic; line-height:1; }
+  #speed-unit { font-size:12px; color:#8fa3c8; letter-spacing:2px; }
+  #gear-val { font-size:26px; font-weight:800; color:#ffd12e; margin-top:2px; }
+  #rpm-bar { height:6px; background:#1a2440; border-radius:3px; margin-top:8px; overflow:hidden; }
+  #rpm-fill { height:100%; width:0%; background:linear-gradient(90deg,#2ecc71,#ffd12e,#e10600); }
+
+  /* DRS badge */
+  #drs-badge { display:inline-block; margin-right:8px; padding:2px 10px; border-radius:4px; font-size:14px; font-weight:900;
+    letter-spacing:2px; border:2px solid #3a4664; color:#3a4664; visibility:hidden; vertical-align:middle; }
+  #drs-badge.zone { visibility:visible; border-color:#8fa3c8; color:#8fa3c8; }
+  #drs-badge.open { visibility:visible; border-color:#2ecc71; color:#2ecc71; background:rgba(46,204,113,.12); }
+
+  /* tyre status row in speedo */
+  #tyre-row { display:flex; align-items:center; gap:8px; margin-top:8px; justify-content:flex-end; }
+  #tyre-temp { font-size:11px; font-weight:800; letter-spacing:1px; }
+  #tyre-dot { width:12px; height:12px; border-radius:50%; background:#f5c518; border:1px solid rgba(255,255,255,.4); }
+  #tyre-letter { font-size:14px; font-weight:800; }
+  #tyre-bar { width:70px; height:5px; background:#1a2440; border-radius:3px; overflow:hidden; }
+  #tyre-fill { height:100%; width:100%; background:#2ecc71; }
+
+  /* pit stop broadcast UI + reaction-light game */
+  #pit-ui { position:absolute; top:24%; left:50%; transform:translateX(-50%); z-index:14; text-align:center; display:none; }
+  #pit-ui .pu-box { background:rgba(8,12,24,.88); border:1px solid #2c4270; border-radius:12px; padding:16px 30px; }
+  #pit-lane-time { font-size:14px; color:#8fa3c8; letter-spacing:2px; font-weight:700; font-variant-numeric:tabular-nums; }
+  #pit-lights { display:flex; gap:10px; justify-content:center; margin:12px 0 8px; }
+  .plight { width:26px; height:26px; border-radius:50%; background:#1a1f2e; border:2px solid #333c55; }
+  .plight.on { background:#e10600; box-shadow:0 0 12px #e10600; }
+  #pit-stationary { font-size:42px; font-weight:900; font-variant-numeric:tabular-nums; color:#ffd12e; }
+  #pit-msg { font-size:13px; color:#8fa3c8; letter-spacing:1px; font-weight:700; min-height:18px; margin-top:4px; }
+
+  /* pit-required hint */
+  #pit-hint { position:absolute; right:24px; bottom:158px; background:rgba(8,12,24,.72); border:1px solid #ffd12e;
+    border-radius:6px; padding:5px 12px; font-size:13px; font-weight:800; letter-spacing:2px; color:#ffd12e;
+    animation:pitpulse 1s infinite; }
+  @keyframes pitpulse { 50% { opacity:.35; } }
+
+  /* tyre compound picker overlay */
+  #tyre-picker { position:absolute; bottom:70px; left:50%; transform:translateX(-50%); z-index:22;
+    background:rgba(8,12,24,.92); border:1px solid #2c4270; border-radius:10px; padding:18px 24px; text-align:center; }
+  #tyre-picker .tp-title { font-size:14px; letter-spacing:3px; color:#dfe8ff; font-weight:800; margin-bottom:10px; text-transform:uppercase; }
+  #tyre-picker .tp-label { font-size:11px; letter-spacing:2px; color:#7d8db0; margin:12px 0 6px; }
+  #tyre-picker .tp-row { display:flex; gap:10px; justify-content:center; }
+  /* broadcast-style tyre: black tread disc, coloured compound ring, grey rim ring */
+  .tyre-btn { width:68px; height:68px; padding:0; border-radius:50%; border:5px solid;
+    font-weight:900; font-size:20px; text-align:center; opacity:.5; position:relative;
+    background:radial-gradient(circle at 34% 28%, #45454c 0%, #1a1a1f 46%, #060608 100%);
+    box-shadow: inset 0 0 0 8px #0b0b0e, inset 0 0 0 10px #2c2c34, inset 0 0 0 22px #101014; }
+  .tyre-btn::after { content:attr(data-name); position:absolute; left:50%; bottom:-18px; transform:translateX(-50%);
+    font-size:9px; letter-spacing:2px; font-weight:700; color:#8fa3c8; }
+  .tyre-btn[data-tyre="soft"]   { border-color:#d02020; color:#ff5c5c; }
+  .tyre-btn[data-tyre="medium"] { border-color:#f5c518; color:#f5c518; }
+  .tyre-btn[data-tyre="hard"]   { border-color:#e8e8e8; color:#fff; }
+  .tyre-btn[data-tyre="inter"]  { border-color:#3fbf4f; color:#5fe07a; }
+  .tyre-btn[data-tyre="wet"]    { border-color:#2f7fd0; color:#6fb0ff; }
+  #tp-weather { font-size:11px; letter-spacing:2px; color:#7d8db0; margin:6px 0 12px; font-weight:700; }
+  .tyre-btn.selected { opacity:1; transform:scale(1.1);
+    box-shadow: inset 0 0 0 8px #0b0b0e, inset 0 0 0 10px #2c2c34, inset 0 0 0 22px #101014, 0 0 18px currentColor; }
+  .tyre-btn:hover { transform:scale(1.05); }
+  .tyre-btn:disabled { opacity:.12; cursor:default; transform:none; }
+  #tyre-picker .tp-row { margin-bottom:20px; }
+  /* HUD tyre dot becomes a mini tyre */
+  #tyre-dot { background:#111318 !important; border-width:3px; border-style:solid; width:15px; height:15px; }
+  #tp-confirm { margin-top:14px; width:100%; text-align:center; }
+
+  /* stewards ticker */
+  #stewards { position:absolute; bottom:70px; left:50%; transform:translateX(-50%); z-index:13;
+    display:flex; flex-direction:column; gap:5px; align-items:center; pointer-events:none; }
+  .steward-msg { background:rgba(20,10,10,.86); border:1px solid #c0392b; border-left:5px solid #c0392b;
+    border-radius:5px; padding:6px 16px; font-size:12.5px; font-weight:800; letter-spacing:1px; color:#ffd7cf;
+    transition:opacity .5s; text-transform:uppercase; }
+  .steward-msg.limits { border-color:#e8b64c; border-left-color:#e8b64c; color:#ffe9c0; }
+
+  #timing { left:24px; top:24px; padding:12px 18px; min-width:230px; }
+  #timing .t-row { display:flex; justify-content:space-between; gap:18px; font-size:14px; margin:3px 0; }
+  #timing .t-label { color:#8fa3c8; letter-spacing:1px; font-size:11px; text-transform:uppercase; padding-top:2px; }
+  #timing .t-val { font-weight:700; font-variant-numeric:tabular-nums; }
+  #cur-time { font-size:22px !important; }
+  .delta-neg { color:#2ecc71; } .delta-pos { color:#ff5c5c; }
+  #sector-row { display:flex; gap:5px; margin-top:8px; }
+  .sec { flex:1; text-align:center; font-size:11.5px; padding:3px 2px; border-radius:4px;
+    background:#1a2440; color:#8fa3c8; font-variant-numeric:tabular-nums; font-weight:700; transition:background .2s; }
+  .sec.live { background:#243050; color:#dfe8ff; }
+  .sec.slow { background:#b09a12; color:#fff; }
+  .sec.pb   { background:#1d8c43; color:#fff; }
+  .sec.sb   { background:#7d3bc4; color:#fff; }
+
+  #pos-panel { left:24px; top:170px; padding:10px 14px; max-height:52vh; overflow:hidden; min-width:210px; }
+  .pos-row { display:flex; gap:8px; font-size:12.5px; margin:2.5px 0; font-variant-numeric:tabular-nums; align-items:center; }
+  .pos-row .p-num { width:20px; color:#8fa3c8; font-weight:700; text-align:right; }
+  .pos-row .p-swatch { width:4px; height:13px; border-radius:2px; }
+  .pos-row .p-name { flex:1; font-weight:600; }
+  .pos-row .p-gap { color:#8fa3c8; }
+  .pos-row .p-tyre { display:inline-block; width:14px; height:14px; line-height:14px; border-radius:50%;
+    font-size:9px; font-weight:900; text-align:center; margin-right:5px; flex-shrink:0; }
+  .pos-row .p-pit { background:#e8b64c; color:#151515; font-size:9.5px; font-weight:900;
+    padding:1px 4px; border-radius:3px; letter-spacing:1px; margin-left:4px; vertical-align:middle; }
+  .pos-row.me { color:#ffd12e; }
+
+  #lap-panel { right:24px; top:24px; padding:12px 18px; text-align:right; }
+  #lap-val { font-size:26px; font-weight:900; }
+  #lap-label { font-size:11px; color:#8fa3c8; letter-spacing:2px; }
+  #session-clock { font-size:15px; font-weight:700; color:#dfe8ff; margin-top:4px; }
+
+  #minimap { right:24px; top:130px; padding:8px; }
+  #minimap canvas { display:block; }
+
+  /* weather indicator */
+  #weather-panel { right:24px; top:298px; padding:8px 12px; min-width:150px; }
+  #weather-text { font-size:12px; font-weight:800; letter-spacing:1.5px; color:#cfe0ff; }
+  #weather-bar { height:6px; background:#1a2440; border-radius:3px; margin-top:6px; overflow:hidden; }
+  #weather-fill { height:100%; width:0%; background:#6fb0ff; transition:width .4s; }
+
+  /* rain overlay — two layers of diagonal streaks (parallax) + misty haze */
+  #rain-overlay { position:absolute; inset:0; pointer-events:none; z-index:12; opacity:0; transition:opacity .9s;
+    background:
+      repeating-linear-gradient(76deg, rgba(255,255,255,0) 0 4px, rgba(210,225,255,0.30) 4px 5px),
+      repeating-linear-gradient(72deg, rgba(255,255,255,0) 0 9px, rgba(190,210,255,0.18) 9px 11px);
+    background-size:100% 180%, 100% 260%;
+    animation:rainfall1 .28s linear infinite, rainfall2 .5s linear infinite; }
+  @keyframes rainfall1 { from { background-position:0 0, 0 0; } to { background-position:-52px 300px, 0 0; } }
+  @keyframes rainfall2 { from { background-position:0 0, 0 0; } to { background-position:0 0, -30px 240px; } }
+  #rain-haze { position:absolute; inset:0; pointer-events:none; z-index:11; opacity:0; transition:opacity 1.2s;
+    background:radial-gradient(ellipse at 50% 60%, rgba(150,165,185,0) 40%, rgba(150,165,185,0.35) 100%); }
+
+  #msg-banner { position:absolute; top:18%; left:50%; transform:translateX(-50%); font-size:52px; font-weight:900; font-style:italic;
+    letter-spacing:4px; text-shadow:0 3px 18px rgba(0,0,0,.8); display:none; z-index:15; }
+
+  #start-lights { position:absolute; top:12%; left:50%; transform:translateX(-50%); display:none; gap:14px; z-index:15; }
+  .light { width:42px; height:42px; border-radius:50%; background:#1a1f2e; border:2px solid #333c55; }
+  .light.on { background:#e10600; box-shadow:0 0 24px #e10600; }
+
+  /* results */
+  #results-table, #standings-table { max-height:56vh; overflow-y:auto; min-width:420px; background:#0c1426; border:1px solid #24365c; border-radius:10px; padding:14px 20px; }
+  .res-row { display:flex; gap:14px; padding:5px 0; font-size:15px; border-bottom:1px solid #16223e; font-variant-numeric:tabular-nums; align-items:center; }
+  .res-row .r-pos { width:26px; font-weight:800; color:#8fa3c8; }
+  .res-row .r-name { flex:1; font-weight:600; }
+  .res-row .r-time { color:#b8c6e4; }
+  .res-row.me { color:#ffd12e; }
+
+  /* podium celebration */
+  #podium-screen { z-index:30; }
+  #confetti-canvas { position:absolute; inset:0; pointer-events:none; }
+  #podium-pos { font-size:150px; font-weight:900; font-style:italic; letter-spacing:8px; line-height:1; }
+  #podium-pos.p1 { color:#ffd12e; text-shadow:0 0 48px rgba(255,209,46,.45); }
+  #podium-pos.p2 { color:#cfd6e4; text-shadow:0 0 48px rgba(207,214,228,.4); }
+  #podium-pos.p3 { color:#d08a4a; text-shadow:0 0 48px rgba(208,138,74,.4); }
+  #podium-name { font-size:34px; font-weight:800; letter-spacing:5px; margin-top:12px; text-transform:uppercase; }
+  #podium-sub { font-size:15px; letter-spacing:3px; color:#8fa3c8; margin-top:10px; text-transform:uppercase; }
+
+  #pause-screen { background:rgba(5,6,10,.85); }
+  #loading-note { position:absolute; bottom:14px; left:50%; transform:translateX(-50%); color:#54648a; font-size:12px; letter-spacing:1px; z-index:20; }
+  #controls-hint { position:absolute; bottom:24px; left:50%; transform:translateX(-50%); color:#8fa3c8; font-size:12px; letter-spacing:1px;
+    background:rgba(8,12,24,.6); padding:6px 16px; border-radius:20px; pointer-events:none; }
+</style>
+</head>
+<body>
+<canvas id="game-canvas"></canvas>
+
+<!-- MAIN MENU -->
+<div id="screen-main" class="screen">
+  <div class="title">F1 SIMULATOR 2026</div>
+  <div class="subtitle">Max Verstappen &middot; Oracle Red Bull Racing</div>
+  <div class="menu-box">
+    <button class="btn" data-mode="practice">Practice</button>
+    <button class="btn" data-mode="qualify">Qualify</button>
+    <button class="btn" data-mode="race">Race</button>
+    <button class="btn accent" data-mode="gp">Grand Prix Weekend</button>
+    <button class="btn" data-mode="season">Season</button>
+    <div style="margin-top:10px;">
+      <div style="font-size:11px; letter-spacing:2px; color:#7d8db0; margin-bottom:6px;">AI DIFFICULTY</div>
+      <div class="row-opts" id="diff-row" style="margin-top:0;">
+        <button class="btn small" data-diff="0.94">Rookie</button>
+        <button class="btn small" data-diff="0.98">Casual</button>
+        <button class="btn small selected" data-diff="1.02">Pro</button>
+        <button class="btn small" data-diff="1.06">Elite</button>
+      </div>
+    </div>
+    <div style="margin-top:10px;">
+      <div style="font-size:11px; letter-spacing:2px; color:#7d8db0; margin-bottom:6px;">RACE DISTANCE</div>
+      <div class="row-opts" id="dist-row" style="margin-top:0;">
+        <button class="btn small selected" data-dist="short">Short</button>
+        <button class="btn small" data-dist="half">Half</button>
+        <button class="btn small" data-dist="full">Full</button>
+      </div>
+    </div>
+  </div>
+  <div id="loading-note">Loading 3D engine…</div>
+</div>
+
+<!-- TRACK SELECT -->
+<div id="screen-track" class="screen hidden">
+  <h2 class="screen-head">Select Circuit</h2>
+  <div class="screen-sub" id="track-mode-label">2026 SEASON — 24 ROUNDS</div>
+  <div id="track-grid"></div>
+  <div class="back-link" data-back="main">&larr; BACK</div>
+</div>
+
+<!-- RACE OPTIONS -->
+<div id="screen-raceopts" class="screen hidden">
+  <h2 class="screen-head">Race Setup</h2>
+  <div class="screen-sub" id="raceopts-track-label"></div>
+  <div class="menu-box">
+    <button class="btn" id="opt-fullgrid">Full Grid — 22 Cars</button>
+    <button class="btn" id="opt-h2h">Head-to-Head — Choose Rival</button>
+    <div class="row-opts">
+      <button class="btn small" data-laps="3">3 Laps</button>
+      <button class="btn small selected" data-laps="5">5 Laps</button>
+      <button class="btn small" data-laps="10">10 Laps</button>
+      <button class="btn small" data-laps="full">Full Race</button>
+    </div>
+  </div>
+  <div class="back-link" data-back="track">&larr; BACK</div>
+</div>
+
+<!-- OPPONENT SELECT -->
+<div id="screen-opponent" class="screen hidden">
+  <h2 class="screen-head">Choose Your Rival</h2>
+  <div class="screen-sub">HEAD-TO-HEAD</div>
+  <div id="opp-grid"></div>
+  <div class="back-link" data-back="raceopts">&larr; BACK</div>
+</div>
+
+<!-- RESULTS -->
+<div id="screen-results" class="screen hidden">
+  <h2 class="screen-head" id="results-title">Session Results</h2>
+  <div class="screen-sub" id="results-sub"></div>
+  <div id="results-table"></div>
+  <div class="menu-box" style="margin-top:22px; width:340px;">
+    <button class="btn accent hidden" id="btn-next">Continue</button>
+    <button class="btn" id="btn-restart">Restart Session</button>
+    <button class="btn" id="btn-menu">Main Menu</button>
+  </div>
+</div>
+
+<!-- PODIUM CELEBRATION -->
+<div id="podium-screen" class="screen hidden">
+  <canvas id="confetti-canvas"></canvas>
+  <div id="podium-pos" class="p1">P1</div>
+  <div id="podium-name"></div>
+  <div id="podium-sub"></div>
+  <div class="menu-box" style="width:340px;">
+    <button class="btn accent" id="podium-continue">Continue</button>
+  </div>
+</div>
+
+<!-- SEASON STANDINGS -->
+<div id="screen-standings" class="screen hidden">
+  <h2 class="screen-head">Championship Standings</h2>
+  <div class="screen-sub" id="standings-sub"></div>
+  <div id="standings-toggle" style="display:flex; gap:10px; margin-bottom:14px;">
+    <button class="btn small selected" id="st-view-drivers">Drivers</button>
+    <button class="btn small" id="st-view-teams">Constructors</button>
+    <button class="btn small" id="st-view-calendar">Calendar</button>
+  </div>
+  <div id="standings-table"></div>
+  <div class="menu-box" style="margin-top:22px; width:340px;">
+    <button class="btn accent" id="btn-nextround">Next Round</button>
+    <button class="btn" id="btn-newseason">New Season</button>
+    <button class="btn" id="btn-standings-menu">Main Menu</button>
+  </div>
+</div>
+
+<!-- PAUSE -->
+<div id="screen-pause" class="screen hidden" style="background:rgba(5,6,10,.85);">
+  <h2 class="screen-head">Paused</h2>
+  <div class="menu-box">
+    <button class="btn" id="btn-resume">Resume</button>
+    <button class="btn accent hidden" id="btn-next2">Next Session</button>
+    <button class="btn hidden" id="btn-endq">End Qualifying — Keep My Time</button>
+    <button class="btn hidden" id="btn-skipq">Skip Qualifying</button>
+    <button class="btn" id="btn-restart2">Restart Session</button>
+    <button class="btn" id="btn-menu2">Main Menu</button>
+  </div>
+</div>
+
+<!-- HUD -->
+<div id="hud">
+  <div id="vignette"></div>
+  <div id="rain-haze"></div>
+  <div id="rain-overlay"></div>
+  <div class="hud-panel" id="timing">
+    <div class="t-row"><span class="t-label">Current</span><span class="t-val" id="cur-time">--:--.---</span></div>
+    <div class="t-row"><span class="t-label">Last</span><span class="t-val" id="last-time">--:--.---</span></div>
+    <div class="t-row"><span class="t-label">Best</span><span class="t-val" id="best-time">--:--.---</span></div>
+    <div class="t-row"><span class="t-label">Delta</span><span class="t-val" id="delta-time">--</span></div>
+    <div id="sector-row">
+      <span class="sec" id="sec0">S1 --.-</span>
+      <span class="sec" id="sec1">S2 --.-</span>
+      <span class="sec" id="sec2">S3 --.-</span>
+    </div>
+  </div>
+  <div class="hud-panel" id="pos-panel"></div>
+  <div class="hud-panel" id="lap-panel">
+    <div id="lap-val">1 / 5</div>
+    <div id="lap-label">LAP</div>
+    <div id="session-clock"></div>
+  </div>
+  <div class="hud-panel" id="minimap"><canvas id="minimap-canvas" width="150" height="150"></canvas></div>
+  <div class="hud-panel" id="weather-panel">
+    <div id="weather-text">DRY</div>
+    <div id="weather-bar"><div id="weather-fill"></div></div>
+  </div>
+  <div class="hud-panel" id="speedo">
+    <div><span id="drs-badge">DRS</span><span id="speed-val">0</span> <span id="speed-unit">KM/H</span></div>
+    <div id="gear-val">N</div>
+    <div id="rpm-bar"><div id="rpm-fill"></div></div>
+    <div id="tyre-row"><span id="tyre-temp">60°</span><span id="tyre-dot"></span><span id="tyre-letter">M</span><div id="tyre-bar"><div id="tyre-fill"></div></div></div>
+  </div>
+  <div id="pit-hint" class="hidden">P — PIT</div>
+  <div id="pit-ui"><div class="pu-box">
+    <div id="pit-lane-time">PIT LANE 0.0s</div>
+    <div id="pit-lights">
+      <div class="plight"></div><div class="plight"></div><div class="plight"></div><div class="plight"></div><div class="plight"></div>
+    </div>
+    <div id="pit-stationary">--.-</div>
+    <div id="pit-msg"></div>
+  </div></div>
+  <div id="stewards"></div>
+  <div id="controls-hint">W/&uarr; throttle &nbsp;&middot;&nbsp; S/&darr; brake / reverse &nbsp;&middot;&nbsp; A/D steer &nbsp;&middot;&nbsp; C camera &nbsp;&middot;&nbsp; V look back &nbsp;&middot;&nbsp; P pit &nbsp;&middot;&nbsp; M sound &nbsp;&middot;&nbsp; R reset &nbsp;&middot;&nbsp; ESC pause</div>
+</div>
+
+<!-- TYRE COMPOUND PICKER -->
+<div id="tyre-picker" class="hidden">
+  <div class="tp-title">Select Tyres</div>
+  <div id="tp-weather">FORECAST: DRY</div>
+  <div class="tp-row" id="tp-start-row">
+    <button class="btn small tyre-btn" data-tyre="soft" data-name="SOFT">S</button>
+    <button class="btn small tyre-btn selected" data-tyre="medium" data-name="MEDIUM">M</button>
+    <button class="btn small tyre-btn" data-tyre="hard" data-name="HARD">H</button>
+    <button class="btn small tyre-btn wet-tyre hidden" data-tyre="inter" data-name="INTER">I</button>
+    <button class="btn small tyre-btn wet-tyre hidden" data-tyre="wet" data-name="WET">W</button>
+  </div>
+  <div class="tp-label hidden" id="tp-pit-label">PIT STOP TYRE</div>
+  <div class="tp-row hidden" id="tp-pit-row">
+    <button class="btn small tyre-btn" data-tyre="soft" data-name="SOFT">S</button>
+    <button class="btn small tyre-btn" data-tyre="medium" data-name="MEDIUM">M</button>
+    <button class="btn small tyre-btn" data-tyre="hard" data-name="HARD">H</button>
+    <button class="btn small tyre-btn wet-tyre hidden" data-tyre="inter" data-name="INTER">I</button>
+    <button class="btn small tyre-btn wet-tyre hidden" data-tyre="wet" data-name="WET">W</button>
+  </div>
+  <button class="btn accent" id="tp-confirm">Confirm</button>
+</div>
+
+<div id="msg-banner"></div>
+<div id="start-lights">
+  <div class="light"></div><div class="light"></div><div class="light"></div><div class="light"></div><div class="light"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<!-- post-processing pipeline (r128 examples, attach to THREE.*) -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/math/SimplexNoise.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/SSAOShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/Pass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/MaskPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/SSAOPass.js"></script>
+<script src="trackdata.js?v=18"></script>
+<script src="tracks.js?v=18"></script>
+<script src="audio.js?v=18"></script>
+<script src="carmodel.js?v=18"></script>
+<script src="trackbuilder.js?v=18"></script>
+<script src="physics.js?v=18"></script>
+<script src="ai.js?v=18"></script>
+<script src="main.js?v=18"></script>
+</body>
+</html>

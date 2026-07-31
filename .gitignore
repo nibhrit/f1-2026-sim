@@ -1,0 +1,11 @@
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# editors
+.vscode/
+.idea/
+
+# node (only used for local test harnesses, never shipped)
+node_modules/
+package-lock.json
