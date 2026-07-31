@@ -7,7 +7,7 @@ Drive as Max Verstappen for Oracle Red Bull Racing across all 24 circuits of the
 2026 season, with real track geometry, tyre strategy, dynamic weather, pit stops
 and an FIA-style stewards system.
 
-**▶ Play it:** _add your GitHub Pages URL here once deployed_
+**▶ Play it:** _https://nibhrit.github.io/f1-2026-sim/_
 
 ---
 
