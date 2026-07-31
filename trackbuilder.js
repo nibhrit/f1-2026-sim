@@ -957,7 +957,10 @@ function gridSlot(track, i) {
 }
 
 // draw minimap onto a 2d canvas
-function drawMinimapBase(track, canvas) {
+// zoom = 1 fits the whole circuit; higher zooms in and follows the car
+// (cxWorld/czWorld), so you can read the corner you're actually approaching.
+function drawMinimapBase(track, canvas, zoom, cxWorld, czWorld) {
+  zoom = zoom || 1;
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0,0,W,H);
@@ -967,8 +970,15 @@ function drawMinimapBase(track, canvas) {
     minZ=Math.min(minZ,track.pz[k]); maxZ=Math.max(maxZ,track.pz[k]);
   }
   const pad=10;
-  const sc=Math.min((W-pad*2)/(maxX-minX),(H-pad*2)/(maxZ-minZ));
-  const ox=(W-(maxX-minX)*sc)/2, oz=(H-(maxZ-minZ)*sc)/2;
+  const sc=Math.min((W-pad*2)/(maxX-minX),(H-pad*2)/(maxZ-minZ)) * zoom;
+  let ox, oz;
+  if (zoom > 1.01 && cxWorld != null) {
+    // keep the car in the middle of the window
+    ox = W/2 - (cxWorld-minX)*sc;
+    oz = H/2 - (czWorld-minZ)*sc;
+  } else {
+    ox=(W-(maxX-minX)*sc)/2; oz=(H-(maxZ-minZ)*sc)/2;
+  }
   track._mapScale = sc; track._mapMinX=minX; track._mapMinZ=minZ; track._mapOx=ox; track._mapOz=oz;
   ctx.strokeStyle='rgba(255,255,255,0.9)';
   ctx.lineWidth=3; ctx.lineJoin='round';

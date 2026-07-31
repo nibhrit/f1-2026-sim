@@ -156,9 +156,15 @@ const keys = {};
 window.addEventListener('keydown', e => {
   keys[e.code] = true;
   AUDIO.init();
-  if (e.code === 'KeyM') {
+  if (e.code === 'KeyN') {
     const m = AUDIO.toggleMute();
     if (G.state === 'driving') showBanner(m ? 'SOUND OFF' : 'SOUND ON', 1.2, '#6fa0ff');
+  }
+  // M cycles the minimap zoom: whole circuit → 2x → 3.5x (follows the car)
+  if (e.code === 'KeyM' && G.state === 'driving') {
+    G.mapZoom = (G.mapZoom + 1) % MAP_ZOOMS.length;
+    const z = MAP_ZOOMS[G.mapZoom];
+    showBanner(z === 1 ? 'MAP: FULL CIRCUIT' : 'MAP ZOOM ' + z + '×', 1.2, '#6fa0ff');
   }
   if (e.code === 'Escape') togglePause();
   if (e.code === 'KeyC' && G.state === 'driving') {
@@ -171,7 +177,8 @@ window.addEventListener('keydown', e => {
     showBanner(G.autopilot ? 'AUTOPILOT ON' : 'AUTOPILOT OFF', 1.5, '#6fa0ff');
   }
   if (e.code === 'KeyR' && G.state === 'driving' && G.player) G.player.phys.resetToTrack();
-  if (e.code === 'KeyP' && G.state === 'driving' && G.mode === 'race' && G.raceLaps > 20 && G.player
+  // box any lap, in any session — practice and qualifying included
+  if (e.code === 'KeyP' && G.state === 'driving' && G.player
       && !G.player.finished && !G.player.pitArmed && !G.player.pitState) {
     // arm the pit only in the last 500m before the pit zone (or inside it)
     if (G.player.phys.lapDist >= G.track.length - 800) {
@@ -197,6 +204,8 @@ function playerInput() {
   };
 }
 
+const MAP_ZOOMS = [1, 2, 3.5]; // minimap zoom steps (M cycles)
+
 // ---------- game state ----------
 const G = {
   state: 'menu',          // menu | driving | paused | results
@@ -207,6 +216,7 @@ const G = {
   cars: [],               // {phys, mesh, driver, ai, lapTimes[], bestLap, curLapStart, finished, finishTime}
   player: null,
   camMode: 0,
+  mapZoom: 0,             // index into MAP_ZOOMS
   raceLaps: 5,
   raceType: 'full',       // full | h2h
   opponent: null,
@@ -880,7 +890,8 @@ document.querySelectorAll('#tp-pit-row .tyre-btn').forEach(b => {
 });
 
 function showTyrePicker() {
-  const needPit = G.mode === 'race' && G.raceLaps > 20;
+  // you can box in any session now, so always offer the pit-stop compound
+  const needPit = true;
   const wet = G.weather && G.weather.wetness > 0.3;
   // reveal intermediate + wet options only when the track is wet
   document.querySelectorAll('.tyre-btn.wet-tyre').forEach(b => b.classList.toggle('hidden', !wet));
@@ -1610,8 +1621,8 @@ function updateHUD() {
     if (Math.abs((w._visWet || 0) - w.wetness) > 0.03) { w._visWet = w.wetness; applyWeatherVisuals(); }
   }
 
-  // minimap dots
-  drawMinimapBase(G.track, $('minimap-canvas'));
+  // minimap dots (zoomed views follow the player's car)
+  drawMinimapBase(G.track, $('minimap-canvas'), MAP_ZOOMS[G.mapZoom], p.phys.x, p.phys.z);
   const ctx = $('minimap-canvas').getContext('2d');
   G.cars.forEach(c => {
     const pt = mapPoint(G.track, c.phys.x, c.phys.z);
@@ -2198,9 +2209,11 @@ function stepSim(dt) {
   // pit arming / zone entry (zone = last 300m before the start/finish line).
   // Weather stops work at any race length; the mandatory strategy stop only
   // applies to races over 20 laps.
-  if (G.mode === 'race' && started) {
+  // (the player can box in any session; AI strategy stops are race-only)
+  if (started) {
     for (const c of G.cars) {
       if (c.finished || c.pitState) continue;
+      if (G.mode !== 'race' && c.ai) continue; // no AI stops outside a race
       if (pitsOpen && c.ai && !c.pitArmed && !c.pitted && c.pitLap && c.phys.lap === c.pitLap) c.pitArmed = true;
       // planned second stop for AI two-stoppers in long races
       if (pitsOpen && c.ai && !c.pitArmed && c.pitted && !c.pitted2 && c.pitLap2 && c.phys.lap === c.pitLap2) {
@@ -2317,5 +2330,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 18';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 19';
 })();

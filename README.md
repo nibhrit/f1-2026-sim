@@ -58,9 +58,10 @@ indicator, podium celebrations, and persistent lap records per circuit.
 | `A` `D` / `←` `→` | Steer |
 | `C` | Cycle camera — chase / cockpit / T-cam / TV |
 | `V` | Look behind (hold) |
-| `P` | Pit this lap |
+| `P` | Pit this lap (any session) |
 | `Space` | Pit stop reaction lights |
-| `M` | Mute / unmute |
+| `M` | Minimap zoom — full circuit / 2× / 3.5× |
+| `N` | Mute / unmute |
 | `R` | Reset to track |
 | `Esc` | Pause |
 
