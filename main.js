@@ -179,11 +179,17 @@ window.addEventListener('keydown', e => {
   if (e.code === 'KeyR' && G.state === 'driving' && G.player) G.player.phys.resetToTrack();
   // box any lap, in any session — practice and qualifying included
   if (e.code === 'KeyP' && G.state === 'driving' && G.player
-      && !G.player.finished && !G.player.pitArmed && !G.player.pitState) {
-    // arm the pit only in the last 500m before the pit zone (or inside it)
-    if (G.player.phys.lapDist >= G.track.length - 800) {
-      G.player.pitArmed = true;
-      showBanner('BOX BOX', 1.8, '#ffd12e');
+      && !G.player.finished && !G.player.pitState) {
+    const c = G.player;
+    if (c.pitArmed) {                       // press again to call it off
+      c.pitArmed = false; c.pitArmLap = null;
+      showBanner('BOX CANCELLED', 1.4, '#8fa3c8');
+    } else if (G.mode === 'practice') {
+      // practice has no pre-session picker — choose the compound now
+      showTyrePicker('pit');
+    } else {
+      const nextLap = armPit(c);
+      showBanner(nextLap ? 'BOX NEXT LAP' : 'BOX THIS LAP', 1.8, '#ffd12e');
     }
   }
   // SPACE resolves the reaction-light pit game while stationary
@@ -271,13 +277,25 @@ document.querySelectorAll('#diff-row [data-diff]').forEach(b => {
 // race distance selector
 document.querySelectorAll('#dist-row [data-dist]').forEach(b => {
   b.addEventListener('click', () => {
-    document.querySelectorAll('#dist-row [data-dist]').forEach(x => x.classList.remove('selected'));
-    b.classList.add('selected');
     G.raceDist = b.dataset.dist;
+    syncDistButtons();
   });
 });
 // laps for a race at this track, honouring the race-distance setting
 function raceLapsFor(def) { return G.raceDist==='full' ? def.fullLaps : G.raceDist==='half' ? Math.ceil(def.fullLaps/2) : def.laps; }
+
+// keep both distance selectors in step and show real lap counts for the track
+function syncDistButtons() {
+  document.querySelectorAll('#dist-row [data-dist], #ro-dist-row [data-dist]').forEach(x =>
+    x.classList.toggle('selected', x.dataset.dist === G.raceDist));
+  const def = G.trackDef;
+  if (!def) return;
+  const laps = { short: def.laps, half: Math.ceil(def.fullLaps/2), full: def.fullLaps };
+  ['short','half','full'].forEach(k => {
+    const el = $('ro-' + k);
+    if (el) el.textContent = k[0].toUpperCase() + k.slice(1) + ' — ' + laps[k];
+  });
+}
 document.querySelectorAll('.back-link').forEach(b => {
   b.addEventListener('click', () => showScreen(b.dataset.back));
 });
@@ -356,6 +374,7 @@ function selectTrack(def) {
     startSession();
   } else if (G.mode === 'race') {
     $('raceopts-track-label').textContent = def.gp.toUpperCase() + ' — ' + def.name.toUpperCase();
+    syncDistButtons(); // label the buttons with this circuit's lap counts
     showScreen('raceopts');
   } else {
     startSession();
@@ -369,11 +388,12 @@ $('opt-h2h').addEventListener('click', () => {
   buildOpponentGrid();
   showScreen('opponent');
 });
-document.querySelectorAll('[data-laps]').forEach(b => {
+// race-setup distance buttons mirror the home-page setting — one shared value,
+// editable from either screen, labelled with this circuit's real lap counts
+document.querySelectorAll('#ro-dist-row [data-dist]').forEach(b => {
   b.addEventListener('click', () => {
-    document.querySelectorAll('[data-laps]').forEach(x=>x.classList.remove('selected'));
-    b.classList.add('selected');
-    G.raceLaps = b.dataset.laps === 'full' ? G.trackDef.fullLaps : parseInt(b.dataset.laps);
+    G.raceDist = b.dataset.dist;
+    syncDistButtons();
   });
 });
 
@@ -596,7 +616,7 @@ function weatherPitCheck(c) {
   const dir = want > have ? 1 : -1;
   if (c._wxDir === dir) return;           // already reacted this direction
   c._wxDir = dir;
-  c.pitArmed = true;
+  armPit(c);
   c.pitCompound = want === 2 ? 'wet' : want === 1 ? 'inter' : 'medium';
 }
 
@@ -735,7 +755,7 @@ function startSession() {
 
   if (G.mode === 'race') {
     // Grand Prix race length follows the race-distance setting
-    if (G.weekend) G.raceLaps = raceLapsFor(G.trackDef);
+    G.raceLaps = raceLapsFor(G.trackDef); // one shared distance for every race
     rollWeather();
     let roster;
     if (G.raceType === 'h2h') roster = [me, G.opponent];
@@ -865,13 +885,42 @@ function simulateQualiTimes() {
 const tyrePicker = $('tyre-picker');
 let tpStart = 'medium', tpPit = 'hard';
 
+let tpPit2 = 'soft', tpStops = 1, tpMode = 'session';
+
+// how many stops the recommendation works out to at the chosen race distance
+function recommendedStops() {
+  const full = G.trackDef.fullLaps || 60;
+  const rec = G.trackDef.recStops || 1;
+  const frac = G.raceLaps / full;
+  if (G.raceLaps <= 20) return 0;          // short races: no mandatory stop
+  return Math.max(1, Math.round(rec * Math.min(1, frac + 0.25)));
+}
+
 function refreshTyrePicker() {
   document.querySelectorAll('#tp-start-row .tyre-btn').forEach(b =>
     b.classList.toggle('selected', b.dataset.tyre === tpStart));
+  // FIA two-compound rule applies to dry races over 20 laps: the first stop
+  // must change compound. Everywhere else you may refit the same tyre.
+  const mustDiffer = tpMode === 'session' && G.mode === 'race' && G.raceLaps > 20
+    && !(G.weather && G.weather.wetness > 0.3);
   document.querySelectorAll('#tp-pit-row .tyre-btn').forEach(b => {
-    b.disabled = b.dataset.tyre === tpStart; // pit tyre must differ
+    b.disabled = mustDiffer && b.dataset.tyre === tpStart;
     b.classList.toggle('selected', b.dataset.tyre === tpPit);
   });
+  document.querySelectorAll('#tp-pit2-row .tyre-btn').forEach(b => {
+    b.disabled = false;
+    b.classList.toggle('selected', b.dataset.tyre === tpPit2);
+  });
+  document.querySelectorAll('#tp-strat-row [data-stops]').forEach(b =>
+    b.classList.toggle('selected', +b.dataset.stops === tpStops));
+  // reveal only the compound rows the chosen strategy needs
+  const race = tpMode === 'session' && G.mode === 'race';
+  const showPit1 = tpMode === 'pit' ? false : (race ? tpStops >= 1 : true);
+  const showPit2 = race && tpStops >= 2;
+  $('tp-pit-label').classList.toggle('hidden', !showPit1);
+  $('tp-pit-row').classList.toggle('hidden', !showPit1);
+  $('tp-pit2-label').classList.toggle('hidden', !showPit2);
+  $('tp-pit2-row').classList.toggle('hidden', !showPit2);
 }
 const TYRE_ORDER = ['soft','medium','hard','inter','wet'];
 document.querySelectorAll('#tp-start-row .tyre-btn').forEach(b => {
@@ -889,32 +938,68 @@ document.querySelectorAll('#tp-pit-row .tyre-btn').forEach(b => {
   });
 });
 
-function showTyrePicker() {
-  // you can box in any session now, so always offer the pit-stop compound
-  const needPit = true;
+// mode 'session' = before qualifying/race; 'pit' = mid-session stop (practice)
+function showTyrePicker(mode) {
+  tpMode = mode || 'session';
   const wet = G.weather && G.weather.wetness > 0.3;
-  // reveal intermediate + wet options only when the track is wet
   document.querySelectorAll('.tyre-btn.wet-tyre').forEach(b => b.classList.toggle('hidden', !wet));
-  // sensible default for the conditions
   if (wet) tpStart = G.weather.wetness > 0.7 ? 'wet' : 'inter';
   else if (tpStart === 'inter' || tpStart === 'wet') tpStart = 'medium';
-  if (tpPit === tpStart) tpPit = TYRE_ORDER.find(n => n !== tpStart);
+
+  const race = tpMode === 'session' && G.mode === 'race';
+  // strategy step comes first in a race, with a per-track recommendation
+  if (race) {
+    const rec = recommendedStops();
+    tpStops = rec;
+    $('tp-rec').textContent = 'RECOMMENDED HERE: ' + (rec === 0 ? 'NO STOP' : rec + (rec > 1 ? ' STOPS' : ' STOP'));
+    document.querySelector('#tp-strat-row [data-stops="0"]').classList.toggle('hidden', G.raceLaps > 20);
+  }
+  $('tp-strat-label').classList.toggle('hidden', !race);
+  $('tp-strat-row').classList.toggle('hidden', !race);
+  $('tp-rec').classList.toggle('hidden', !race);
+
+  $('tp-title-text').textContent = tpMode === 'pit' ? 'Pit Stop — Choose Tyre' : 'Select Tyres';
+  if (tpMode === 'pit') $('tp-start-label').textContent = 'FITTING';
+  else $('tp-start-label').textContent = 'STARTING TYRE';
+
+  const mustDiffer = race && G.raceLaps > 20 && !wet;
+  if (mustDiffer && tpPit === tpStart) tpPit = TYRE_ORDER.find(n => n !== tpStart);
   const wxEl = $('tp-weather');
   if (wxEl) { wxEl.textContent = 'FORECAST: ' + (G.weather ? G.weather.forecast : 'DRY'); wxEl.style.color = wet ? '#6fb0ff' : '#7d8db0'; }
-  $('tp-pit-label').classList.toggle('hidden', !needPit);
-  $('tp-pit-row').classList.toggle('hidden', !needPit);
   refreshTyrePicker();
   tyrePicker.classList.remove('hidden');
   G.state = 'tyrepick';
 }
 
+document.querySelectorAll('#tp-strat-row [data-stops]').forEach(b => {
+  b.addEventListener('click', () => { tpStops = +b.dataset.stops; refreshTyrePicker(); });
+});
+document.querySelectorAll('#tp-pit2-row .tyre-btn').forEach(b => {
+  b.addEventListener('click', () => { tpPit2 = b.dataset.tyre; refreshTyrePicker(); });
+});
+
 $('tp-confirm').addEventListener('click', () => {
   if (G.state !== 'tyrepick' || !G.player) return;
   tyrePicker.classList.add('hidden');
-  G.player.phys.setTyre(tpStart);
-  const needPit = G.mode === 'race' && G.raceLaps > 20;
-  G.pitCompound = needPit ? tpPit : null;
-  G.player.pitCompound = G.pitCompound;
+  const c = G.player;
+
+  if (tpMode === 'pit') {
+    // mid-session stop: fit this compound at the next box
+    c.pitPlan = [tpStart];
+    const nextLap = armPit(c);
+    showBanner(nextLap ? 'BOX NEXT LAP' : 'BOX THIS LAP', 1.8, '#ffd12e');
+    G.state = 'driving';
+    lastT = performance.now();
+    return;
+  }
+
+  c.phys.setTyre(tpStart);
+  // planned stops, in order — the pit machine works through this list
+  c.pitPlan = G.mode === 'race'
+    ? [tpPit, tpPit2].slice(0, tpStops)
+    : [tpPit];                       // qualifying: one planned change
+  c.pitCompound = c.pitPlan[0] || null;
+  G.plannedStops = G.mode === 'race' ? tpStops : 0;
   if (G.mode === 'race') {
     G.countdown = { phase: 0, t: 1.2 };
   } else {
@@ -1714,10 +1799,19 @@ const STEW = {
 
 // serve a drive-through: forced pass through the pit lane at pit speed with no
 // stop and no tyre change (does NOT satisfy the mandatory compound rule)
+// Arm a pit stop from anywhere on the lap. If we're already past the pit entry
+// the stop rolls over to the next lap, so a late call never yanks the car
+// sideways into a box it has already driven past.
+function armPit(c) {
+  c.pitArmed = true;
+  c.pitArmLap = c.phys.lap + (c.phys.lapDist >= G.track.length - 320 ? 1 : 0);
+  return c.pitArmLap > c.phys.lap; // true = it'll be next lap
+}
+
 function orderDriveThrough(car, reason) {
   if (car.finished || car.driveThroughServed) return;
   car.driveThrough = true;
-  car.pitArmed = true;
+  armPit(car);
   stewardMsg('STEWARDS: ' + car.driver.id + '  DRIVE-THROUGH — ' + reason, 'coll');
   if (car.driver.player) showBanner('DRIVE-THROUGH PENALTY — ' + reason.toUpperCase(), 3, '#ff5c5c');
 }
@@ -2214,13 +2308,14 @@ function stepSim(dt) {
     for (const c of G.cars) {
       if (c.finished || c.pitState) continue;
       if (G.mode !== 'race' && c.ai) continue; // no AI stops outside a race
-      if (pitsOpen && c.ai && !c.pitArmed && !c.pitted && c.pitLap && c.phys.lap === c.pitLap) c.pitArmed = true;
+      if (pitsOpen && c.ai && !c.pitArmed && !c.pitted && c.pitLap && c.phys.lap === c.pitLap) armPit(c);
       // planned second stop for AI two-stoppers in long races
       if (pitsOpen && c.ai && !c.pitArmed && c.pitted && !c.pitted2 && c.pitLap2 && c.phys.lap === c.pitLap2) {
-        c.pitArmed = true; c.pitted2 = true;
+        armPit(c); c.pitted2 = true;
       }
       if (c.ai && !c.pitArmed) weatherPitCheck(c);
-      if (c.pitArmed && !c.pitState && c.phys.lapDist >= G.track.length - 300) {
+      if (c.pitArmed && !c.pitState && (c.pitArmLap == null || c.phys.lap >= c.pitArmLap)
+          && c.phys.lapDist >= G.track.length - 300) {
         c.pitState = 'entering';
         c.pitLaneStart = G.simTime; // start the pit-lane clock
         if (c.driver.player) showBanner('IN PIT', 1.6, '#6fa0ff');
@@ -2261,14 +2356,17 @@ function stepSim(dt) {
       if (c.driveThrough) {
         // penalty served: no tyres, no stop, does not count as the mandatory stop
         c.driveThrough = false; c.driveThroughServed = true;
-        c.pitState = null; c.pitArmed = false;
+        c.pitState = null; c.pitArmed = false; c.pitArmLap = null;
         if (c.driver.player) showBanner('PENALTY SERVED', 2, '#ffd12e');
         continue;
       }
       const removed = c.phys.compound;
-      c.phys.setTyre(c.pitCompound || removed);
-      c.pitCompound = removed;
-      c.pitted = true; c.pitState = null; c.pitArmed = false;
+      // work through the planned stops; once the plan runs out, refit fresh
+      // tyres of the compound just removed
+      const next = (c.pitPlan && c.pitPlan.length) ? c.pitPlan.shift() : (c.pitCompound || removed);
+      c.phys.setTyre(next);
+      c.pitCompound = (c.pitPlan && c.pitPlan.length) ? c.pitPlan[0] : removed;
+      c.pitted = true; c.pitState = null; c.pitArmed = false; c.pitArmLap = null;
       if (c.driver.player) {
         const lane = c.pitLaneStart != null ? (G.simTime - c.pitLaneStart) : 0;
         showBanner('OUT — ' + c.phys.compound.toUpperCase() + 'S · PIT LANE ' + lane.toFixed(1) + 's', 2.4, '#2ecc71');
@@ -2330,5 +2428,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 19';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 22';
 })();

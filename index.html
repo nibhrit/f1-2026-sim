@@ -259,11 +259,10 @@
   <div class="menu-box">
     <button class="btn" id="opt-fullgrid">Full Grid — 22 Cars</button>
     <button class="btn" id="opt-h2h">Head-to-Head — Choose Rival</button>
-    <div class="row-opts">
-      <button class="btn small" data-laps="3">3 Laps</button>
-      <button class="btn small selected" data-laps="5">5 Laps</button>
-      <button class="btn small" data-laps="10">10 Laps</button>
-      <button class="btn small" data-laps="full">Full Race</button>
+    <div class="row-opts" id="ro-dist-row">
+      <button class="btn small" data-dist="short" id="ro-short">Short</button>
+      <button class="btn small" data-dist="half" id="ro-half">Half</button>
+      <button class="btn small" data-dist="full" id="ro-full">Full</button>
     </div>
   </div>
   <div class="back-link" data-back="track">&larr; BACK</div>
@@ -378,8 +377,9 @@
 
 <!-- TYRE COMPOUND PICKER -->
 <div id="tyre-picker" class="hidden">
-  <div class="tp-title">Select Tyres</div>
+  <div class="tp-title" id="tp-title-text">Select Tyres</div>
   <div id="tp-weather">FORECAST: DRY</div>
+  <div class="tp-label" id="tp-start-label">STARTING TYRE</div>
   <div class="tp-row" id="tp-start-row">
     <button class="btn small tyre-btn" data-tyre="soft" data-name="SOFT">S</button>
     <button class="btn small tyre-btn selected" data-tyre="medium" data-name="MEDIUM">M</button>
@@ -387,8 +387,23 @@
     <button class="btn small tyre-btn wet-tyre hidden" data-tyre="inter" data-name="INTER">I</button>
     <button class="btn small tyre-btn wet-tyre hidden" data-tyre="wet" data-name="WET">W</button>
   </div>
+  <div class="tp-label hidden" id="tp-strat-label">RACE STRATEGY</div>
+  <div class="tp-row hidden" id="tp-strat-row">
+    <button class="btn small" data-stops="0">NO STOP</button>
+    <button class="btn small selected" data-stops="1">1 STOP</button>
+    <button class="btn small" data-stops="2">2 STOPS</button>
+  </div>
+  <div class="tp-label hidden" id="tp-rec">RECOMMENDED: 1 STOP</div>
   <div class="tp-label hidden" id="tp-pit-label">PIT STOP TYRE</div>
   <div class="tp-row hidden" id="tp-pit-row">
+    <button class="btn small tyre-btn" data-tyre="soft" data-name="SOFT">S</button>
+    <button class="btn small tyre-btn" data-tyre="medium" data-name="MEDIUM">M</button>
+    <button class="btn small tyre-btn" data-tyre="hard" data-name="HARD">H</button>
+    <button class="btn small tyre-btn wet-tyre hidden" data-tyre="inter" data-name="INTER">I</button>
+    <button class="btn small tyre-btn wet-tyre hidden" data-tyre="wet" data-name="WET">W</button>
+  </div>
+  <div class="tp-label hidden" id="tp-pit2-label">SECOND STOP TYRE</div>
+  <div class="tp-row hidden" id="tp-pit2-row">
     <button class="btn small tyre-btn" data-tyre="soft" data-name="SOFT">S</button>
     <button class="btn small tyre-btn" data-tyre="medium" data-name="MEDIUM">M</button>
     <button class="btn small tyre-btn" data-tyre="hard" data-name="HARD">H</button>
@@ -416,13 +431,13 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/SSAOPass.js"></script>
-<script src="trackdata.js?v=19"></script>
-<script src="tracks.js?v=19"></script>
-<script src="audio.js?v=19"></script>
-<script src="carmodel.js?v=19"></script>
-<script src="trackbuilder.js?v=19"></script>
-<script src="physics.js?v=19"></script>
-<script src="ai.js?v=19"></script>
-<script src="main.js?v=19"></script>
+<script src="trackdata.js?v=22"></script>
+<script src="tracks.js?v=22"></script>
+<script src="audio.js?v=22"></script>
+<script src="carmodel.js?v=22"></script>
+<script src="trackbuilder.js?v=22"></script>
+<script src="physics.js?v=22"></script>
+<script src="ai.js?v=22"></script>
+<script src="main.js?v=22"></script>
 </body>
 </html>

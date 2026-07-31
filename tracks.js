@@ -170,6 +170,16 @@ const TRACK_DRS = {
   qatar:1, abudhabi:2,
 };
 
+// recommended number of stops over a full race distance — high-degradation,
+// abrasive circuits favour two stops; street tracks where overtaking is hard
+// favour one. Scaled down automatically for shorter race distances.
+const TRACK_STOPS = {
+  australia:1, china:2, japan:2, bahrain:2, saudi:1, miami:1, canada:1, monaco:1,
+  spain:2, austria:2, britain:2, belgium:1, hungary:2, netherlands:2, italy:1,
+  madrid:1, azerbaijan:1, singapore:1, usa:2, mexico:2, brazil:2, vegas:1,
+  qatar:2, abudhabi:1,
+};
+
 // real-world race direction: these 8 run anticlockwise, all others clockwise
 const ACW_TRACKS = { usa:1, miami:1, azerbaijan:1, singapore:1, vegas:1, brazil:1, abudhabi:1, saudi:1 };
 
@@ -184,6 +194,7 @@ TRACKS.forEach(t => {
   t.theme = TRACK_THEMES[t.id] || 'green';
   t.elev = TRACK_ELEV[t.id] != null ? TRACK_ELEV[t.id] : 6;
   t.drs = TRACK_DRS[t.id] || 2;
+  t.recStops = TRACK_STOPS[t.id] != null ? TRACK_STOPS[t.id] : 1;
   t.fullLaps = TRACK_FULL_LAPS[t.id] != null ? TRACK_FULL_LAPS[t.id] : t.laps;
   t.rainChance = TRACK_RAIN[t.id] != null ? TRACK_RAIN[t.id] : 0.15;
   if (typeof REAL_TRACKS !== 'undefined' && REAL_TRACKS[t.id]) {
