@@ -184,8 +184,9 @@ window.addEventListener('keydown', e => {
     if (c.pitArmed) {                       // press again to call it off
       c.pitArmed = false; c.pitArmLap = null;
       showBanner('BOX CANCELLED', 1.4, '#8fa3c8');
-    } else if (G.mode === 'practice') {
-      // practice has no pre-session picker — choose the compound now
+    } else if (G.mode === 'practice' || !(c.pitPlan && c.pitPlan.length)) {
+      // no planned stop left (practice, a short race, or the plan is used up)
+      // — pick what to fit right now
       showTyrePicker('pit');
     } else {
       const nextLap = armPit(c);
@@ -896,13 +897,17 @@ function recommendedStops() {
   return Math.max(1, Math.round(rec * Math.min(1, frac + 0.25)));
 }
 
+// FIA two-compound rule: only a dry RACE over 20 laps forces the first stop to
+// change compound. In qualifying, practice and wet races you may refit the same.
+function mustDifferNow() {
+  return tpMode === 'session' && G.mode === 'race' && G.raceLaps > 20
+    && !(G.weather && G.weather.wetness > 0.3);
+}
+
 function refreshTyrePicker() {
   document.querySelectorAll('#tp-start-row .tyre-btn').forEach(b =>
     b.classList.toggle('selected', b.dataset.tyre === tpStart));
-  // FIA two-compound rule applies to dry races over 20 laps: the first stop
-  // must change compound. Everywhere else you may refit the same tyre.
-  const mustDiffer = tpMode === 'session' && G.mode === 'race' && G.raceLaps > 20
-    && !(G.weather && G.weather.wetness > 0.3);
+  const mustDiffer = mustDifferNow();
   document.querySelectorAll('#tp-pit-row .tyre-btn').forEach(b => {
     b.disabled = mustDiffer && b.dataset.tyre === tpStart;
     b.classList.toggle('selected', b.dataset.tyre === tpPit);
@@ -926,13 +931,13 @@ const TYRE_ORDER = ['soft','medium','hard','inter','wet'];
 document.querySelectorAll('#tp-start-row .tyre-btn').forEach(b => {
   b.addEventListener('click', () => {
     tpStart = b.dataset.tyre;
-    if (tpPit === tpStart) tpPit = TYRE_ORDER.find(n => n !== tpStart);
+    if (mustDifferNow() && tpPit === tpStart) tpPit = TYRE_ORDER.find(n => n !== tpStart);
     refreshTyrePicker();
   });
 });
 document.querySelectorAll('#tp-pit-row .tyre-btn').forEach(b => {
   b.addEventListener('click', () => {
-    if (b.dataset.tyre === tpStart) return;
+    if (mustDifferNow() && b.dataset.tyre === tpStart) return;
     tpPit = b.dataset.tyre;
     refreshTyrePicker();
   });
@@ -943,8 +948,17 @@ function showTyrePicker(mode) {
   tpMode = mode || 'session';
   const wet = G.weather && G.weather.wetness > 0.3;
   document.querySelectorAll('.tyre-btn.wet-tyre').forEach(b => b.classList.toggle('hidden', !wet));
+  const isWetC = n => n === 'inter' || n === 'wet';
   if (wet) tpStart = G.weather.wetness > 0.7 ? 'wet' : 'inter';
-  else if (tpStart === 'inter' || tpStart === 'wet') tpStart = 'medium';
+  else if (isWetC(tpStart)) tpStart = 'medium';
+  // never leave a selection pointing at a compound whose button is hidden —
+  // that's how a wet session's choice leaked into the next dry one
+  if (!wet) {
+    if (isWetC(tpPit)) tpPit = 'hard';
+    if (isWetC(tpPit2)) tpPit2 = 'soft';
+  } else if (!isWetC(tpPit)) {
+    tpPit = tpStart;              // sensible wet default: another set of the same
+  }
 
   const race = tpMode === 'session' && G.mode === 'race';
   // strategy step comes first in a race, with a per-track recommendation
@@ -2428,5 +2442,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 22';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 24';
 })();
