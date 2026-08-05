@@ -15,12 +15,32 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputEncoding = THREE.sRGBEncoding;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.2;
+// ---------- shadows ----------
+// Soft sun shadows. The map follows the player (see updateSunRig) because a
+// single frustum stretched over a 5 km circuit would be too coarse to see.
+// SHADOW_STEPS is the quality ladder the FPS watchdog walks down.
+const SHADOW_STEPS = [
+  { size: 2048, soft: true },
+  { size: 1024, soft: true },
+  { size: 1024, soft: false },
+  null, // off
+];
+let shadowStep = 0;
+try {
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+} catch (e) { /* stub renderer in tests */ }
 
 // ---------- post-processing (SSAO + bloom + speed blur) ----------
+// Radial speed blur + vignette in one pass. The vignette used to be a static
+// CSS overlay sitting on top of everything; folding it in here means it
+// operates on the rendered image (so it darkens tone-mapped highlights
+// correctly) and can tighten with speed for a sense of tunnelling.
 const SpeedBlurShader = {
   uniforms: {
     tDiffuse: { value: null },
     strength: { value: 0 },
+    vignette: { value: 0.42 },   // base darkening at the corners
   },
   vertexShader: `
     varying vec2 vUv;
@@ -28,6 +48,7 @@ const SpeedBlurShader = {
   fragmentShader: `
     uniform sampler2D tDiffuse;
     uniform float strength;
+    uniform float vignette;
     varying vec2 vUv;
     void main() {
       vec2 center = vec2(0.5, 0.45);
@@ -44,6 +65,10 @@ const SpeedBlurShader = {
         }
         col /= total;
       }
+      // smooth falloff from the centre; inner radius closes in with speed
+      float inner = 0.62 - strength * 0.55;
+      float v = smoothstep(inner, 1.02, dist * 1.42);
+      col.rgb *= 1.0 - v * vignette;
       gl_FragColor = col;
     }`
 };
@@ -58,15 +83,23 @@ function setupComposer() {
     try {
       if (typeof THREE.SSAOPass !== 'undefined') {
         ssaoPass = new THREE.SSAOPass(scene, camera, window.innerWidth, window.innerHeight);
-        ssaoPass.kernelRadius = 0.7;
-        ssaoPass.minDistance = 0.0008;
-        ssaoPass.maxDistance = 0.12;
+        // Pulled in from 0.7: real sun shadows now darken the same contact
+        // points SSAO was faking, and the two stacked into black mush under
+        // the cars. AO's job here is just the tight creases the shadow map
+        // is too coarse to resolve.
+        ssaoPass.kernelRadius = 0.34;
+        ssaoPass.minDistance = 0.0006;
+        ssaoPass.maxDistance = 0.06;
         c.addPass(ssaoPass);
       }
     } catch(e) { ssaoPass = null; console.warn('SSAO unavailable', e); }
     try {
       if (typeof THREE.UnrealBloomPass !== 'undefined') {
-        bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.30, 0.55, 0.82);
+        // threshold raised 0.82 → 0.94: metallic barriers and painted white
+        // lines now sit far brighter under PBR + IBL than they did flat-lit,
+        // and at the old threshold the whole track edge glowed. Strength
+        // nudged up so the highlights that DO qualify still read.
+        bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.38, 0.42, 0.94);
         c.addPass(bloomPass);
       }
     } catch(e) { bloomPass = null; console.warn('bloom unavailable', e); }
@@ -78,7 +111,10 @@ function setupComposer() {
     console.warn('post-processing disabled', e);
   }
 }
-setupComposer();
+// NOTE: setupComposer() is deliberately NOT called here. It reads `scene` and
+// `camera`, which are `const` and declared below — calling it at this point
+// threw a temporal-dead-zone ReferenceError that the try/catch swallowed,
+// leaving composer === null forever. The call now lives just after the camera.
 
 // image-based lighting from the theme sky (reflections on car paint)
 let envRT = null;
@@ -106,12 +142,75 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87b5e0);
 scene.fog = new THREE.Fog(0x87b5e0, 500, 1600);
 
-const camera = new THREE.PerspectiveCamera(72, window.innerWidth/window.innerHeight, 1, 3000);
+// near plane at 0.25 m, not 1 m: the steering wheel sits ~0.48 m from the
+// driver's eye and would otherwise be clipped away entirely. FOV and position
+// logic are untouched.
+const camera = new THREE.PerspectiveCamera(72, window.innerWidth/window.innerHeight, 0.25, 3000);
+
+// now that scene and camera exist, the post-processing chain can be built
+setupComposer();
+// the shader pass owns the vignette when post-processing is available; the
+// CSS overlay stays behind purely as the no-composer fallback
+{
+  const vigEl = document.getElementById('vignette');
+  if (vigEl && composer) vigEl.style.display = 'none';
+}
 camera.position.set(0, 30, 60);
 
 const sun = new THREE.DirectionalLight(0xffffff, 0.85);
 sun.position.set(300, 500, 200);
 scene.add(sun);
+// the shadow frustum is a box that rides along with the car
+const SHADOW_HALF = 90;  // metres covered either side of the player
+const SUN_OFFSET = { x: 120, y: 210, z: 80 }; // sun direction, in metres
+try {
+  sun.castShadow = true;
+  sun.shadow.mapSize.width = SHADOW_STEPS[0].size;
+  sun.shadow.mapSize.height = SHADOW_STEPS[0].size;
+  const sc = sun.shadow.camera;
+  sc.left = -SHADOW_HALF; sc.right = SHADOW_HALF;
+  sc.top = SHADOW_HALF;   sc.bottom = -SHADOW_HALF;
+  sc.near = 20; sc.far = 700;
+  sc.updateProjectionMatrix();
+  // banked, sloping asphalt shadow-acnes badly without both of these
+  sun.shadow.bias = -0.0008;
+  sun.shadow.normalBias = 0.02;
+  scene.add(sun.target);
+} catch (e) { /* stub light in tests */ }
+
+// Keep the shadow box centred on the car. Snapping the centre to whole
+// texels stops the shadow edges crawling as you drive.
+function updateSunRig(x, z) {
+  if (!sun.castShadow || !sun.shadow) return;
+  const texel = (SHADOW_HALF * 2) / (sun.shadow.mapSize.width || 2048);
+  const cx = Math.round(x / texel) * texel;
+  const cz = Math.round(z / texel) * texel;
+  sun.target.position.set(cx, 0, cz);
+  sun.position.set(cx + SUN_OFFSET.x, SUN_OFFSET.y, cz + SUN_OFFSET.z);
+  sun.target.updateMatrixWorld();
+}
+
+// Walk down the shadow ladder when frames get tight.
+function degradeShadows() {
+  if (shadowStep >= SHADOW_STEPS.length - 1) return false;
+  shadowStep++;
+  const s = SHADOW_STEPS[shadowStep];
+  try {
+    if (!s) {
+      sun.castShadow = false;
+      renderer.shadowMap.enabled = false;
+      console.log('[perf] shadows off');
+    } else {
+      sun.shadow.mapSize.width = s.size;
+      sun.shadow.mapSize.height = s.size;
+      if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+      renderer.shadowMap.type = s.soft ? THREE.PCFSoftShadowMap : THREE.BasicShadowMap;
+      renderer.shadowMap.needsUpdate = true;
+      console.log('[perf] shadows →', s.size + (s.soft ? ' soft' : ' hard'));
+    }
+  } catch (e) { return false; }
+  return true;
+}
 const ambient = new THREE.AmbientLight(0x8899bb, 0.45);
 scene.add(ambient);
 const hemi = new THREE.HemisphereLight(0xbfd8ff, 0x3a5a2a, 0.25);
@@ -477,7 +576,12 @@ function disposeGroup(grp) {
 }
 
 function makeCar(driver, track) {
-  const mesh = buildF1Car(driver.team, { helmet: driver.player ? 0xe10600 : 0xdddddd });
+  // only the player's car needs a steering wheel and hands — nobody ever
+  // sits in anyone else's cockpit
+  const mesh = buildF1Car(driver.team, {
+    helmet: driver.player ? 0xe10600 : 0xdddddd,
+    cockpit: !!driver.player,
+  });
   scene.add(mesh);
   const phys = new CarPhysics(track);
   const car = {
@@ -2173,6 +2277,7 @@ function frame(now) {
         if (composer) composer.setSize(window.innerWidth, window.innerHeight);
         console.log('[perf] pixel ratio →', pixelRatio.toFixed(2));
       } else if (ssaoPass && ssaoPass.enabled) { ssaoPass.enabled = false; console.log('[perf] SSAO off'); }
+      else if (degradeShadows()) { /* 2048 soft → 1024 soft → 1024 hard → off */ }
       else if (bloomPass && bloomPass.enabled) { bloomPass.enabled = false; console.log('[perf] bloom off'); }
     }
     fpsCount = 0; fpsT = 0;
@@ -2209,6 +2314,18 @@ function frame(now) {
     const w = c.mesh.userData.wheels;
     [w.fl,w.fr,w.rl,w.rr].forEach(wh => { wh.children.forEach((ch,ci) => { if (ci<2) ch.rotation.x += p.speed*0.05; }); });
     w.fl.rotation.y = p.steer*0.35; w.fr.rotation.y = p.steer*0.35;
+    // the painted blob is only needed when real shadow maps are off
+    if (c.mesh.userData.blobShadow) c.mesh.userData.blobShadow.visible = !sun.castShadow;
+    // cockpit rig: visible from the helmet cam only. Read-only mirror of the
+    // steer value the physics already produced — roughly 120° of wheel at
+    // full lock. Nothing here feeds back into the car's behaviour.
+    const rig = c.mesh.userData.cockpitRig;
+    if (rig) {
+      rig.visible = (G.camMode === 1);
+      // steer is positive for a LEFT turn here, and the driver views the wheel
+      // from behind, so the sign flips twice: right lock reads clockwise.
+      if (rig.visible) c.mesh.userData.steeringWheel.rotation.z = -p.steer * 2.1;
+    }
     if (c.mesh.userData.brakeLight) {
       c.mesh.userData.brakeLight.color.setHex(p.brake > 0.25 ? 0xff2a00 : 0x661111);
     }
@@ -2221,6 +2338,7 @@ function frame(now) {
   });
 
   updateCamera(rawDt);
+  if (G.player) updateSunRig(G.player.phys.x, G.player.phys.z);
   updateRain(rawDt);
   updateHUD();
   updatePitUI();
@@ -2679,5 +2797,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 29';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 34';
 })();

@@ -260,12 +260,24 @@ function skyTex(theme) {
       grd.addColorStop(0.75, '#232c52');
       grd.addColorStop(1, c);
     } else {
-      grd.addColorStop(0, '#4a86c8');
-      grd.addColorStop(0.5, c);
-      grd.addColorStop(0.72, '#d8e6f2');
+      // deeper blue overhead easing into a bright, hazy horizon band — this
+      // gradient is what gives distant scenery its sense of depth
+      grd.addColorStop(0, '#2f6bb0');
+      grd.addColorStop(0.28, '#4a86c8');
+      grd.addColorStop(0.55, c);
+      grd.addColorStop(0.70, '#cfe0f0');
+      grd.addColorStop(0.78, '#e8f0f7');
+      grd.addColorStop(0.88, '#dbe7f1');
       grd.addColorStop(1, c);
     }
     ctx.fillStyle = grd; ctx.fillRect(0,0,w,h);
+    if (!theme.night) {
+      // soft haze thickening toward the horizon line
+      const haze = ctx.createLinearGradient(0, h*0.6, 0, h*0.82);
+      haze.addColorStop(0, 'rgba(255,255,255,0)');
+      haze.addColorStop(1, 'rgba(255,255,255,0.30)');
+      ctx.fillStyle = haze; ctx.fillRect(0, h*0.6, w, h*0.24);
+    }
     if (theme.night) {
       for (let i=0;i<130;i++) {
         ctx.fillStyle = 'rgba(255,255,255,' + (0.3+Math.random()*0.7) + ')';
@@ -330,18 +342,84 @@ function groundTex(theme) {
         ctx.fillRect(Math.random()*w, Math.random()*h, 2, 2);
       }
     } else {
+      // real mown grass: cut stripes at two scales, blade noise, wear patches
       ctx.fillStyle = theme.g1; ctx.fillRect(0,0,w,h);
-      ctx.strokeStyle = theme.g2; ctx.lineWidth = 6;
-      for (let i=0;i<=4;i++) {
-        ctx.beginPath(); ctx.moveTo(i*w/4,0); ctx.lineTo(i*w/4,h); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(0,i*h/4); ctx.lineTo(w,i*h/4); ctx.stroke();
+      for (let i=0;i<16;i++) {
+        ctx.fillStyle = i%2 ? 'rgba(255,255,255,0.055)' : 'rgba(0,0,0,0.07)';
+        ctx.fillRect(0, i*h/16, w, h/16);
       }
-      for (let i=0;i<1800;i++) {
-        ctx.fillStyle = 'rgba(255,255,255,0.04)';
-        ctx.fillRect(Math.random()*w, Math.random()*h, 2, 2);
+      for (let i=0;i<4;i++) { // wider mower passes crossing the stripes
+        ctx.fillStyle = i%2 ? 'rgba(255,255,255,0.035)' : 'rgba(0,0,0,0.04)';
+        ctx.fillRect(i*w/4, 0, w/4, h);
+      }
+      ctx.strokeStyle = theme.g2; ctx.lineWidth = 1;
+      for (let i=0;i<9000;i++) {
+        const x = Math.random()*w, y = Math.random()*h;
+        ctx.globalAlpha = 0.10 + Math.random()*0.22;
+        ctx.beginPath(); ctx.moveTo(x,y);
+        ctx.lineTo(x + (Math.random()*2-1)*1.8, y - 1 - Math.random()*2.6);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      for (let i=0;i<40;i++) { // dry, worn patches
+        const x = Math.random()*w, y = Math.random()*h, r = 10 + Math.random()*34;
+        const p = ctx.createRadialGradient(x,y,1, x,y,r);
+        p.addColorStop(0, 'rgba(158,146,88,0.22)');
+        p.addColorStop(1, 'rgba(158,146,88,0)');
+        ctx.fillStyle = p;
+        ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill();
       }
     }
   }, 40, 40);
+}
+
+// Kerb wear: a greyscale scuff/dirt sheet multiplied over the red or white
+// base colour, so painted concrete reads as worn rather than flat plastic.
+// One texture serves both stripes — the material colour does the tinting.
+function kerbWearTex() {
+  return canvasTex(128, 128, (ctx,w,h) => {
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,w,h);
+    // grime settling into the joints at each end of the block
+    const edge = ctx.createLinearGradient(0,0,0,h);
+    edge.addColorStop(0,   'rgba(60,55,50,0.55)');
+    edge.addColorStop(0.14,'rgba(255,255,255,0)');
+    edge.addColorStop(0.86,'rgba(255,255,255,0)');
+    edge.addColorStop(1,   'rgba(60,55,50,0.55)');
+    ctx.fillStyle = edge; ctx.fillRect(0,0,w,h);
+    // rubber laid down on the inner half, where cars actually run over it
+    const rub = ctx.createLinearGradient(0,0,w,0);
+    rub.addColorStop(0,   'rgba(40,38,40,0.42)');
+    rub.addColorStop(0.45,'rgba(255,255,255,0)');
+    ctx.fillStyle = rub; ctx.fillRect(0,0,w,h);
+    // chipped paint and aggregate speckle
+    for (let i=0;i<420;i++) {
+      const g = 150 + Math.random()*90;
+      ctx.fillStyle = 'rgba('+(g|0)+','+(g|0)+','+((g*0.97)|0)+',' + (0.10+Math.random()*0.22) + ')';
+      const s = 1 + Math.random()*2.6;
+      ctx.fillRect(Math.random()*w, Math.random()*h, s, s);
+    }
+    for (let i=0;i<26;i++) { // knocks along the leading edge
+      ctx.fillStyle = 'rgba(90,86,80,0.5)';
+      ctx.fillRect(Math.random()*w*0.25, Math.random()*h, 2+Math.random()*5, 1+Math.random()*3);
+    }
+  });
+}
+
+// Roughness companion for the kerbs: worn/rubbered areas are smoother than
+// the raw concrete, which is what makes them glint at a low sun angle.
+function kerbRoughTex() {
+  return canvasTex(128, 128, (ctx,w,h) => {
+    ctx.fillStyle = '#b4b4b4'; ctx.fillRect(0,0,w,h); // rough concrete
+    const rub = ctx.createLinearGradient(0,0,w,0);
+    rub.addColorStop(0,   '#5a5a5a');   // polished by tyres
+    rub.addColorStop(0.5, '#b4b4b4');
+    ctx.fillStyle = rub; ctx.fillRect(0,0,w,h);
+    for (let i=0;i<600;i++) {
+      const g = 140 + Math.random()*80;
+      ctx.fillStyle = 'rgba('+(g|0)+','+(g|0)+','+(g|0)+',0.5)';
+      ctx.fillRect(Math.random()*w, Math.random()*h, 2, 2);
+    }
+  });
 }
 
 function windowTex(night) {
@@ -465,7 +543,9 @@ function buildTrackScene(track, scene, themeName) {
     gg.setAttribute('uv', new THREE.BufferAttribute(uv2,2));
     gg.setIndex(ia);
     upNormals(gg, (N+1)*2);
-    return new THREE.Mesh(gg, mat);
+    const m = new THREE.Mesh(gg, mat);
+    m.userData.ground = true; // receives shadow, doesn't cast one
+    return m;
   }
 
   // --- road (banked, elevated, PBR: albedo + normal + roughness) ---
@@ -489,20 +569,29 @@ function buildTrackScene(track, scene, themeName) {
   }
 
   // --- white edge lines ---
-  const lineMat = new THREE.MeshLambertMaterial({ color: 0xdddddd, side: THREE.DoubleSide });
+  const lineMat = new THREE.MeshStandardMaterial({
+    color: 0xdddddd, roughness: 0.62, metalness: 0.0, side: THREE.DoubleSide });
   grp.add(ribbon(hw-0.35, hw, lineMat, 0.075));
   grp.add(ribbon(-hw, -hw+0.35, lineMat, 0.075));
 
   // --- synthetic turf strip outside the white lines ---
-  const turfMat = new THREE.MeshLambertMaterial({ color: theme.turf, side: THREE.DoubleSide });
+  const turfMat = new THREE.MeshStandardMaterial({
+    color: theme.turf, roughness: 0.95, metalness: 0.0, side: THREE.DoubleSide });
   grp.add(ribbon(hw+0.02, hw+1.15, turfMat, 0.045));
   grp.add(ribbon(-hw-1.15, -hw-0.02, turfMat, 0.045));
 
   // --- kerbs (raised sawtooth blocks, merged: 2 draw calls total) ---
+  // Painted concrete: a shared wear sheet tinted red or white, plus a
+  // roughness map so the rubbered-in inner edge catches the sun.
   const kerbThresh = 0.008;
-  const kerbMatR = new THREE.MeshLambertMaterial({ color: 0xd63030, side: THREE.DoubleSide });
-  const kerbMatW = new THREE.MeshLambertMaterial({ color: 0xe8e8e8, side: THREE.DoubleSide });
-  const kerbAcc = { r: {v:[], i:[]}, w: {v:[], i:[]} };
+  const kerbWear = kerbWearTex(), kerbRough = kerbRoughTex();
+  const kerbMatR = new THREE.MeshStandardMaterial({
+    color: 0xd63030, map: kerbWear, roughnessMap: kerbRough,
+    roughness: 1.0, metalness: 0.0, side: THREE.DoubleSide });
+  const kerbMatW = new THREE.MeshStandardMaterial({
+    color: 0xe8e8e8, map: kerbWear, roughnessMap: kerbRough,
+    roughness: 1.0, metalness: 0.0, side: THREE.DoubleSide });
+  const kerbAcc = { r: {v:[], uv:[], i:[]}, w: {v:[], uv:[], i:[]} };
   let i = 0;
   const cornerCenters = [];
   const corners = [];
@@ -530,6 +619,9 @@ function buildTrackScene(track, scene, themeName) {
             track.px[k2]+track.nx[k2]*o1, H(k2,o1)+lift, track.pz[k2]+track.nz[k2]*o1,
             track.px[k2]+track.nx[k2]*o2, H(k2,o2)+0.05, track.pz[k2]+track.nz[k2]*o2
           );
+          // u runs across the kerb (0 = track edge, where the rubber is),
+          // v runs along it, one texture tile per block
+          acc.uv.push(0,0, 1,0, 0,1, 1,1);
           acc.i.push(b, b+1, b+2, b+1, b+3, b+2);
         }
       }
@@ -540,6 +632,7 @@ function buildTrackScene(track, scene, themeName) {
     if (!acc.i.length) return;
     const gg = new THREE.BufferGeometry();
     gg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(acc.v), 3));
+    gg.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(acc.uv), 2));
     gg.setIndex(acc.i);
     gg.computeVertexNormals();
     grp.add(new THREE.Mesh(gg, mat));
@@ -547,8 +640,9 @@ function buildTrackScene(track, scene, themeName) {
 
   // --- gravel traps outside significant corners (permanent circuits) ---
   if (!theme.buildings) {
-    const gravelMat = new THREE.MeshLambertMaterial({
-      color: theme.ground === 'sand' ? 0x94805a : 0xc2ad7e, side: THREE.DoubleSide });
+    const gravelMat = new THREE.MeshStandardMaterial({
+      color: theme.ground === 'sand' ? 0x94805a : 0xc2ad7e,
+      roughness: 1.0, metalness: 0.0, side: THREE.DoubleSide });
     corners.forEach(({start, end, side}) => {
       if (end - start < 14) return;
       const out = -side;
@@ -611,7 +705,7 @@ function buildTrackScene(track, scene, themeName) {
     const mkTex = { 150: boardTex('150', '#0a2a6b', '#fff'),
                     100: boardTex('100', '#0a2a6b', '#fff'),
                      50: boardTex('50',  '#0a2a6b', '#fff') };
-    const postMat = new THREE.MeshLambertMaterial({ color: 0x333944 });
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x333944, roughness: 0.45, metalness: 0.6 });
     const sampleM = track.length / N;
     corners.forEach(({start, end, side}) => {
       // peak curvature through the corner decides whether it needs braking
@@ -640,7 +734,7 @@ function buildTrackScene(track, scene, themeName) {
   if (track.drsZones && track.drsZones.length) {
     const lineMatY = new THREE.MeshBasicMaterial({ color: 0xffd12e });
     const lineMatG = new THREE.MeshBasicMaterial({ color: 0x2ecc71 });
-    const postMat  = new THREE.MeshLambertMaterial({ color: 0x333944 });
+    const postMat  = new THREE.MeshStandardMaterial({ color: 0x333944, roughness: 0.45, metalness: 0.6 });
     const texDet = boardTex('DRS DETECTION', '#141414', '#ffd12e');
     const texAct = boardTex('DRS', '#0a2a0a', '#2ecc71');
     const texEnd = boardTex('DRS END', '#141414', '#9fb0cc');
@@ -751,8 +845,11 @@ function buildTrackScene(track, scene, themeName) {
     gg.computeVertexNormals();
     const tx = groundTex(theme);
     tx.repeat.set(1,1);
-    grp.add(new THREE.Mesh(gg, new THREE.MeshLambertMaterial({
-      map: tx, polygonOffset: true, polygonOffsetFactor: 4, polygonOffsetUnits: 4 })));
+    const ground = new THREE.Mesh(gg, new THREE.MeshStandardMaterial({
+      map: tx, roughness: 0.98, metalness: 0.0,
+      polygonOffset: true, polygonOffsetFactor: 4, polygonOffsetUnits: 4 }));
+    ground.userData.ground = true;
+    grp.add(ground);
   }
 
   // --- barriers (striped) + catch fencing, following elevation ---
@@ -838,8 +935,8 @@ function buildTrackScene(track, scene, themeName) {
   // --- grandstands ---
   if (theme.stands) {
     const crowd = crowdTex();
-    const frameM = new THREE.MeshLambertMaterial({ color: 0x8a919e });
-    const crowdM = new THREE.MeshLambertMaterial({ map: crowd });
+    const frameM = new THREE.MeshStandardMaterial({ color: 0x8a919e, roughness: 0.42, metalness: 0.7 });
+    const crowdM = new THREE.MeshStandardMaterial({ map: crowd, roughness: 0.9, metalness: 0.0 });
     const spots = [{k:8, side:1}].concat(
       cornerCenters.filter((c,ii)=>ii%3===0).slice(0,5).map(k => ({
         k, side: Math.abs(track.curv[k])>0.004 ? (track.curv[k]>0?-1:1) : 1
@@ -874,7 +971,7 @@ function buildTrackScene(track, scene, themeName) {
       const y0 = terrainY(p.x, p.z);
       const pit = new THREE.Group();
       const body = new THREE.Mesh(new THREE.BoxGeometry(110, 9, 16),
-        new THREE.MeshLambertMaterial({ color: theme.night ? 0x2c3348 : 0xc8ccd4 }));
+        new THREE.MeshStandardMaterial({ color: theme.night ? 0x2c3348 : 0xc8ccd4, roughness: 0.62, metalness: 0.08 }));
       body.position.y = 4.5; pit.add(body);
       const sign = new THREE.Mesh(new THREE.BoxGeometry(30, 2.4, 0.3),
         new THREE.MeshBasicMaterial({ map: boardTex('PIT LANE', '#111', '#ffd12e') }));
@@ -903,7 +1000,7 @@ function buildTrackScene(track, scene, themeName) {
       const h = heights[0] + rand()*(heights[1]-heights[0]);
       const mat = theme.night
         ? new THREE.MeshBasicMaterial({ map: wtex })
-        : new THREE.MeshLambertMaterial({ map: wtex });
+        : new THREE.MeshStandardMaterial({ map: wtex, roughness: 0.16, metalness: 0.85 });
       const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, dpt), mat);
       b.position.set(x, terrainY(x,z) + h/2, z);
       b.rotation.y = Math.atan2(track.tx[k], track.tz[k]);
@@ -916,7 +1013,7 @@ function buildTrackScene(track, scene, themeName) {
     const count = Math.floor(track.length / 60);
     const poleGeo = new THREE.CylinderGeometry(0.16, 0.22, 13, 5);
     const headGeo = new THREE.BoxGeometry(2.6, 0.5, 0.9);
-    const poleMesh = new THREE.InstancedMesh(poleGeo, new THREE.MeshLambertMaterial({ color: 0x555c6e }), count);
+    const poleMesh = new THREE.InstancedMesh(poleGeo, new THREE.MeshStandardMaterial({ color: 0x555c6e, roughness: 0.45, metalness: 0.65 }), count);
     const headMesh = new THREE.InstancedMesh(headGeo, new THREE.MeshBasicMaterial({ color: 0xfff2c4 }), count);
     const m4 = new THREE.Matrix4();
     for (let li=0; li<count; li++) {
@@ -951,8 +1048,8 @@ function buildTrackScene(track, scene, themeName) {
     if (theme.tree === 'pine') {
       const coneG = new THREE.ConeGeometry(2.6, 8, 6);
       const trunkG = new THREE.CylinderGeometry(0.4, 0.55, 2.6, 5);
-      const cones = new THREE.InstancedMesh(coneG, new THREE.MeshLambertMaterial({ color: theme.night?0x0e2413:0x1d4d1e }), positions.length);
-      const trunks = new THREE.InstancedMesh(trunkG, new THREE.MeshLambertMaterial({ color: 0x4a3520 }), positions.length);
+      const cones = new THREE.InstancedMesh(coneG, new THREE.MeshStandardMaterial({ color: theme.night?0x0e2413:0x1d4d1e, roughness: 0.95, metalness: 0.0 }), positions.length);
+      const trunks = new THREE.InstancedMesh(trunkG, new THREE.MeshStandardMaterial({ color: 0x4a3520, roughness: 0.95, metalness: 0.0 }), positions.length);
       positions.forEach((p, ii) => {
         m4.makeScale(p[2],p[2],p[2]);
         m4.setPosition(p[0], p[3]+6*p[2], p[1]);
@@ -965,8 +1062,8 @@ function buildTrackScene(track, scene, themeName) {
     } else {
       const trunkG = new THREE.CylinderGeometry(0.25, 0.4, 7, 5);
       const crownG = new THREE.ConeGeometry(3.2, 1.6, 7);
-      const trunks = new THREE.InstancedMesh(trunkG, new THREE.MeshLambertMaterial({ color: 0x7a6244 }), positions.length);
-      const crowns = new THREE.InstancedMesh(crownG, new THREE.MeshLambertMaterial({ color: theme.night?0x14361c:0x2d7a35 }), positions.length);
+      const trunks = new THREE.InstancedMesh(trunkG, new THREE.MeshStandardMaterial({ color: 0x7a6244, roughness: 0.95, metalness: 0.0 }), positions.length);
+      const crowns = new THREE.InstancedMesh(crownG, new THREE.MeshStandardMaterial({ color: theme.night?0x14361c:0x2d7a35, roughness: 0.95, metalness: 0.0 }), positions.length);
       positions.forEach((p, ii) => {
         m4.makeScale(p[2],p[2],p[2]);
         m4.setPosition(p[0], p[3]+3.5*p[2], p[1]);
@@ -985,7 +1082,7 @@ function buildTrackScene(track, scene, themeName) {
     const y0 = track.py[4];
     const dirA = Math.atan2(track.tx[4], track.tz[4]);
     const gantry = new THREE.Group();
-    const mG = new THREE.MeshLambertMaterial({ color: 0x222228 });
+    const mG = new THREE.MeshStandardMaterial({ color: 0x222228, roughness: 0.82, metalness: 0.0 });
     const pl = new THREE.Mesh(new THREE.BoxGeometry(0.5,7,0.5), mG);
     pl.position.set(-hw-1.5,3.5,0); gantry.add(pl);
     const pr = pl.clone(); pr.position.set(hw+1.5,3.5,0); gantry.add(pr);
@@ -996,6 +1093,20 @@ function buildTrackScene(track, scene, themeName) {
     gantry.rotation.y = dirA;
     grp.add(gantry);
   }
+
+  // --- shadow flags ---
+  // Unlit meshes (sky dome, painted lines, signage) sit out of the shadow pass
+  // entirely. Ground surfaces receive but don't cast — the road casting onto
+  // itself is invisible and doubles the shadow-pass cost.
+  grp.traverse(o => {
+    if (!o.isMesh && !o.isInstancedMesh) return;
+    const m = Array.isArray(o.material) ? o.material[0] : o.material;
+    if (o.userData.noShadow || (m && m.isMeshBasicMaterial)) {
+      o.castShadow = false; o.receiveShadow = false; return;
+    }
+    o.receiveShadow = true;
+    o.castShadow = !o.userData.ground;
+  });
 
   scene.add(grp);
   return grp;
