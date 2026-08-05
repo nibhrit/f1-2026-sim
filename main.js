@@ -19,10 +19,13 @@ renderer.toneMappingExposure = 1.2;
 // Soft sun shadows. The map follows the player (see updateSunRig) because a
 // single frustum stretched over a 5 km circuit would be too coarse to see.
 // SHADOW_STEPS is the quality ladder the FPS watchdog walks down.
+// Starts at 1024, not 2048. Until Build 34 the post-processing chain was
+// silently dead, so the GPU budget everything was tuned against was fiction.
+// With composer + shadows both live, 2048 was too much to open with.
 const SHADOW_STEPS = [
-  { size: 2048, soft: true },
   { size: 1024, soft: true },
   { size: 1024, soft: false },
+  { size: 512,  soft: false },
   null, // off
 ];
 let shadowStep = 0;
@@ -66,7 +69,7 @@ const SpeedBlurShader = {
         col /= total;
       }
       // smooth falloff from the centre; inner radius closes in with speed
-      float inner = 0.62 - strength * 0.55;
+      float inner = 0.62 - strength * 1.4;
       float v = smoothstep(inner, 1.02, dist * 1.42);
       col.rgb *= 1.0 - v * vignette;
       gl_FragColor = col;
@@ -90,6 +93,11 @@ function setupComposer() {
         ssaoPass.kernelRadius = 0.34;
         ssaoPass.minDistance = 0.0006;
         ssaoPass.maxDistance = 0.06;
+        // OFF by default. SSAO re-renders the scene's depth and normals every
+        // frame — easily the most expensive pass here — and with real sun
+        // shadows now working it adds very little. The ladder can't turn it
+        // back on; it's opt-in only.
+        ssaoPass.enabled = false;
         c.addPass(ssaoPass);
       }
     } catch(e) { ssaoPass = null; console.warn('SSAO unavailable', e); }
@@ -142,10 +150,12 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87b5e0);
 scene.fog = new THREE.Fog(0x87b5e0, 500, 1600);
 
-// near plane at 0.25 m, not 1 m: the steering wheel sits ~0.48 m from the
-// driver's eye and would otherwise be clipped away entirely. FOV and position
-// logic are untouched.
-const camera = new THREE.PerspectiveCamera(72, window.innerWidth/window.innerHeight, 0.25, 3000);
+// Near plane is per-camera-mode (see updateCamera). The cockpit needs 0.25 m
+// so the steering wheel isn't clipped away; every other view keeps 1 m,
+// because at 0.25 m the T-cam starts drawing the airbox and engine cover that
+// sit right in front of it — a block filling the middle of the screen.
+const NEAR_COCKPIT = 0.25, NEAR_DEFAULT = 1;
+const camera = new THREE.PerspectiveCamera(72, window.innerWidth/window.innerHeight, NEAR_DEFAULT, 3000);
 
 // now that scene and camera exist, the post-processing chain can be built
 setupComposer();
@@ -161,7 +171,7 @@ const sun = new THREE.DirectionalLight(0xffffff, 0.85);
 sun.position.set(300, 500, 200);
 scene.add(sun);
 // the shadow frustum is a box that rides along with the car
-const SHADOW_HALF = 90;  // metres covered either side of the player
+const SHADOW_HALF = 55;  // metres covered either side of the player
 const SUN_OFFSET = { x: 120, y: 210, z: 80 }; // sun direction, in metres
 try {
   sun.castShadow = true;
@@ -2061,6 +2071,9 @@ function updateCamera(dt) {
     camera.lookAt(p.x, baseY + 1, p.z);
     camera.fov = 55;
   }
+  // only the cockpit gets the close near plane; the others keep 1 m so
+  // bodywork sitting right in front of the lens stays clipped out of frame
+  camera.near = (G.camMode === 1) ? NEAR_COCKPIT : NEAR_DEFAULT;
   camera.updateProjectionMatrix();
 }
 
@@ -2264,7 +2277,9 @@ function frame(now) {
   const rawDt = Math.min(0.1, (now - lastT)/1000);
   lastT = now;
   fpsCount++; fpsT += rawDt;
-  if (fpsT >= 5) {
+  // 2s window, not 5: on a struggling machine the old ladder took 15 seconds
+  // to walk down two steps, which felt like the game was just slow.
+  if (fpsT >= 2) {
     const fps = fpsCount/fpsT;
     console.log('[FPS]', fps.toFixed(1), G.state, G.cars.length + ' cars');
     // adaptive quality ladder (skyline-run style): pixel ratio first —
@@ -2382,8 +2397,10 @@ function frame(now) {
   }
 
   if (composer) {
+    // Speed blur: starts later (55 m/s ≈ 200 km/h, not 126) and peaks at a
+    // third of what it did. The old 0.35 smeared the whole frame.
     if (blurPass) blurPass.uniforms.strength.value = REDUCED_MOTION ? 0 :
-      Math.max(0, (G.player.phys.speed - 35) / 95) * 0.35;
+      Math.max(0, (G.player.phys.speed - 55) / 90) * 0.12;
     composer.render();
   } else {
     renderer.render(scene, camera);
@@ -2797,5 +2814,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 34';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 35';
 })();

@@ -875,8 +875,12 @@ function buildTrackScene(track, scene, themeName) {
     return new THREE.Mesh(gg, mat);
   }
   const barrierMat = new THREE.MeshBasicMaterial({ map: bTex, side: THREE.DoubleSide });
-  grp.add(wallStrip(boff, 0, 1.1, barrierMat, 0.35));
-  grp.add(wallStrip(-boff, 0, 1.1, barrierMat, 0.35));
+  // the barrier walls are the one piece of scenery whose shadow lands on the
+  // racing line, so they're the only tagged casters
+  const wallA = wallStrip(boff, 0, 1.1, barrierMat, 0.35);
+  const wallB = wallStrip(-boff, 0, 1.1, barrierMat, 0.35);
+  wallA.userData.caster = true; wallB.userData.caster = true;
+  grp.add(wallA); grp.add(wallB);
   const fenceTex = canvasTex(64, 64, (ctx,w,h) => {
     ctx.clearRect(0,0,w,h);
     ctx.strokeStyle = 'rgba(120,128,145,0.85)';
@@ -970,9 +974,10 @@ function buildTrackScene(track, scene, themeName) {
     if (clearOfTrack(p.x, p.z, boff+13)) {
       const y0 = terrainY(p.x, p.z);
       const pit = new THREE.Group();
+      // tall enough to shade the pit straight
       const body = new THREE.Mesh(new THREE.BoxGeometry(110, 9, 16),
         new THREE.MeshStandardMaterial({ color: theme.night ? 0x2c3348 : 0xc8ccd4, roughness: 0.62, metalness: 0.08 }));
-      body.position.y = 4.5; pit.add(body);
+      body.position.y = 4.5; body.userData.caster = true; pit.add(body);
       const sign = new THREE.Mesh(new THREE.BoxGeometry(30, 2.4, 0.3),
         new THREE.MeshBasicMaterial({ map: boardTex('PIT LANE', '#111', '#ffd12e') }));
       sign.position.set(0, 10.4, 8);
@@ -1098,6 +1103,11 @@ function buildTrackScene(track, scene, themeName) {
   // Unlit meshes (sky dome, painted lines, signage) sit out of the shadow pass
   // entirely. Ground surfaces receive but don't cast — the road casting onto
   // itself is invisible and doubles the shadow-pass cost.
+  // Scenery RECEIVES shadows but almost none of it casts. Trees, grandstands,
+  // fence posts and kerbs cast onto grass nobody is looking at, while costing
+  // a full extra pass over thousands of instances. Only the barrier walls and
+  // the pit building — the things that throw a shadow across the racing line —
+  // are tagged as casters.
   grp.traverse(o => {
     if (!o.isMesh && !o.isInstancedMesh) return;
     const m = Array.isArray(o.material) ? o.material[0] : o.material;
@@ -1105,7 +1115,7 @@ function buildTrackScene(track, scene, themeName) {
       o.castShadow = false; o.receiveShadow = false; return;
     }
     o.receiveShadow = true;
-    o.castShadow = !o.userData.ground;
+    o.castShadow = !!o.userData.caster;
   });
 
   scene.add(grp);

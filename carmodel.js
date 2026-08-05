@@ -323,8 +323,8 @@ function buildF1Car(teamKey, opts) {
   }
 
   // ---------- monocoque / tub (tapers toward nose) ----------
-  box(0.92, 0.30, 1.5, mLivery, 0, 0.44, -0.35);        // rear tub
-  box(0.74, 0.28, 1.3, mLivery, 0, 0.45, 0.75);         // mid tub
+  box(0.92, 0.30, 1.5, mLivery, 0, 0.44, -0.35).userData.caster = true;   // rear tub
+  box(0.74, 0.28, 1.3, mLivery, 0, 0.45, 0.75).userData.caster = true;    // mid tub
   box(0.66, 0.20, 0.7, mBody, 0, 0.43, 1.55);           // tub taper into the nose
   // cockpit surround
   box(0.62, 0.14, 0.9, mCarb, 0, 0.62, 0.35);
@@ -333,6 +333,7 @@ function buildF1Car(teamKey, opts) {
   const nose = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.24, 1.75, 10), mBody);
   nose.rotation.x = Math.PI/2;
   nose.position.set(0, 0.44, 2.05);
+  nose.userData.caster = true;
   g.add(nose);
   // red tip band (accent)
   const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.11, 0.34, 10), mAcc);
@@ -341,7 +342,7 @@ function buildF1Car(teamKey, opts) {
   g.add(tip);
 
   // ---------- front wing (4 elements + endplates) ----------
-  box(1.96, 0.035, 0.62, mCarb, 0, 0.13, 2.78);
+  box(1.96, 0.035, 0.62, mCarb, 0, 0.13, 2.78).userData.caster = true;  // front wing plane
   box(1.96, 0.03, 0.34, mCarb, 0, 0.21, 2.92, -0.28);
   box(1.96, 0.028, 0.24, mBody, 0, 0.30, 3.0, -0.42);
   box(1.90, 0.024, 0.16, mAcc,  0, 0.37, 3.06, -0.52);  // top flap, accent trim
@@ -362,6 +363,7 @@ function buildF1Car(teamKey, opts) {
   [[-1],[1]].forEach(([s]) => {
     const pod = box(0.46, 0.30, 1.55, mPod, s*0.62, 0.52, -0.35);
     pod.rotation.x = -0.06;
+    pod.userData.caster = true;
     box(0.40, 0.12, 1.1, mDark, s*0.60, 0.30, -0.30);       // undercut shadow
     box(0.30, 0.20, 0.10, mDark, s*0.62, 0.52, 0.44);       // radiator inlet mouth
     box(0.34, 0.05, 0.06, mCarb, s*0.62, 0.63, 0.47);       // inlet lip
@@ -371,13 +373,14 @@ function buildF1Car(teamKey, opts) {
   });
 
   // ---------- floor + diffuser ----------
-  box(1.9, 0.05, 3.3, mCarb, 0, 0.12, 0.0);
+  box(1.9, 0.05, 3.3, mCarb, 0, 0.12, 0.0).userData.caster = true;      // floor
   const diff = box(1.15, 0.22, 0.55, mCarb, 0, 0.24, -1.78, 0.45);
   box(1.05, 0.03, 0.5, mDark, 0, 0.15, -1.72);              // diffuser ceiling
 
   // ---------- engine cover + shark fin ----------
   const spine = box(0.36, 0.42, 1.75, mCover, 0, 0.72, -0.95);
   spine.rotation.x = 0.05;
+  spine.userData.caster = true;
   box(0.24, 0.26, 0.6, mCover, 0, 0.62, -1.86);             // cover taper to the rear
   box(0.05, 0.42, 1.05, mBody, 0, 1.02, -1.35);             // shark fin
   box(0.05, 0.08, 1.05, mAcc, 0, 1.25, -1.35);              // fin top accent
@@ -406,8 +409,9 @@ function buildF1Car(teamKey, opts) {
 
   // ---------- rear wing (2 elements, DRS gap, swan-neck) ----------
   const drsFlap = box(1.02, 0.04, 0.40, mCarb, 0, 1.02, -1.92, -0.18);
+  drsFlap.userData.caster = true;
   g.userData.drsFlap = drsFlap; // rotates open when DRS is active
-  box(1.02, 0.035, 0.26, mBody, 0, 0.90, -2.02, -0.30);
+  box(1.02, 0.035, 0.26, mBody, 0, 0.90, -2.02, -0.30).userData.caster = true; // rear wing
   box(0.05, 0.46, 0.55, mCarb, -0.50, 0.86, -1.94);
   box(0.05, 0.46, 0.55, mCarb,  0.50, 0.86, -1.94);
   box(0.052, 0.06, 0.55, mAcc, -0.50, 1.06, -1.94);
@@ -432,6 +436,7 @@ function buildF1Car(teamKey, opts) {
 
     const tyre = new THREE.Mesh(new THREE.CylinderGeometry(r, r, tw, 20), mTyre);
     tyre.rotation.z = Math.PI/2;
+    tyre.userData.caster = true;
     w.add(tyre);                                   // child 0 — spins
 
     const rimGrp = new THREE.Group();
@@ -488,16 +493,16 @@ function buildF1Car(teamKey, opts) {
     g.userData.blobShadow = shadow;
   }
 
-  // every solid part casts and receives; unlit bits (brake glow, compound
-  // ring, blob shadow) stay out of the shadow pass
+  // Shadow flags. Everything solid RECEIVES, but only the dozen parts that
+  // define the car's silhouette from the sun CAST. A 22-car grid at ~85 parts
+  // each would push ~1,800 meshes through the shadow pass every frame, and a
+  // wing mirror's shadow is invisible anyway. Tagged parts: tub, nose, floor,
+  // sidepods, engine cover, both wings and the four tyres.
   g.traverse(o => {
     if (!o.isMesh) return;
     const m = Array.isArray(o.material) ? o.material[0] : o.material;
-    if (o.userData.noShadow || (m && m.isMeshBasicMaterial)) {
-      o.castShadow = false; o.receiveShadow = false; return;
-    }
-    o.castShadow = true;
-    o.receiveShadow = true;
+    o.castShadow = !!o.userData.caster && !o.userData.noShadow;
+    o.receiveShadow = !(o.userData.noShadow || (m && m.isMeshBasicMaterial));
   });
 
   // ---------- cockpit rig (player car only) ----------
