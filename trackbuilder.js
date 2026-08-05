@@ -938,7 +938,7 @@ function buildTrackScene(track, scene, themeName) {
 
 // grid slot: returns {x,z,angle} for grid position i (0 = pole)
 function gridSlot(track, i) {
-  const gap = 8;
+  const gap = 10;
   const backIdx = (idx, meters) => {
     let k = idx, remaining = meters;
     while (remaining > 0) {
@@ -948,9 +948,12 @@ function gridSlot(track, i) {
     }
     return k;
   };
+  // proper staggered grid: alternate sides of the track, rows offset so the
+  // second car of a row sits alongside the gap, not nose-to-tail
   const row = Math.floor(i/2);
-  const sideOff = (i%2===0) ? -track.width*0.22 : track.width*0.22;
-  const stagger = (i%2===0) ? 0 : gap*0.5;
+  const lat = Math.max(3.2, track.width * 0.30);
+  const sideOff = (i%2===0) ? -lat : lat;
+  const stagger = (i%2===0) ? 0 : gap*0.55;
   const k = backIdx(0, 15 + row*gap + stagger);
   const p = track.posAt(k, sideOff);
   return { x:p.x, z:p.z, angle: Math.atan2(track.tx[k], track.tz[k]), idx:k };

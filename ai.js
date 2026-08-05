@@ -14,6 +14,7 @@ class AIDriver {
     // Base leaves headroom so difficulty ×0.94..×1.06 spans ~87%..~98.5%.
     this.paceMul = 0.80 + driver.skill * 0.13;
     this.diff = 1; // difficulty multiplier (main.js sets it from G.difficulty)
+    this.launchT = 0; // >0 = launching off the grid, ignore the follow limiter
     this.laneOffset = (Math.random()*2-1) * 1.2;
     this.targetLane = this.laneOffset;
     this.avoidTimer = 0;
@@ -66,6 +67,7 @@ class AIDriver {
     // stuck recovery
     this.stuck = (car.speed < 2.5) ? (this.stuck||0) + dt : 0;
     if (this.stuck > 2.5) { car.resetToTrack(); this.stuck = 0; }
+    if (this.launchT > 0) this.launchT -= dt;
     const cs = t._cornerSpeed;
     const N = t.n;
     const idx = car.trackIdx;
@@ -135,8 +137,15 @@ class AIDriver {
       const otherLat = t.lateral(ahead.x, ahead.z, ahead.trackIdx);
       const myLat = t.lateral(car.x, car.z, car.trackIdx);
       // hold station to avoid ramming when directly behind
-      if (aheadGap < 18 && ahead.speed < v + 6 && Math.abs(otherLat - myLat) < 2.6) {
-        const follow = Math.max(0, ahead.speed + (aheadGap - 4.5) * 2.2);
+      // Off the line the whole grid is queued a few metres apart, so the normal
+      // follow limiter would pin everyone to walking pace. During the launch we
+      // only back off if we're genuinely about to hit the car ahead.
+      const launching = this.launchT > 0;
+      const followRange = launching ? 7 : 18;
+      if (aheadGap < followRange && ahead.speed < v + 6 && Math.abs(otherLat - myLat) < 2.6) {
+        const follow = launching
+          ? Math.max(6, ahead.speed + (aheadGap - 3) * 4.5)
+          : Math.max(0, ahead.speed + (aheadGap - 4.5) * 2.2);
         vAllow = Math.min(vAllow, follow);
       }
       // attacker: faster and close → make a move

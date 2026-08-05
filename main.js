@@ -779,6 +779,10 @@ function startSession() {
       const slot = gridSlot(G.track, i);
       car.phys.placeAt(slot.x, slot.z, slot.angle);
       car.phys.lap = 0; // becomes 1 at start-line cross
+      // race progress must reflect the grid slot, otherwise every car reads as
+      // level with every other: the field would order randomly and each driver
+      // would think a rival was right on its nose and lift off the line
+      car.phys.totalDist = -(G.track.length - G.track.dist[slot.idx]);
       // AI starting compound: wet-weather tyres if the track's wet, else the
       // usual 40/40/20 soft/medium/hard slick strategy with a pit tyre differing
       if (!d.player) {
@@ -1187,6 +1191,8 @@ function endQualify() {
   if (G.weekend) {
     // this order becomes the race grid
     G.gpGrid = rows.map(r => r.id);
+    // qualifying is done — bank the grid so quitting here resumes at the race
+    if (G.seasonActive) saveSeasonProgress('race');
     const myPos = rows.findIndex(r => r.me) + 1;
     showBanner('QUALIFIED P' + myPos, 2.5, myPos<=3 ? '#a640ff' : '#fff');
   }
@@ -1205,6 +1211,7 @@ function skipQualify() {
   const slot = Math.floor(Math.random()*22); // random P1..P22
   rows.splice(slot, 0, { id:'VER', name:'Max Verstappen', team:'redbull', time:null, me:true });
   G.gpGrid = rows.map(r => r.id);
+  if (G.seasonActive) saveSeasonProgress('race');  // grid banked
   const myPos = slot + 1;
   showBanner('QUALIFYING SKIPPED — P' + myPos, 2.5, '#ffd12e');
   showResults('Qualifying (P' + myPos + ' - RANDOM GRID) — ' + G.trackDef.gp,
@@ -2124,7 +2131,10 @@ function updateCountdown(dt) {
       G.countdown = null;
       G.raceStarted = true;
       G.simTime = 0;
-      G.cars.forEach(c => { c.curLapStart = 0; c._lapStart = 0; });
+      G.cars.forEach(c => {
+        c.curLapStart = 0; c._lapStart = 0;
+        if (c.ai) c.ai.launchT = 6;   // everyone launches hard off the line
+      });
       AUDIO.beep(880, 0.5, 0.16);
       showBanner("LIGHTS OUT AND AWAY WE GO!", 2.2, '#2ecc71');
     }
@@ -2591,5 +2601,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 26';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 27';
 })();
