@@ -725,6 +725,8 @@ function startSession() {
 
   G.simTime = 0;
   G.raceStarted = false;
+  G.playerDrsState = 0;
+  G.drsInfo = '';
   G.countdown = null;
   G.firstFinish = null;
   G.bestCheckpoints = null;
@@ -1788,9 +1790,15 @@ function updateHUD() {
     const te = $('tyre-temp');
     te.textContent = tempC + '°';
     te.style.color = T < 0.45 ? '#6fb0ff' : T < 0.92 ? '#2ecc71' : '#ff5c5c';
-    // DRS badge
+    // DRS badge + detection readout
     const db = $('drs-badge');
-    db.className = G.playerDrsState === 2 ? 'open' : (G.playerDrsState ? 'zone' : '');
+    const s = G.playerDrsState;
+    db.className = s === 2 ? 'open' : (s === 1 || s === 1.5) ? 'armed' : (s ? 'zone' : '');
+    const di = $('drs-info');
+    if (di) {
+      di.textContent = G.drsInfo || '';
+      di.className = s === 2 ? 'open' : (s === 1 || s === 1.5) ? 'armed' : '';
+    }
   }
   $('cur-time').textContent = G.raceStarted ? fmtTime(G.simTime - p.curLapStart) : '--:--.---';
   if (G.mode === 'qualify') {
@@ -2406,42 +2414,110 @@ function updatePitUI() {
 }
 
 // ---------- DRS ----------
-// Free in every zone during practice/qualifying (like real F1); in races it
-// needs lap ≥ 2 and a car ahead within ~1 second. Auto-opens on full throttle
-// in the zone, snaps shut on braking or heavy steering.
+// FIA procedure, as close as this sim can get:
+//   • Each zone has a DETECTION point and, further on, an ACTIVATION line.
+//   • The gap to the car ahead is measured ONCE, at detection. Within 1.000s
+//     you are armed for that zone — and you stay armed even if you complete
+//     the pass, because the measurement already happened.
+//   • The wing opens at the activation line and closes the moment you first
+//     touch the brakes (or at the end of the zone). Nothing else shuts it.
+//   • Race: enabled from lap 2 (one lap after the start). Practice and
+//     qualifying: free in every zone, no gap requirement.
+//   • Heavy rain: the race director disables DRS entirely.
+const DRS_GAP = 1.0;      // seconds at the detection point
+const DRS_DET_WINDOW = 24; // metres of road over which detection is sampled
+
 function inSpan(d, a, b, L) {
   if (a <= b) return d >= a && d <= b;
   return d >= a || d <= b; // span wraps the start/finish line
 }
 
+// signed distance from d to target going forwards around the lap
+function fwdDist(d, target, L) {
+  let g = target - d;
+  while (g < 0) g += L;
+  return g;
+}
+
+// gap in seconds to the nearest car ahead on the road
+function gapAheadSec(c) {
+  const p = c.phys;
+  let best = Infinity;
+  for (const o of G.cars) {
+    if (o === c || o.finished || o.pitState) continue;
+    const gap = o.phys.totalDist - p.totalDist;
+    if (gap > 0 && gap < best) best = gap;
+  }
+  if (!isFinite(best)) return Infinity;
+  return best / Math.max(14, p.speed); // metres → seconds at current pace
+}
+
 function updateDRS() {
   const t = G.track;
   if (!t || !t.drsZones || !t.drsZones.length || !G.raceStarted) return;
+  const L = t.length;
   const raceMode = G.mode === 'race';
+  const rainedOff = G.weather && G.weather.wetness > 0.55; // race director call
   for (const c of G.cars) {
     const p = c.phys;
-    if (c.finished || c.pitState) { p.drsOpen = false; continue; }
-    let zone = null;
-    for (const z of t.drsZones) {
-      if (inSpan(p.lapDist, z.start, z.end, t.length)) { zone = z; break; }
+    if (c.finished || c.pitState || rainedOff) {
+      p.drsOpen = false; c.drsArmed = -1; c.drsShut = -1;
+      if (c.driver.player) { G.playerDrsState = 0; G.drsInfo = rainedOff ? 'DRS DISABLED — WET' : ''; }
+      continue;
     }
-    let eligible = !!zone;
-    if (eligible && raceMode) {
-      if (p.lap < 2) eligible = false;
-      else {
-        // within ~1s of a car ahead
-        eligible = false;
-        for (const o of G.cars) {
-          if (o === c || o.finished) continue;
-          const gap = o.phys.totalDist - p.totalDist;
-          if (gap > 0 && gap < Math.max(18, p.speed * 1.05)) { eligible = true; break; }
+    if (c.drsArmed == null) { c.drsArmed = -1; c.drsShut = -1; }
+
+    // ---- detection ----
+    let inDet = -1;
+    t.drsZones.forEach((z, zi) => {
+      if (inSpan(p.lapDist, z.det, (z.det + DRS_DET_WINDOW) % L, L)) inDet = zi;
+    });
+    if (inDet >= 0) {
+      let ok = true;
+      if (raceMode) ok = p.lap >= 2 && gapAheadSec(c) <= DRS_GAP;
+      c.drsArmed = ok ? inDet : -1;
+      if (ok) c.drsShut = -1;
+    }
+
+    // ---- activation ----
+    let zi = -1;
+    t.drsZones.forEach((z, i) => { if (inSpan(p.lapDist, z.start, z.end, L)) zi = i; });
+    if (zi < 0) {
+      p.drsOpen = false;
+    } else {
+      if (p.brake > 0.05) c.drsShut = zi;      // first brake application closes it
+      p.drsOpen = (c.drsArmed === zi) && c.drsShut !== zi && p.speed > 15;
+    }
+
+    // ---- player HUD state ----
+    if (c.driver.player) {
+      if (zi >= 0) {
+        if (p.drsOpen) { G.playerDrsState = 2; G.drsInfo = 'DRS ACTIVE'; }
+        else if (c.drsShut === zi) { G.playerDrsState = 0.5; G.drsInfo = 'DRS CLOSED — BRAKED'; }
+        else { G.playerDrsState = 0.5; G.drsInfo = 'NO DRS THIS ZONE'; }
+      } else {
+        // nearest detection point ahead, with the live gap so you can see
+        // whether you'll be inside the second when you get there
+        let bestD = Infinity, armedFor = -1;
+        t.drsZones.forEach((z, i) => {
+          const d = fwdDist(p.lapDist, z.det, L);
+          if (d < bestD) { bestD = d; armedFor = i; }
+        });
+        const g = gapAheadSec(c);
+        const free = !raceMode;
+        if (c.drsArmed >= 0 && c.drsArmed !== armedFor) {
+          G.playerDrsState = 1;                  // detection passed, zone coming
+          G.drsInfo = 'DRS ARMED';
+        } else if (bestD < 900) {
+          G.playerDrsState = 0.5;
+          G.drsInfo = free
+            ? 'DETECTION ' + Math.round(bestD) + 'm'
+            : 'DETECTION ' + Math.round(bestD) + 'm · GAP ' + (isFinite(g) ? g.toFixed(2) + 's' : '--');
+        } else {
+          G.playerDrsState = 0;
+          G.drsInfo = '';
         }
       }
-    }
-    p.drsOpen = !!(zone && eligible && p.throttle > 0.85 && p.brake === 0
-      && Math.abs(p.steer) < 0.5 && p.speed > 28);
-    if (c.driver.player) {
-      G.playerDrsState = !zone ? 0 : (p.drsOpen ? 2 : (eligible ? 1 : 0.5));
     }
   }
 }
@@ -2509,6 +2585,11 @@ function stepSim(dt) {
       continue;
     }
     let inp;
+    // Before lights out nobody gets to think. Running the AI here used to trip
+    // its stuck-recovery (2.5s below 2.5 km/h) during the countdown, which called
+    // resetToTrack() and snapped every car onto the centreline — the staggered
+    // grid collapsed into a single queue.
+    if (!started) { c.phys.speed = 0; c.phys.step(dt, { throttle:0, brake:0, steer:0 }); continue; }
     if (c.pitState) inp = pitInput(c, dt); // pit machine overrides all input
     else if (c.driver.player) {
       if (G.autopilot) {
@@ -2517,9 +2598,6 @@ function stepSim(dt) {
       } else inp = playerInput();
     }
     else inp = c.ai.compute(dt, physList);
-    // hold cars stationary on the grid until lights out — no throttle/brake so
-    // the brake-from-standstill reverse can't engage during the countdown
-    if (!started) { inp = { throttle: 0, brake: 0, steer: 0 }; c.phys.speed = 0; }
     c.phys.step(dt, inp);
 
     // pit exit: crossing the line rejoins the race on fresh tyres. The compound
@@ -2601,5 +2679,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 27';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 29';
 })();

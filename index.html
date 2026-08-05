@@ -65,7 +65,13 @@
   #drs-badge { display:inline-block; margin-right:8px; padding:2px 10px; border-radius:4px; font-size:14px; font-weight:900;
     letter-spacing:2px; border:2px solid #3a4664; color:#3a4664; visibility:hidden; vertical-align:middle; }
   #drs-badge.zone { visibility:visible; border-color:#8fa3c8; color:#8fa3c8; }
+  #drs-badge.armed { visibility:visible; border-color:#ffd12e; color:#ffd12e; background:rgba(255,209,46,.12); }
   #drs-badge.open { visibility:visible; border-color:#2ecc71; color:#2ecc71; background:rgba(46,204,113,.12); }
+  /* DRS detection readout: distance to the next detection point + live gap */
+  #drs-info { font-size:11px; font-weight:800; letter-spacing:1.5px; color:#8fa3c8;
+    min-height:14px; font-variant-numeric:tabular-nums; margin-bottom:2px; }
+  #drs-info.armed { color:#ffd12e; }
+  #drs-info.open { color:#2ecc71; }
 
   /* tyre status row in speedo */
   #tyre-row { display:flex; align-items:center; gap:8px; margin-top:8px; justify-content:flex-end; }
@@ -357,6 +363,7 @@
     <div id="weather-bar"><div id="weather-fill"></div></div>
   </div>
   <div class="hud-panel" id="speedo">
+    <div id="drs-info"></div>
     <div><span id="drs-badge">DRS</span><span id="speed-val">0</span> <span id="speed-unit">KM/H</span></div>
     <div id="gear-val">N</div>
     <div id="rpm-bar"><div id="rpm-fill"></div></div>
@@ -431,13 +438,13 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/SSAOPass.js"></script>
-<script src="trackdata.js?v=27"></script>
-<script src="tracks.js?v=27"></script>
-<script src="audio.js?v=27"></script>
-<script src="carmodel.js?v=27"></script>
-<script src="trackbuilder.js?v=27"></script>
-<script src="physics.js?v=27"></script>
-<script src="ai.js?v=27"></script>
-<script src="main.js?v=27"></script>
+<script src="trackdata.js?v=29"></script>
+<script src="tracks.js?v=29"></script>
+<script src="audio.js?v=29"></script>
+<script src="carmodel.js?v=29"></script>
+<script src="trackbuilder.js?v=29"></script>
+<script src="physics.js?v=29"></script>
+<script src="ai.js?v=29"></script>
+<script src="main.js?v=29"></script>
 </body>
 </html>

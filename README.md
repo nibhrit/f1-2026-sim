@@ -15,8 +15,16 @@ and an FIA-style stewards system.
 
 **Circuits** — all 24 rounds of the 2026 calendar built from real centreline
 data (TUM racetrack database + OpenStreetMap), including Madrid's new Madring.
-Correct direction of travel, elevation, banking, kerbs, gravel traps and
-per-track DRS zone counts matching the real layouts.
+Correct direction of travel, elevation, banking, kerbs, gravel traps,
+150/100/50 m braking boards at every braking corner, and per-track DRS zone
+counts matching the real layouts.
+
+**DRS** — FIA procedure. Every zone has a painted detection line and, further
+down the straight, an activation line. The gap is measured once, at detection:
+inside 1.000s you are armed for that zone and stay armed even if you complete
+the pass. The wing opens at the activation line and closes only when you first
+touch the brakes, or at the end of the zone. Enabled from lap 2 of a race, free
+in practice and qualifying, and switched off entirely in heavy rain.
 
 **Sessions**
 - **Practice** — unlimited running

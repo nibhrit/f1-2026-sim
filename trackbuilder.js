@@ -138,6 +138,15 @@ class TrackData {
     return (x-this.px[idx])*this.nx[idx] + (z-this.pz[idx])*this.nz[idx];
   }
 
+  // nearest sample index for a lap distance in metres (wraps)
+  idxAtDist(d) {
+    const L = this.length;
+    d = ((d % L) + L) % L;
+    let lo = 0, hi = this.n - 1;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (this.dist[m] < d) lo = m + 1; else hi = m; }
+    return lo;
+  }
+
   posAt(idx, lat) {
     return {
       x: this.px[idx] + this.nx[idx]*lat,
@@ -182,11 +191,21 @@ class TrackData {
     runs.sort((a, b) => b.len - a.len);
     const picked = runs.slice(0, Math.max(1, count));
     picked.sort((a, b) => a.d0 - b.d0);
-    this.drsZones = picked.map(r => ({
-      det: ((r.d0 - 80) % L + L) % L,               // detection ~80m before the straight
-      start: (r.d0 + Math.min(120, r.len * 0.25)) % L, // activation a little down the straight
-      end: r.d1 % L,
-    }));
+    // FIA layout: a DETECTION point sits before the corner leading onto the
+    // straight, then the ACTIVATION line a little way down the straight. The
+    // gap is measured once, at detection — what happens afterwards (including
+    // completing the pass) does not close the wing.
+    this.drsZones = picked.map(r => {
+      const det = ((r.d0 - 150) % L + L) % L;
+      const start = (r.d0 + Math.min(120, r.len * 0.25)) % L;
+      const end = r.d1 % L;
+      return {
+        det, start, end,
+        detIdx: this.idxAtDist(det),
+        startIdx: this.idxAtDist(start),
+        endIdx: this.idxAtDist(end),
+      };
+    });
   }
 
   // smooth surface height at an exact world position: interpolates
@@ -584,28 +603,75 @@ function buildTrackScene(track, scene, themeName) {
     });
   }
 
-  // --- brake marker boards (100 / 50) ---
+  // --- brake marker boards: 150 / 100 / 50 m before EVERY braking corner ---
+  // Real circuits carry white-on-blue distance boards on the outside of the
+  // corner. Only proper braking corners get them — long open sweepers that are
+  // taken flat have none, same as the real thing.
   {
-    const mk100 = boardTex('100', '#0a2a6b', '#fff');
-    const mk50 = boardTex('50', '#0a2a6b', '#fff');
+    const mkTex = { 150: boardTex('150', '#0a2a6b', '#fff'),
+                    100: boardTex('100', '#0a2a6b', '#fff'),
+                     50: boardTex('50',  '#0a2a6b', '#fff') };
+    const postMat = new THREE.MeshLambertMaterial({ color: 0x333944 });
     const sampleM = track.length / N;
-    corners.forEach(({start, side}, ci) => {
-      if (ci % 2) return;
-      [[100, mk100],[50, mk50]].forEach(([m, tex]) => {
+    corners.forEach(({start, end, side}) => {
+      // peak curvature through the corner decides whether it needs braking
+      let peak = 0;
+      for (let s = start; s < end; s++) peak = Math.max(peak, Math.abs(track.curv[s % N]));
+      if (peak < 0.011) return; // fast kink — no boards
+      [150, 100, 50].forEach(m => {
         const k = ((start - Math.round(m / sampleM)) % N + N) % N;
-        if (Math.abs(track.curv[k]) > 0.004) return;
         const p = track.posAt(k, -side*(boff - 0.9));
         const y0 = track.py[k];
-        const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.6, 0.12),
-          new THREE.MeshLambertMaterial({ color: 0x333944 }));
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.6, 0.12), postMat);
         post.position.set(p.x, y0+0.8, p.z);
         grp.add(post);
         const bd = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.9, 0.08),
-          new THREE.MeshBasicMaterial({ map: tex }));
+          new THREE.MeshBasicMaterial({ map: mkTex[m] }));
         bd.position.set(p.x, y0+2.0, p.z);
         bd.rotation.y = Math.atan2(track.tx[k], track.tz[k]);
         grp.add(bd);
       });
+    });
+  }
+
+  // --- DRS detection / activation signage ---
+  // A painted line across the road plus a gantry board on both sides, so the
+  // detection point is something you can actually aim for on the lap.
+  if (track.drsZones && track.drsZones.length) {
+    const lineMatY = new THREE.MeshBasicMaterial({ color: 0xffd12e });
+    const lineMatG = new THREE.MeshBasicMaterial({ color: 0x2ecc71 });
+    const postMat  = new THREE.MeshLambertMaterial({ color: 0x333944 });
+    const texDet = boardTex('DRS DETECTION', '#141414', '#ffd12e');
+    const texAct = boardTex('DRS', '#0a2a0a', '#2ecc71');
+    const texEnd = boardTex('DRS END', '#141414', '#9fb0cc');
+    const mark = (k, mat, tex, width) => {
+      const ang = Math.atan2(track.tx[k], track.tz[k]);
+      // road line
+      const ln = new THREE.Mesh(new THREE.PlaneGeometry(track.width, 0.55), mat);
+      ln.rotation.order = 'YXZ';   // same convention as the start/finish squares
+      ln.rotation.y = ang;
+      ln.rotation.x = -Math.PI/2;
+      const c = track.posAt(k, 0);
+      ln.position.set(c.x, H(k, 0) + 0.035, c.z);
+      grp.add(ln);
+      // boards either side
+      [1, -1].forEach(sd => {
+        const p = track.posAt(k, sd*(boff - 0.8));
+        const y0 = track.py[k];
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, 2.2, 0.14), postMat);
+        post.position.set(p.x, y0+1.1, p.z);
+        grp.add(post);
+        const bd = new THREE.Mesh(new THREE.BoxGeometry(width, 0.85, 0.08),
+          new THREE.MeshBasicMaterial({ map: tex }));
+        bd.position.set(p.x, y0+2.7, p.z);
+        bd.rotation.y = ang;
+        grp.add(bd);
+      });
+    };
+    track.drsZones.forEach(z => {
+      mark(z.detIdx, lineMatY, texDet, 5.2);
+      mark(z.startIdx, lineMatG, texAct, 2.6);
+      mark(z.endIdx, lineMatY, texEnd, 3.4);
     });
   }
 
@@ -751,7 +817,6 @@ function buildTrackScene(track, scene, themeName) {
       boardTex('APEX FUEL', '#0d4d2a', '#ffd12e'),
       boardTex('VELOCITA', '#222', '#4ad1ff'),
       boardTex('TURBO+', '#3a0d4d', '#ff7ad1'),
-      boardTex('DRS ZONE', '#0a0a0a', '#2ecc71'),
     ];
     let bi = 0;
     const stepB = Math.floor(N / (track.length/170));
