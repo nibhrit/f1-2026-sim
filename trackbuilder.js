@@ -705,7 +705,7 @@ function buildTrackScene(track, scene, themeName) {
     const mkTex = { 150: boardTex('150', '#0a2a6b', '#fff'),
                     100: boardTex('100', '#0a2a6b', '#fff'),
                      50: boardTex('50',  '#0a2a6b', '#fff') };
-    const postMat = new THREE.MeshStandardMaterial({ color: 0x333944, roughness: 0.45, metalness: 0.6 });
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x3c4350, roughness: 0.55, metalness: 0.25 });
     const sampleM = track.length / N;
     corners.forEach(({start, end, side}) => {
       // peak curvature through the corner decides whether it needs braking
@@ -734,7 +734,7 @@ function buildTrackScene(track, scene, themeName) {
   if (track.drsZones && track.drsZones.length) {
     const lineMatY = new THREE.MeshBasicMaterial({ color: 0xffd12e });
     const lineMatG = new THREE.MeshBasicMaterial({ color: 0x2ecc71 });
-    const postMat  = new THREE.MeshStandardMaterial({ color: 0x333944, roughness: 0.45, metalness: 0.6 });
+    const postMat  = new THREE.MeshStandardMaterial({ color: 0x3c4350, roughness: 0.55, metalness: 0.25 });
     const texDet = boardTex('DRS DETECTION', '#141414', '#ffd12e');
     const texAct = boardTex('DRS', '#0a2a0a', '#2ecc71');
     const texEnd = boardTex('DRS END', '#141414', '#9fb0cc');
@@ -939,7 +939,7 @@ function buildTrackScene(track, scene, themeName) {
   // --- grandstands ---
   if (theme.stands) {
     const crowd = crowdTex();
-    const frameM = new THREE.MeshStandardMaterial({ color: 0x8a919e, roughness: 0.42, metalness: 0.7 });
+    const frameM = new THREE.MeshStandardMaterial({ color: 0x9aa2b0, roughness: 0.52, metalness: 0.30 });
     const crowdM = new THREE.MeshStandardMaterial({ map: crowd, roughness: 0.9, metalness: 0.0 });
     const spots = [{k:8, side:1}].concat(
       cornerCenters.filter((c,ii)=>ii%3===0).slice(0,5).map(k => ({
@@ -1005,7 +1005,7 @@ function buildTrackScene(track, scene, themeName) {
       const h = heights[0] + rand()*(heights[1]-heights[0]);
       const mat = theme.night
         ? new THREE.MeshBasicMaterial({ map: wtex })
-        : new THREE.MeshStandardMaterial({ map: wtex, roughness: 0.16, metalness: 0.85 });
+        : new THREE.MeshStandardMaterial({ map: wtex, roughness: 0.22, metalness: 0.55 });
       const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, dpt), mat);
       b.position.set(x, terrainY(x,z) + h/2, z);
       b.rotation.y = Math.atan2(track.tx[k], track.tz[k]);
@@ -1018,7 +1018,7 @@ function buildTrackScene(track, scene, themeName) {
     const count = Math.floor(track.length / 60);
     const poleGeo = new THREE.CylinderGeometry(0.16, 0.22, 13, 5);
     const headGeo = new THREE.BoxGeometry(2.6, 0.5, 0.9);
-    const poleMesh = new THREE.InstancedMesh(poleGeo, new THREE.MeshStandardMaterial({ color: 0x555c6e, roughness: 0.45, metalness: 0.65 }), count);
+    const poleMesh = new THREE.InstancedMesh(poleGeo, new THREE.MeshStandardMaterial({ color: 0x646c80, roughness: 0.55, metalness: 0.25 }), count);
     const headMesh = new THREE.InstancedMesh(headGeo, new THREE.MeshBasicMaterial({ color: 0xfff2c4 }), count);
     const m4 = new THREE.Matrix4();
     for (let li=0; li<count; li++) {

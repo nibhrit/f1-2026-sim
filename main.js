@@ -43,7 +43,9 @@ const SpeedBlurShader = {
   uniforms: {
     tDiffuse: { value: null },
     strength: { value: 0 },
-    vignette: { value: 0.42 },   // base darkening at the corners
+    // 0.42 was a straight port of the old CSS overlay, but that sat on top of
+    // an untone-mapped image. Through the composer it reads much heavier.
+    vignette: { value: 0.24 },   // base darkening at the corners
   },
   vertexShader: `
     varying vec2 vUv;
@@ -231,9 +233,15 @@ function applyTheme(themeName) {
   scene.background = new THREE.Color(th.sky);
   scene.fog = new THREE.Fog(th.sky, th.fog[0], th.fog[1]);
   sun.intensity = th.sun;
-  ambient.intensity = th.amb;
+  // The light levels were set when everything was MeshLambertMaterial, which
+  // is far more forgiving than PBR: a rough Standard surface under a 0.20 sun
+  // reads much darker than the same Lambert one. Night circuits (Bahrain,
+  // Singapore, Vegas, Qatar) were hit hardest, so they get the biggest lift.
+  const lift = th.night ? 1.55 : 1.15;
+  ambient.intensity = th.amb * lift;
   ambient.color.setHex(th.ambC);
-  hemi.intensity = th.night ? 0.1 : 0.25;
+  hemi.intensity = th.night ? 0.30 : 0.32;
+  renderer.toneMappingExposure = th.night ? 1.75 : 1.38;
 }
 
 window.addEventListener('resize', () => {
@@ -763,11 +771,12 @@ function buildRain() {
   const geo = new THREE.BufferGeometry();
   const pos = new Float32Array(RAIN_N * 6);
   const vel = new Float32Array(RAIN_N);
+  const len = new Float32Array(RAIN_N);
   for (let i = 0; i < RAIN_N; i++) {
     const x = (Math.random()-0.5)*RAIN_BOX, y = Math.random()*RAIN_H, z = (Math.random()-0.5)*RAIN_BOX;
-    const len = 1.4 + Math.random()*2.6;
-    pos[i*6+0]=x; pos[i*6+1]=y;     pos[i*6+2]=z;
-    pos[i*6+3]=x+0.4; pos[i*6+4]=y-len; pos[i*6+5]=z;
+    len[i] = 1.1 + Math.random()*1.9;
+    pos[i*6+0]=x; pos[i*6+1]=y;         pos[i*6+2]=z;
+    pos[i*6+3]=x; pos[i*6+4]=y-len[i];  pos[i*6+5]=z;
     vel[i] = 38 + Math.random()*28;
   }
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
@@ -777,6 +786,7 @@ function buildRain() {
   rainMesh.visible = false;
   scene.add(rainMesh);
   rainMesh.userData.vel = vel;
+  rainMesh.userData.len = len;
 }
 
 function updateRain(dt) {
@@ -788,34 +798,63 @@ function updateRain(dt) {
   if (!rainMesh.visible) return;
   const pos = rainMesh.geometry.attributes.position.array;
   const vel = rainMesh.userData.vel;
+  const len = rainMesh.userData.len;
   const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z;
   const half = RAIN_BOX/2;
-  // heavier rain falls faster and slants more
   const speedMul = dt * (0.55 + wet*0.75);
-  const slant = 0.16 + wet*0.12;
-  // only render the share of drops the current intensity calls for
+
+  // Streak direction. The old version slanted every drop along world +X, so
+  // driving along the X axis put the slant straight down the view axis and the
+  // rain rendered as dead vertical lines. The slant now leans AGAINST the car's
+  // direction of travel — apparent wind — so streaks always rake across the
+  // screen and never collapse to vertical.
+  const pp = G.player && G.player.phys;
+  const spd = pp ? pp.speed : 0;
+  const lean = Math.min(1.1, 0.30 + spd*0.013);   // how far the streak rakes
+  const hx = pp ? -Math.sin(pp.heading)*lean : lean*0.7;
+  const hz = pp ? -Math.cos(pp.heading)*lean : 0;
+  // Normalise (hx, -1, hz) to a unit direction. Without this the lean is added
+  // ON TOP of the drop length, so a 3 m streak became a 5.4 m one at racing
+  // speed — long raking lines across the screen, exactly what we're removing.
+  const inv = 1 / Math.hypot(hx, 1, hz);
+  const ux = hx*inv, uy = -inv, uz = hz*inv;
+  // gentle sideways drift of the whole volume, same direction as the lean
+  const driftX = hx * 0.30, driftZ = hz * 0.30;
+
   const active = Math.floor(RAIN_N * Math.min(1, 0.25 + wet));
   rainMesh.geometry.setDrawRange(0, active*2);
+  // drops closer than this to the camera are recycled — a 3 m streak passing
+  // a few centimetres from the lens is what reads as a stray vertical line
+  const NEAR_R = 3.5;
   for (let i = 0; i < active; i++) {
     const o = i*6;
     const d = vel[i]*speedMul;
-    pos[o+1] -= d;      pos[o+4] -= d;
-    pos[o+0] += d*slant; pos[o+3] += d*slant;
-    // respawn above once it falls past the car
-    if (pos[o+4] < cy - 22) {
-      const x = cx + (Math.random()-0.5)*RAIN_BOX;
-      const y = cy + RAIN_H*0.55 + Math.random()*RAIN_H*0.45;
-      const z = cz + (Math.random()-0.5)*RAIN_BOX;
-      const len = 1.4 + Math.random()*2.6;
+    pos[o+1] -= d;
+    pos[o+0] += d*driftX;
+    pos[o+2] += d*driftZ;
+
+    let x = pos[o+0], y = pos[o+1], z = pos[o+2];
+    // respawn once it falls past the car, or if it would pass through the lens
+    const dx = x - cx, dz = z - cz, dy = y - cy;
+    if (y < cy - 22 || (dx*dx + dy*dy + dz*dz) < NEAR_R*NEAR_R) {
+      x = cx + (Math.random()-0.5)*RAIN_BOX;
+      y = cy + RAIN_H*0.55 + Math.random()*RAIN_H*0.45;
+      z = cz + (Math.random()-0.5)*RAIN_BOX;
       pos[o+0]=x; pos[o+1]=y; pos[o+2]=z;
-      pos[o+3]=x+0.4; pos[o+4]=y-len; pos[o+5]=z;
-      continue;
+    } else {
+      // wrap horizontally so the volume travels with the car at 300km/h
+      if (x - cx >  half) { x -= RAIN_BOX; }
+      if (x - cx < -half) { x += RAIN_BOX; }
+      if (z - cz >  half) { z -= RAIN_BOX; }
+      if (z - cz < -half) { z += RAIN_BOX; }
+      pos[o+0]=x; pos[o+2]=z;
     }
-    // wrap horizontally so the volume travels with the car at 300km/h
-    if (pos[o+0] - cx >  half) { pos[o+0] -= RAIN_BOX; pos[o+3] -= RAIN_BOX; }
-    if (pos[o+0] - cx < -half) { pos[o+0] += RAIN_BOX; pos[o+3] += RAIN_BOX; }
-    if (pos[o+2] - cz >  half) { pos[o+2] -= RAIN_BOX; pos[o+5] -= RAIN_BOX; }
-    if (pos[o+2] - cz < -half) { pos[o+2] += RAIN_BOX; pos[o+5] += RAIN_BOX; }
+    // the tail is always derived from the head, so a streak can never be
+    // stretched or left behind by a wrap
+    const L = len[i];
+    pos[o+3] = x        + ux*L;
+    pos[o+4] = pos[o+1] + uy*L;
+    pos[o+5] = z        + uz*L;
   }
   rainMesh.geometry.attributes.position.needsUpdate = true;
 }
@@ -2814,5 +2853,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 35';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 36';
 })();

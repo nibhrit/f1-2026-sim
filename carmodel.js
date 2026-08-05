@@ -298,11 +298,11 @@ function buildF1Car(teamKey, opts) {
   const liveryMain  = liveryTex(teamKey, 'main');
   const liveryPod   = liveryTex(teamKey, 'pod');
   const liveryCover = liveryTex(teamKey, 'cover');
-  const mBody = new THREE.MeshStandardMaterial({ color: team.color, metalness: 0.55, roughness: 0.30 });
-  const mLivery = new THREE.MeshStandardMaterial({ map: liveryMain, metalness: 0.5, roughness: 0.32 });
-  const mPod  = new THREE.MeshStandardMaterial({ map: liveryPod, metalness: 0.5, roughness: 0.32 });
-  const mCover= new THREE.MeshStandardMaterial({ map: liveryCover, metalness: 0.5, roughness: 0.32 });
-  const mAcc  = new THREE.MeshStandardMaterial({ color: team.accent, metalness: 0.45, roughness: 0.35 });
+  const mBody = new THREE.MeshStandardMaterial({ color: team.color, metalness: 0.38, roughness: 0.32 });
+  const mLivery = new THREE.MeshStandardMaterial({ map: liveryMain, metalness: 0.32, roughness: 0.34 });
+  const mPod  = new THREE.MeshStandardMaterial({ map: liveryPod, metalness: 0.32, roughness: 0.34 });
+  const mCover= new THREE.MeshStandardMaterial({ map: liveryCover, metalness: 0.32, roughness: 0.34 });
+  const mAcc  = new THREE.MeshStandardMaterial({ color: team.accent, metalness: 0.30, roughness: 0.36 });
   const mDark = new THREE.MeshStandardMaterial({ color: 0x131318, metalness: 0.2, roughness: 0.7 });
   const mCarb = new THREE.MeshStandardMaterial({ color: 0x1d1d24, metalness: 0.5, roughness: 0.38 });
   const mTyre = new THREE.MeshStandardMaterial({ map: tyreTex(), color: 0xffffff, metalness: 0.0, roughness: 0.92 });
@@ -310,7 +310,7 @@ function buildF1Car(teamKey, opts) {
   const mCover2 = new THREE.MeshStandardMaterial({ map: wheelCoverTex(teamKey), metalness: 0.65, roughness: 0.35, side: THREE.DoubleSide });
   const mDisc = new THREE.MeshStandardMaterial({ color: 0x2b2b2f, metalness: 0.35, roughness: 0.65 });
   const mHelm = new THREE.MeshStandardMaterial({ color: opts.helmet || 0xffffff, metalness: 0.3, roughness: 0.25 });
-  [mBody, mLivery, mPod, mCover, mAcc, mCarb, mRim, mCover2, mHelm].forEach(m => { m.envMapIntensity = 0.6; });
+  [mBody, mLivery, mPod, mCover, mAcc, mCarb, mRim, mCover2, mHelm].forEach(m => { m.envMapIntensity = 0.85; });
 
   function box(w,h,d,mat,x,y,z,rx,ry,rz) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), mat);
