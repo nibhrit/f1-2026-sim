@@ -754,6 +754,11 @@ function startSession() {
 
   const me = DRIVERS.find(d => d.player);
 
+  // resuming a season race exactly where it was left
+  const snap = G.pendingRaceSnap;
+  G.pendingRaceSnap = null;
+  if (snap && G.mode === 'race') { restoreRace(snap); updateLapPanel(); AUDIO.musicDuck(true); lastT = performance.now(); return; }
+
   if (G.mode === 'race') {
     // Grand Prix race length follows the race-distance setting
     G.raceLaps = raceLapsFor(G.trackDef); // one shared distance for every race
@@ -1089,6 +1094,8 @@ function onPlayerLapComplete() {
     G.qualiLapsDone++;
     if (G.qualiFlag) endQualify();
   }
+  // season races checkpoint once per lap, so quitting costs at most this lap
+  if (G.seasonActive && G.mode === 'race' && !p.finished) saveRaceSnapshot();
 }
 
 // record a completed sector and colour it (purple/green/yellow)
@@ -1294,7 +1301,10 @@ function endRace() {
       flId: flCar ? flCar.driver.id : null,
     });
     G.seasonData.round++;
+    G.seasonData.session = null;   // weekend done — next entry lands on standings
+    G.seasonData.grid = null;
     saveSeason();
+    clearRaceSnapshot();
     nextLabel = 'Standings';
   }
   const resRows = rows.map((r,i)=>({
@@ -1441,8 +1451,12 @@ function showResults(title, rows, nextLabel) {
 // advance the Grand Prix weekend: practice → qualify → race
 function advanceWeekend() {
   if (!G.weekend) return;
-  if (G.mode === 'practice') { G.mode = 'qualify'; startSession(); }
-  else if (G.mode === 'qualify') { G.mode = 'race'; G.raceType = 'full'; startSession(); }
+  if (G.mode === 'practice') { G.mode = 'qualify'; saveSeasonProgress('qualify'); startSession(); }
+  else if (G.mode === 'qualify') {
+    G.mode = 'race'; G.raceType = 'full';
+    saveSeasonProgress('race');   // stores the qualifying grid too
+    startSession();
+  }
 }
 
 // ---------- season mode (24-round championship of GP weekends) ----------
@@ -1474,15 +1488,147 @@ function normalizeSeason(saved) {
     points,
     teamPoints: saved.teamPoints || rebuildTeamPoints(points),
     history: saved.history || [],
+    session: saved.session || null,
+    grid: saved.grid || null,
   };
 }
-function freshSeason() { return { round: 0, points: {}, teamPoints: {}, history: [] }; }
+function freshSeason() { return { round: 0, points: {}, teamPoints: {}, history: [], session: null, grid: null }; }
+
+// rebuild a race mid-flight from a snapshot: every car back where it was, on
+// the tyres it was using, with its wear, damage to its strategy and penalties
+function restoreRace(snap) {
+  const t = G.track;
+  G.raceLaps = snap.raceLaps;
+  G.difficulty = snap.difficulty != null ? snap.difficulty : G.difficulty;
+  G.simTime = snap.simTime || 0;
+  G.firstFinish = snap.firstFinish || null;
+  G.penalties = snap.penalties || {};
+  if (snap.weather) { G.weather = snap.weather; setWetness(G.weather.wetness); applyWeatherVisuals(); }
+
+  snap.cars.forEach(cs => {
+    const d = DRIVERS.find(x => x.id === cs.id);
+    if (!d) return;
+    const car = makeCar(d, t);
+    const p = car.phys;
+    p.x = cs.x; p.z = cs.z; p.heading = cs.heading; p.speed = cs.speed;
+    p.trackIdx = t.nearest(cs.x, cs.z, null);
+    p.lapDist = t.dist[p.trackIdx];
+    p.totalDist = cs.totalDist;
+    p.lap = cs.lap;
+    p._lastCrossDist = cs.totalDist;   // don't fire a phantom lap on the first step
+    p.setTyre(cs.compound);            // resets wear/temp, so restore them after
+    p.tyreWearKm = cs.wear; p.tyreTemp = cs.temp;
+    car.finished = cs.finished; car.finishTime = cs.finishTime; car.bestLap = cs.bestLap;
+    car.pitted = cs.pitted; car.pitted2 = cs.pitted2;
+    car.pitPlan = cs.pitPlan ? cs.pitPlan.slice() : null;
+    car.pitCompound = cs.pitCompound; car.pitLap = cs.pitLap; car.pitLap2 = cs.pitLap2;
+    car.limitStrikes = cs.limitStrikes; car.collCount = cs.collCount;
+    car.driveThroughServed = cs.dtServed;
+    car._lapStart = cs.lapStart; car.curLapStart = cs.curLapStart;
+    G.cars.push(car);
+    if (d.player) G.player = car;
+  });
+
+  const pl = snap.player || {};
+  if (G.player) {
+    G.player.lapTimes = pl.lapTimes || [];
+    G.player.bestLap = pl.bestLap || null;
+    G.player.bestLapTyre = pl.bestLapTyre || null;
+  }
+  G.sectorSB = pl.sectorSB || [null,null,null];
+  G.pbLapSectors = pl.pbLapSectors || [null,null,null];
+  G.bestCheckpoints = pl.bestCheckpoints || null;
+  G.refCheckpoints = pl.refCheckpoints || null;
+  G.refTime = pl.refTime || null;
+  G.curSectors = [null,null,null];
+  G.curSec = 0;
+  G.sectorEntryTime = G.simTime;
+  if (G.player) G.player.curLapStart = G.simTime; // current lap restarts cleanly
+  if (pl.bestLap) $('best-time').textContent = fmtTime(pl.bestLap);
+
+  // straight back to green — no countdown, no tyre picker
+  G.countdown = null;
+  G.raceStarted = true;
+  G.state = 'driving';
+  showBanner('RESUMING — LAP ' + Math.min(G.player ? G.player.phys.lap : 1, G.raceLaps) + ' / ' + G.raceLaps, 2.5, '#ffd12e');
+}
+
+// ---------- mid-race snapshot (season only, written once per lap) ----------
+const RACE_SNAP_KEY = 'f1sim_race', RACE_SNAP_V = 1;
+
+function saveRaceSnapshot() {
+  if (!G.seasonActive || G.mode !== 'race' || !G.raceStarted) return;
+  try {
+    const snap = {
+      v: RACE_SNAP_V,
+      round: G.seasonData.round,
+      trackId: G.trackDef.id,
+      raceLaps: G.raceLaps,
+      raceDist: G.raceDist,
+      difficulty: G.difficulty,
+      simTime: G.simTime,
+      firstFinish: G.firstFinish,
+      weather: JSON.parse(JSON.stringify(G.weather)),
+      penalties: G.penalties,
+      cars: G.cars.map(c => ({
+        id: c.driver.id,
+        x: c.phys.x, z: c.phys.z, heading: c.phys.heading, speed: c.phys.speed,
+        lap: c.phys.lap, totalDist: c.phys.totalDist,
+        compound: c.phys.compound, wear: c.phys.tyreWearKm, temp: c.phys.tyreTemp,
+        finished: c.finished, finishTime: c.finishTime, bestLap: c.bestLap,
+        pitted: c.pitted, pitted2: c.pitted2, pitPlan: c.pitPlan || null,
+        pitCompound: c.pitCompound, pitLap: c.pitLap, pitLap2: c.pitLap2,
+        limitStrikes: c.limitStrikes || 0, collCount: c.collCount || 0,
+        dtServed: !!c.driveThroughServed,
+        lapStart: c._lapStart || 0, curLapStart: c.curLapStart || 0,
+      })),
+      player: {
+        lapTimes: G.player.lapTimes, bestLap: G.player.bestLap, bestLapTyre: G.player.bestLapTyre,
+        sectorSB: G.sectorSB, pbLapSectors: G.pbLapSectors,
+        bestCheckpoints: G.bestCheckpoints, refCheckpoints: G.refCheckpoints, refTime: G.refTime,
+      },
+    };
+    localStorage.setItem(RACE_SNAP_KEY, JSON.stringify(snap));
+  } catch(e) {}
+}
+function loadRaceSnapshot() {
+  try {
+    const s = JSON.parse(localStorage.getItem(RACE_SNAP_KEY) || 'null');
+    return (s && s.v === RACE_SNAP_V) ? s : null;
+  } catch(e) { return null; }
+}
+function clearRaceSnapshot() { try { localStorage.removeItem(RACE_SNAP_KEY); } catch(e) {} }
+
+// remember exactly where we are inside a weekend, so quitting mid-session
+// resumes there instead of restarting the round
+function saveSeasonProgress(session) {
+  if (!G.seasonActive) return;
+  G.seasonData.session = session;
+  G.seasonData.grid = G.gpGrid || null;
+  saveSeason();
+}
+
 function openSeason() {
   const saved = loadSeason();
-  if (saved && typeof saved.round === 'number' && saved.round > 0 && saved.round < TRACKS.length) {
-    // resume a season in progress from the standings
+  const inProgress = saved && typeof saved.round === 'number' && saved.round < TRACKS.length
+    && (saved.round > 0 || saved.session);
+  if (inProgress) {
     G.seasonData = normalizeSeason(saved);
-    showStandings();
+    if (G.seasonData.session) {
+      // mid-weekend: drop straight back into the session that was running
+      G.weekend = true;
+      G.seasonActive = true;
+      G.trackDef = TRACKS[G.seasonData.round];
+      G.mode = G.seasonData.session;
+      G.gpGrid = G.seasonData.grid || null;
+      // a race in progress resumes exactly where it stopped
+      const rs = loadRaceSnapshot();
+      G.pendingRaceSnap = (G.mode === 'race' && rs && rs.round === G.seasonData.round
+        && rs.trackId === G.trackDef.id) ? rs : null;
+      startSession();
+    } else {
+      showStandings();   // between rounds
+    }
   } else {
     G.seasonData = freshSeason();
     startSeasonRound();
@@ -1496,6 +1642,8 @@ function startSeasonRound() {
   G.trackDef = def;
   G.mode = 'practice';
   G.gpGrid = null;
+  clearRaceSnapshot();   // new weekend — any old race snapshot is stale
+  saveSeasonProgress('practice');
   startSession();
 }
 let standingsView = 'drivers'; // drivers | teams | calendar
@@ -1582,6 +1730,7 @@ function showStandings() {
 $('btn-nextround').addEventListener('click', startSeasonRound);
 $('btn-newseason').addEventListener('click', () => {
   clearSeason();
+  clearRaceSnapshot();
   G.seasonData = freshSeason();
   startSeasonRound();
 });
@@ -2442,5 +2591,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 24';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 26';
 })();
