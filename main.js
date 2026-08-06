@@ -286,7 +286,7 @@ window.addEventListener('keydown', e => {
   if (e.code === 'Escape') togglePause();
   if (e.code === 'KeyC' && G.state === 'driving') {
     G.camMode = (G.camMode+1)%4;
-    const names = ['CHASE CAM','COCKPIT CAM','T-CAM','TV CAM'];
+    const names = ['CHASE CAM','COCKPIT CAM','T-CAM','BROADCAST CAM'];
     showBanner(names[G.camMode], 1, '#6fa0ff');
   }
   if (e.code === 'KeyT' && G.state === 'driving') {
@@ -614,12 +614,18 @@ function makeCar(driver, track) {
     car.ai = new AIDriver(phys, track, driver);
     // difficulty drives cornering pace, braking depth and top speed
     car.ai.diff = G.difficulty;
-    car.ai.paceMul *= G.difficulty;
+    // Car performance: team ranking × this circuit's character × wet ability.
+    const cp = carPace(driver, G.trackDef.id, (G.weather && G.weather.wetness) || 0);
+    // driver quality on top of the car, kept small so the machinery leads
+    car.ai.paceMul = cp * (0.990 + driver.skill * 0.010) * G.difficulty;
     car.ai.buildCornerSpeeds();
-    // car-performance handicap: Rookie machinery is off the pace, Elite has a
-    // genuine edge, so difficulty changes results and not just cornering style.
+    // Pace alone barely separates the field, because the quick cars end up
+    // pegged at the grip limit either way. Feeding the same figure into grip
+    // is what turns the constructors' table into a real lap-time spread:
+    // measured at Barcelona this gives ~3.3s from the fastest car to the
+    // slowest, which is about what the real grid covers.
     const dt2 = Math.max(0, Math.min(1, (G.difficulty - 0.94) / 0.12));
-    phys.gripBonus = 0.96 + dt2 * 0.20; // 0.96 Rookie .. 1.16 Elite
+    phys.gripBonus = (0.98 + dt2 * 0.36) * (1 - (1 - cp / CAR_PACE_TOP) * 4);
   }
   return car;
 }
@@ -1041,8 +1047,11 @@ function simulateQualiTimes() {
   const wet = G.weather ? G.weather.wetness : 0;
   const qTyre = wet > 0.7 ? 'wet' : wet > 0.35 ? 'inter' : 'soft';
   return DRIVERS.filter(d=>!d.player).map(d => {
-    const paceMul = (0.885 + d.skill*0.105) * G.difficulty;
-    return { driver: d, tyre: qTyre, time: lapTime(paceMul) * (1 + Math.random()*0.004) };
+    // same performance model the race AI uses, so the grid you qualify against
+    // matches the cars you then race — plus a little driver variability
+    const cp = carPace(d, G.trackDef.id, wet);
+    const paceMul = cp * (0.905 + d.skill * 0.055) * G.difficulty;
+    return { driver: d, tyre: qTyre, time: lapTime(paceMul) * (1 + Math.random()*0.005) };
   });
 }
 
@@ -2096,19 +2105,37 @@ function updateCamera(dt) {
     }
     camera.fov = 76;
   } else if (G.camMode === 2) {
-    // T-cam onboard (above airbox: helmet, halo and nose in frame)
-    camera.position.set(p.x - sx*0.75, baseY + 1.42, p.z - cz*0.75);
-    camera.lookAt(p.x + sx*26, baseY + 0.55, p.z + cz*26);
-    camera.rotation.z += -p.steer * 0.018;
-    camera.fov = 66;
+    // T-cam onboard, mounted higher and further back than before so the halo,
+    // mirrors, nose and front wheels are all in shot rather than just the top
+    // of the helmet. Looks down more steeply, which also brings the top of the
+    // wheel and the driver's hands into frame either side of the helmet.
+    camera.position.set(p.x - sx*1.05, baseY + 1.66, p.z - cz*1.05);
+    camera.lookAt(p.x + sx*17, baseY + 0.30, p.z + cz*17);
+    camera.rotation.z += -p.steer * 0.022;
+    if (p.speed > 55 && !REDUCED_MOTION) {
+      const sh = (p.speed-55)*0.0005;
+      camera.position.y += (Math.random()-0.5)*sh;
+    }
+    camera.fov = 72;
   } else {
-    // TV: fixed-ish orbit point ahead
-    const t = G.track;
-    const k = (p.trackIdx + 40) % t.n;
-    camTmp.set(t.px[k] + t.nx[k]*22, t.py[k] + 10, t.pz[k] + t.nz[k]*22);
-    camera.position.lerp(camTmp, Math.min(1, dt*2.2));
-    camera.lookAt(p.x, baseY + 1, p.z);
-    camera.fov = 55;
+    // Broadcast chase: wide and high enough to hold the whole car in frame so
+    // the livery reads, but it tracks the car like a chase cam and is meant to
+    // be driven in. Replaces the old static TV orbit, which you couldn't
+    // usefully drive from.
+    const dist = 11.5 + p.speed*0.030;
+    const h = 4.1 + p.speed*0.010;
+    camSway += ((-p.steer * Math.min(1, p.speed/28) * 1.5) - camSway) * Math.min(1, dt*4.5);
+    camTmp.set(
+      p.x - sx*dist + rx*camSway,
+      baseY + h,
+      p.z - cz*dist + rz*camSway
+    );
+    // looser follow than the chase cam, so it swings like a trackside shot
+    camera.position.lerp(camTmp, Math.min(1, dt*6));
+    const tB = G.track, kB = (p.trackIdx + Math.floor(20 / (tB.length/tB.n))) % tB.n;
+    camera.lookAt(p.x + sx*4 + tB.tx[kB]*4*back, baseY + 0.75, p.z + cz*4 + tB.tz[kB]*4*back);
+    camera.rotation.z += camSway * 0.02;
+    camera.fov = 50;
   }
   // only the cockpit gets the close near plane; the others keep 1 m so
   // bodywork sitting right in front of the lens stays clipped out of frame
@@ -2297,7 +2324,11 @@ function updateCountdown(dt) {
       G.simTime = 0;
       G.cars.forEach(c => {
         c.curLapStart = 0; c._lapStart = 0;
-        if (c.ai) c.ai.launchT = 6;   // everyone launches hard off the line
+        if (c.ai) {
+          c.ai.launchT = 6;      // everyone launches hard off the line
+          c.ai.laneBlend = 0;    // and holds its grid lane before fanning out
+          c.ai.gridLane = null;
+        }
       });
       AUDIO.beep(880, 0.5, 0.16);
       showBanner("LIGHTS OUT AND AWAY WE GO!", 2.2, '#2ecc71');
@@ -2375,7 +2406,7 @@ function frame(now) {
     // full lock. Nothing here feeds back into the car's behaviour.
     const rig = c.mesh.userData.cockpitRig;
     if (rig) {
-      rig.visible = (G.camMode === 1);
+      rig.visible = (G.camMode === 1 || G.camMode === 2);
       // steer is positive for a LEFT turn here, and the driver views the wheel
       // from behind, so the sign flips twice: right lock reads clockwise.
       if (rig.visible) c.mesh.userData.steeringWheel.rotation.z = -p.steer * 2.1;
@@ -2853,5 +2884,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 36';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 37';
 })();

@@ -233,3 +233,120 @@ Object.keys(START_SHIFT).forEach(id => {
   const s = START_SHIFT[id];
   t.points = t.points.slice(s).concat(t.points.slice(0, s));
 });
+
+// ============================================================
+// TEAM PERFORMANCE MODEL
+// ============================================================
+// Base car pace, indexed so the fastest car = 1.000. Ordering and gaps are
+// taken from the 2025 constructors' championship, the last full season run to
+// a stable rule set:
+//   McLaren 833, Mercedes 469, Red Bull 451, Ferrari 398, Williams 137,
+//   Racing Bulls 92, Aston Martin 89, Haas 79, Sauber(→Audi) 70, Alpine 22.
+// Cadillac did not race in 2025 and enters as the new team, at the back.
+// The spread is ~3%, which is about what separates the quickest and slowest
+// cars in real qualifying — a much wider field than the 1.8% this sim had.
+const TEAM_PACE = {
+  mclaren:     1.0000,
+  mercedes:    0.9940,
+  redbull:     0.9930,
+  ferrari:     0.9910,
+  williams:    0.9825,
+  racingbulls: 0.9800,
+  aston:       0.9790,
+  haas:        0.9775,
+  audi:        0.9760,
+  alpine:      0.9735,
+  cadillac:    0.9700,
+};
+
+// The quickest carPace any team reaches on its strongest circuit. Used to
+// normalise the grip handicap so the best car sits at full grip.
+const CAR_PACE_TOP = 1.0035;
+
+// The player's Red Bull gets a small lift so every weekend stays winnable
+// without making the hierarchy meaningless.
+const PLAYER_CAR_BONUS = 1.004;
+
+// Where each car's strengths lie. Values are pace deltas applied when a
+// circuit has that character, drawn from how 2025 actually played out:
+//   power    — long straights, low drag (Monza, Vegas, Baku, Jeddah)
+//   downforce— slow, high-downforce, traction-limited (Monaco, Hungary, Singapore)
+//   highspeed— fast flowing corners (Suzuka, Spa, Silverstone, Zandvoort)
+//   hot      — high track temperature, tyre degradation the limiting factor
+//   cool     — low track temperature, warm-up the limiting factor
+const TEAM_TRAITS = {
+  // best tyre life on the grid in 2025; strongest in slow corners and heat,
+  // but never the outright straight-line car
+  mclaren:     { downforce: 0.0050, hot: 0.0055, cool: -0.0020, power: -0.0050 },
+  // superb straight-line efficiency and cold-track pace; wilted in the heat
+  mercedes:    { power: 0.0060, cool: 0.0055, hot: -0.0055 },
+  // quick through fast corners, awkward in slow ones
+  redbull:     { highspeed: 0.0055, power: 0.0020, downforce: -0.0045 },
+  // one-lap pace and top speed; Monza was its strongest weekend
+  ferrari:     { power: 0.0035, downforce: 0.0025, hot: -0.0015 },
+  // Mercedes-powered and very slippery — a genuine low-drag threat
+  williams:    { power: 0.0045, downforce: -0.0020 },
+  racingbulls: { downforce: 0.0030, power: -0.0015 },
+  aston:       { downforce: 0.0025, power: -0.0030 },
+  haas:        { highspeed: 0.0020, hot: -0.0020 },
+  audi:        { power: 0.0015, downforce: -0.0015 },
+  alpine:      { power: -0.0035, downforce: 0.0015 },
+  cadillac:    { hot: -0.0015, cool: -0.0015 },  // first-year team, no sweet spot
+};
+
+// Character of each circuit on the calendar.
+const TRACK_TRAITS = {
+  australia:   ['balanced'],
+  china:       ['balanced', 'hot'],
+  japan:       ['highspeed', 'cool'],
+  bahrain:     ['hot', 'power'],
+  saudi:       ['power', 'highspeed'],
+  miami:       ['hot', 'power'],
+  canada:      ['power', 'cool'],
+  monaco:      ['downforce'],
+  spain:       ['hot', 'downforce'],
+  austria:     ['power', 'highspeed'],
+  britain:     ['highspeed', 'cool'],
+  belgium:     ['highspeed', 'power', 'cool'],
+  hungary:     ['downforce', 'hot'],
+  netherlands: ['highspeed', 'downforce'],
+  italy:       ['power'],
+  madrid:      ['balanced', 'hot'],
+  azerbaijan:  ['power'],
+  singapore:   ['downforce', 'hot'],
+  usa:         ['highspeed', 'hot'],
+  mexico:      ['power', 'downforce'],
+  brazil:      ['highspeed'],
+  vegas:       ['power', 'cool'],
+  qatar:       ['highspeed', 'hot'],
+  abudhabi:    ['balanced'],
+};
+
+// Wet-weather ability, separate from dry skill. Hamilton and Verstappen are
+// the two modern benchmarks — both win a markedly higher share of wet races
+// than dry ones — with Alonso, Russell, Gasly and Hülkenberg the next tier.
+// Rookies and drivers with little wet running sit lowest.
+const WET_SKILL = {
+  VER: 1.00, HAM: 0.99, ALO: 0.97, RUS: 0.97, NOR: 0.95, GAS: 0.95,
+  HUL: 0.94, LEC: 0.93, SAI: 0.93, OCO: 0.93, ALB: 0.92, STR: 0.92,
+  BOT: 0.91, PER: 0.90, PIA: 0.90, ANT: 0.89, HAD: 0.89, BEA: 0.89,
+  LAW: 0.88, BOR: 0.87, COL: 0.86, LIN: 0.85,
+};
+
+// Combined car pace for a driver at a circuit, before difficulty is applied.
+// wetness 0..1 folds in the driver's wet ability.
+function carPace(driver, trackId, wetness) {
+  let pace = TEAM_PACE[driver.team] != null ? TEAM_PACE[driver.team] : 0.98;
+  const traits = TRACK_TRAITS[trackId] || ['balanced'];
+  const bonus = TEAM_TRAITS[driver.team] || {};
+  for (const t of traits) if (bonus[t]) pace += bonus[t];
+  if (driver.player) pace *= PLAYER_CAR_BONUS;
+  if (wetness > 0.05) {
+    const wetOf = WET_SKILL[driver.id] != null ? WET_SKILL[driver.id] : 0.90;
+    // In the wet the driver matters far more than the car. At full wetness
+    // this is worth about 0.8% of lap time between the best and worst rain
+    // driver — roughly half a second a lap, which is what separates them.
+    pace *= (1 - wetness * 0.12) + wetness * 0.12 * (0.6 + wetOf * 0.45);
+  }
+  return pace;
+}

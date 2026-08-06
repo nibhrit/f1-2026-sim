@@ -15,6 +15,12 @@ class AIDriver {
     this.paceMul = 0.80 + driver.skill * 0.13;
     this.diff = 1; // difficulty multiplier (main.js sets it from G.difficulty)
     this.launchT = 0; // >0 = launching off the grid, ignore the follow limiter
+    // Off the line every car would otherwise snap straight onto the single
+    // racing line, which bunches 22 cars into one lane and makes them all lift.
+    // Hold the grid lane at first and blend onto the line over the opening
+    // stretch, the way a real field fans out.
+    this.gridLane = null;
+    this.laneBlend = 1;
     this.laneOffset = (Math.random()*2-1) * 1.2;
     this.targetLane = this.laneOffset;
     this.avoidTimer = 0;
@@ -22,44 +28,75 @@ class AIDriver {
     this.buildCornerSpeeds();
   }
 
-  // Corner-speed plan = the car's TRUE physical limit (player physics uses
-  // min(55, 28 + 0.0068 v²)). paceMul is then the single dial that decides how
-  // close to that limit each driver runs — so difficulty never overdrives.
+  // ---- racing line + corner speeds -------------------------------------
+  // Both are properties of the LINE, not the centreline. The old version
+  // smoothed the line so hard that its amplitude collapsed (mean lateral
+  // position 0.9 m on a 5.5 m half-width road) and then took corner speeds
+  // from centreline curvature — so the AI drove down the middle at the
+  // middle's radius, and lapped ~7 s off the car's actual capability.
   buildCornerSpeeds() {
     const track = this.track;
-    if (track._cornerSpeed && track._csKey === 'limit') return;
+    if (track._cornerSpeed && track._csKey === 'line') return;
+    const N = track.n, hw = track.width / 2;
+    const EDGE = Math.max(1.2, hw - 1.6);   // how close to the white line we run
+
+    // Minimum-curvature relaxation. Repeatedly pull every point toward the
+    // midpoint of its neighbours (which is what straightens a curve) while
+    // clamping it inside the track edges. This is what actually turns a
+    // corner into a wide-entry / apex / wide-exit line — the previous
+    // "hug the inside then blur it" approach produced a wavy path that was
+    // SLOWER than the centreline over 20% of the lap.
+    const rl = new Float32Array(N);
+    const K = 3;                       // neighbour span used for straightening
+    for (let pass = 0; pass < 400; pass++) {
+      for (let i = 0; i < N; i++) {
+        const a = (i-K+N)%N, b = (i+K)%N;
+        const ax = track.px[a] + track.nx[a]*rl[a], az = track.pz[a] + track.nz[a]*rl[a];
+        const bx = track.px[b] + track.nx[b]*rl[b], bz = track.pz[b] + track.nz[b]*rl[b];
+        // where the straight line between the neighbours crosses this normal
+        const mx = (ax+bx)/2, mz = (az+bz)/2;
+        const target = (mx - track.px[i])*track.nx[i] + (mz - track.pz[i])*track.nz[i];
+        const clamped = Math.max(-EDGE, Math.min(EDGE, target));
+        rl[i] += (clamped - rl[i]) * 0.35;
+      }
+    }
+    track._raceLine = rl;
+
+    // 4. Corner speeds from the curvature of THAT path. Taking a corner wide
+    //    -> apex -> wide straightens it, so the usable radius is larger and
+    //    the limit speed genuinely higher.
+    const px = new Float64Array(N), pz = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      px[i] = track.px[i] + track.nx[i]*rl[i];
+      pz[i] = track.pz[i] + track.nz[i]*rl[i];
+    }
+    const curv = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      const a = (i-3+N)%N, b = (i+3)%N;
+      const x1 = px[a], z1 = pz[a], x2 = px[i], z2 = pz[i], x3 = px[b], z3 = pz[b];
+      // curvature through three points = 4*area / (product of side lengths)
+      const area2 = (x2-x1)*(z3-z1) - (z2-z1)*(x3-x1);
+      const d1 = Math.hypot(x2-x1, z2-z1), d2 = Math.hypot(x3-x2, z3-z2), d3 = Math.hypot(x3-x1, z3-z1);
+      curv[i] = (d1*d2*d3 > 1e-6) ? Math.abs(2*area2 / (d1*d2*d3)) : 0;
+    }
+    // light smoothing so a noisy sample can't spike the plan
+    const cSm = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      let sum = 0;
+      for (let o = -4; o <= 4; o++) sum += curv[(i+o+N)%N];
+      cSm[i] = sum / 9;
+    }
     const gAero = 55, gMech = 28;
-    const cs = new Float32Array(track.n);
-    for (let i = 0; i < track.n; i++) {
-      const c = Math.abs(track.curv[i]);
+    const cs = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      const c = cSm[i];
       if (c < 1e-4) { cs[i] = 999; continue; }
       const vCap = Math.sqrt(gAero / c);
       const vMech = c > 0.0075 ? Math.sqrt(gMech / (c - 0.0066)) : Infinity;
       cs[i] = Math.min(vCap, vMech);
     }
     track._cornerSpeed = cs;
-    track._csKey = 'limit';
-    // precompute the racing line (lateral offset per sample): hug the apex
-    // (inside of the corner), ease back to centre on straights, then smooth so
-    // turn-in/exit use the road width. Cached once per track.
-    if (!track._raceLine) {
-      const N = track.n, hw = track.width/2;
-      const rl = new Float32Array(N);
-      for (let i=0;i<N;i++) {
-        const c = track.curv[i];
-        const mag = Math.min(1, Math.abs(c) / 0.018); // 0..1 corner sharpness
-        // inside edge sign matches the kerb side (sign of curvature)
-        rl[i] = Math.sign(c) * mag * (hw - 2.4) * 0.72;
-      }
-      // heavy wrap-around smoothing spreads the apex into wide entry/exit
-      for (let pass=0; pass<70; pass++) {
-        const tmp = new Float32Array(N);
-        for (let i=0;i<N;i++)
-          tmp[i] = (rl[(i-2+N)%N] + rl[(i-1+N)%N] + rl[i]*2 + rl[(i+1)%N] + rl[(i+2)%N]) / 6;
-        rl.set(tmp);
-      }
-      track._raceLine = rl;
-    }
+    track._csKey = 'line';
   }
 
   compute(dt, allCars) {
@@ -113,7 +150,14 @@ class AIDriver {
     const kAhead = (idx + Math.ceil(lookM / (t.length/N))) % N;
     const edge = t.width/2 - 1.6;
     const rl = t._raceLine;
-    const baseLane = rl ? rl[kAhead] : this.laneOffset;
+    let baseLane = rl ? rl[kAhead] : this.laneOffset;
+    if (this.laneBlend < 1) {
+      // 12 s to come fully onto the racing line
+      this.laneBlend = Math.min(1, this.laneBlend + dt / 12);
+      if (this.gridLane == null) this.gridLane = t.lateral(car.x, car.z, car.trackIdx);
+      const b = this.laneBlend * this.laneBlend * (3 - 2*this.laneBlend); // smoothstep
+      baseLane = this.gridLane * (1 - b) + baseLane * b;
+    }
 
     // ---- wheel-to-wheel combat ----
     this.avoidTimer -= dt;
@@ -136,16 +180,18 @@ class AIDriver {
     if (ahead) {
       const otherLat = t.lateral(ahead.x, ahead.z, ahead.trackIdx);
       const myLat = t.lateral(car.x, car.z, car.trackIdx);
-      // hold station to avoid ramming when directly behind
-      // Off the line the whole grid is queued a few metres apart, so the normal
-      // follow limiter would pin everyone to walking pace. During the launch we
-      // only back off if we're genuinely about to hit the car ahead.
-      const launching = this.launchT > 0;
-      const followRange = launching ? 7 : 18;
-      if (aheadGap < followRange && ahead.speed < v + 6 && Math.abs(otherLat - myLat) < 2.6) {
-        const follow = launching
-          ? Math.max(6, ahead.speed + (aheadGap - 3) * 4.5)
-          : Math.max(0, ahead.speed + (aheadGap - 4.5) * 2.2);
+      // Hold station to avoid ramming. The old test fired whenever a car was
+      // within 18 m and merely a touch slower, which on the run to turn 1 —
+      // where the whole field is nose-to-tail by definition — made all 21 AI
+      // cars lift at once and handed the player the lead. Now it only reacts
+      // when we are actually closing, in the same lane, and close enough that
+      // it matters.
+      const closing = v - ahead.speed;
+      const sameLane = Math.abs(otherLat - myLat) < 2.2;
+      const range = this.launchT > 0 ? 8 : 13;
+      if (sameLane && closing > 0.5 && aheadGap < range) {
+        // match their speed by the time we're 5 m back, no earlier
+        const follow = ahead.speed + Math.max(0, aheadGap - 5) * 2.6;
         vAllow = Math.min(vAllow, follow);
       }
       // attacker: faster and close → make a move

@@ -250,9 +250,9 @@ function buildCockpitRig(teamKey) {
   };
 
   // butterfly rim: flat top bar, two vertical grips, open at the bottom
-  part(0.30, 0.045, 0.038, mGrip, 0, 0.098, 0);
-  part(0.062, 0.170, 0.052, mGrip, -0.142, -0.012, 0, 0.10);
-  part(0.062, 0.170, 0.052, mGrip,  0.142, -0.012, 0, -0.10);
+  part(0.34, 0.048, 0.040, mGrip, 0, 0.104, 0);
+  part(0.066, 0.180, 0.055, mGrip, -0.163, -0.012, 0, 0.10);
+  part(0.066, 0.180, 0.055, mGrip,  0.163, -0.012, 0, -0.10);
   // hub carrying the display/button face (texture faces the driver, -z)
   part(0.245, 0.150, 0.030, mFace, 0, 0.010, -0.018);
   part(0.250, 0.160, 0.026, mGrip, 0, 0.010, 0.004);
@@ -270,18 +270,18 @@ function buildCockpitRig(teamKey) {
   // gloves gripping the rim, with forearms running back out of frame
   [[-1],[1]].forEach(([s]) => {
     const hand = new THREE.Mesh(new THREE.BoxGeometry(0.058, 0.115, 0.078), mGlove);
-    hand.position.set(s*0.148, -0.012, -0.030);
+    hand.position.set(s*0.170, -0.012, -0.030);
     hand.rotation.z = s * -0.10;
     spin.add(hand);
     const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.026, 0.052, 0.030), mGlove);
-    thumb.position.set(s*0.120, 0.046, -0.040);
+    thumb.position.set(s*0.140, 0.050, -0.040);
     spin.add(thumb);
     // forearm hangs off the mount, not the spinning part — it shouldn't
     // cartwheel with the wheel
     const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.043, 0.052, 0.30, 8), mSuit);
     arm.rotation.x = Math.PI/2 - 0.35;
     arm.rotation.z = s * 0.18;
-    arm.position.set(s*0.150, -0.075, 0.14);
+    arm.position.set(s*0.172, -0.075, 0.14);
     mount.add(arm);
   });
 
@@ -398,7 +398,7 @@ function buildF1Car(teamKey, opts) {
   box(0.05, 0.12, 0.10, mCarb,  0.40, 0.86, 0.42);
 
   // ---------- driver ----------
-  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.175, 12, 10), mHelm);
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.160, 12, 10), mHelm);
   helmet.position.set(0, 0.80, 0.28);
   g.add(helmet);
   box(0.20, 0.07, 0.05, mDark, 0, 0.80, 0.44);              // visor
