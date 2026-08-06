@@ -142,8 +142,11 @@ class AIDriver {
     // AI top speed sits just below the player's (~308-312 vs 315 km/h). Wet
     // barely dents top speed (drag-limited); the corner-pace drop handles the rest.
     // DRS open raises the cap so the tow actually completes overtakes.
+    // Top speed. DRS and the tow both raise the ceiling, otherwise the AI
+    // would sit in another car's wake at its own still-air top speed and
+    // never complete a pass the physics is already handing it.
     vAllow = Math.min(vAllow, (80 + this.driver.skill * 8 + (this.diff - 1) * 30)
-      * (0.88 + 0.12 * gripFac) + (car.drsOpen ? 7 : 0));
+      * (0.88 + 0.12 * gripFac) + (car.drsOpen ? 8 : 0) + (car.tow || 0) * 6);
 
     // ---- base lane = racing line (clean air) ----
     const lookM = Math.min(50, Math.max(9, v * 0.5));

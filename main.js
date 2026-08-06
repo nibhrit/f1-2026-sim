@@ -1962,7 +1962,10 @@ function updateHUD() {
     db.className = s === 2 ? 'open' : (s === 1 || s === 1.5) ? 'armed' : (s ? 'zone' : '');
     const di = $('drs-info');
     if (di) {
-      di.textContent = G.drsInfo || '';
+      const tow = G.playerTow || 0;
+      const towTxt = tow > 0.12 ? 'TOW ' + Math.round(tow * 100) + '%' : '';
+      di.textContent = towTxt && G.drsInfo ? (towTxt + ' · ' + G.drsInfo)
+                     : (towTxt || G.drsInfo || '');
       di.className = s === 2 ? 'open' : (s === 1 || s === 1.5) ? 'armed' : '';
     }
   }
@@ -2661,6 +2664,41 @@ function gapAheadSec(c) {
   return best / Math.max(14, p.speed); // metres → seconds at current pace
 }
 
+// ---------- slipstream ----------
+// Running in another car's wake cuts your drag. It reaches roughly ten car
+// lengths back, is strongest directly behind, and fades as you move offline —
+// which is why a driver dives out of the tow at the last moment to brake.
+// Only matters at speed, so it does nothing through slow corners.
+const TOW_RANGE = 55;   // metres of usable wake
+const TOW_WIDTH = 3.4;  // metres of lateral offset before it's gone
+
+function updateSlipstream() {
+  const t = G.track;
+  if (!t) return;
+  for (const c of G.cars) {
+    const p = c.phys;
+    if (c.finished || c.pitState || p.speed < 33) { p.tow = 0; continue; }
+    let best = 0;
+    const myLat = t.lateral(p.x, p.z, p.trackIdx);
+    for (const o of G.cars) {
+      if (o === c || o.finished || o.pitState) continue;
+      const op = o.phys;
+      const gap = op.totalDist - p.totalDist;
+      if (gap <= 2 || gap > TOW_RANGE) continue;
+      // must actually be on the road ahead, not a lapped car elsewhere
+      if (Math.hypot(op.x - p.x, op.z - p.z) > TOW_RANGE + 12) continue;
+      const dLat = Math.abs(t.lateral(op.x, op.z, op.trackIdx) - myLat);
+      if (dLat > TOW_WIDTH) continue;
+      const byGap = 1 - (gap - 2) / (TOW_RANGE - 2);
+      const byLat = 1 - dLat / TOW_WIDTH;
+      const strength = byGap * byGap * byLat;   // falls off fast with distance
+      if (strength > best) best = strength;
+    }
+    p.tow = Math.min(1, best);
+  }
+  if (G.player) G.playerTow = G.player.phys.tow;
+}
+
 function updateDRS() {
   const t = G.track;
   if (!t || !t.drsZones || !t.drsZones.length || !G.raceStarted) return;
@@ -2735,6 +2773,7 @@ function stepSim(dt) {
   updateCountdown(dt);
   const started = G.raceStarted;
   if (started) G.simTime += dt;
+  updateSlipstream();
   updateDRS();
   // qualifying clock: count down; drop the chequered flag at zero
   if (started && G.mode === 'qualify') {
@@ -2888,5 +2927,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 38';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 39';
 })();
