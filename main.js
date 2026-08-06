@@ -621,11 +621,15 @@ function makeCar(driver, track) {
     car.ai.buildCornerSpeeds();
     // Pace alone barely separates the field, because the quick cars end up
     // pegged at the grip limit either way. Feeding the same figure into grip
-    // is what turns the constructors' table into a real lap-time spread:
-    // measured at Barcelona this gives ~3.3s from the fastest car to the
-    // slowest, which is about what the real grid covers.
+    // is what turns the constructors' table into a real lap-time spread.
+    //
+    // The grip range is the difficulty dial. 0.36 was too generous — the AI
+    // carried so much corner speed it barely needed the brakes and out-paced
+    // a quick player outright. 0.24 puts Elite at ~76.0s round Barcelona
+    // against a ~75.5s player lap: quick enough to punish mistakes, slow
+    // enough that pole is worth having.
     const dt2 = Math.max(0, Math.min(1, (G.difficulty - 0.94) / 0.12));
-    phys.gripBonus = (0.98 + dt2 * 0.36) * (1 - (1 - cp / CAR_PACE_TOP) * 4);
+    phys.gripBonus = (0.98 + dt2 * 0.24) * (1 - (1 - cp / CAR_PACE_TOP) * 4);
   }
   return car;
 }
@@ -2884,5 +2888,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 37';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 38';
 })();
