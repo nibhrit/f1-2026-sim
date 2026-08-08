@@ -73,6 +73,13 @@
   #drs-info.armed { color:#ffd12e; }
   #drs-info.open { color:#2ecc71; }
 
+  /* penalty tag on the timing tower: carried until the race ends */
+  .p-pen { display:inline-block; margin-left:5px; padding:0 5px; border-radius:3px;
+    font-size:10px; font-weight:900; letter-spacing:.5px; vertical-align:middle;
+    background:rgba(225,6,0,.22); border:1px solid #e10600; color:#ff8a85; }
+  .p-pen.new { animation:penflash .5s steps(1) infinite; }
+  @keyframes penflash { 50% { background:#e10600; color:#fff; } }
+
   /* tyre status row in speedo */
   #tyre-row { display:flex; align-items:center; gap:8px; margin-top:8px; justify-content:flex-end; }
   #tyre-temp { font-size:11px; font-weight:800; letter-spacing:1px; }
@@ -438,13 +445,13 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/SSAOPass.js"></script>
-<script src="trackdata.js?v=39"></script>
-<script src="tracks.js?v=39"></script>
-<script src="audio.js?v=39"></script>
-<script src="carmodel.js?v=39"></script>
-<script src="trackbuilder.js?v=39"></script>
-<script src="physics.js?v=39"></script>
-<script src="ai.js?v=39"></script>
-<script src="main.js?v=39"></script>
+<script src="trackdata.js?v=40"></script>
+<script src="tracks.js?v=40"></script>
+<script src="audio.js?v=40"></script>
+<script src="carmodel.js?v=40"></script>
+<script src="trackbuilder.js?v=40"></script>
+<script src="physics.js?v=40"></script>
+<script src="ai.js?v=40"></script>
+<script src="main.js?v=40"></script>
 </body>
 </html>

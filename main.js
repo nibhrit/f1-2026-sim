@@ -623,13 +623,16 @@ function makeCar(driver, track) {
     // pegged at the grip limit either way. Feeding the same figure into grip
     // is what turns the constructors' table into a real lap-time spread.
     //
-    // The grip range is the difficulty dial. 0.36 was too generous — the AI
-    // carried so much corner speed it barely needed the brakes and out-paced
-    // a quick player outright. 0.24 puts Elite at ~76.0s round Barcelona
-    // against a ~75.5s player lap: quick enough to punish mistakes, slow
-    // enough that pole is worth having.
+    // The grip range is the difficulty dial, and it's also the realism dial:
+    // whatever sits above 1.0 is corner grip the player's car does not have.
+    // At 0.24 the Elite field cornered 22% harder than physically possible
+    // for you — they braked later and carried exit speed no clean lap could
+    // answer, which reads as cheating because it is. 0.12 caps the advantage
+    // at 10%: Elite lands ~77.7s at Barcelona against a ~75.5s player race
+    // lap, so they pressure you into mistakes rather than outrunning you.
+    // (Their braking power is ~33 m/s² vs your 35-38 — always was fair.)
     const dt2 = Math.max(0, Math.min(1, (G.difficulty - 0.94) / 0.12));
-    phys.gripBonus = (0.98 + dt2 * 0.24) * (1 - (1 - cp / CAR_PACE_TOP) * 4);
+    phys.gripBonus = (0.98 + dt2 * 0.12) * (1 - (1 - cp / CAR_PACE_TOP) * 4);
   }
   return car;
 }
@@ -910,6 +913,7 @@ function startSession() {
   $('delta-time').className = 't-val';
   // reset stewards for a fresh session
   G.penalties = {};
+  G.penaltyFlash = {};
   G.refCheckpoints = null;
   G.refTime = null;
   if ($('stewards')) $('stewards').innerHTML = '';
@@ -2005,11 +2009,21 @@ function updateHUD() {
       // broadcast-style in-pit tag next to the driver
       const pitTag = c.pitState
         ? ' <span class="p-pit">' + (c.driveThrough ? 'D-T' : 'PIT') + '</span>' : '';
+      // outstanding penalties, exactly as the real timing tower carries them:
+      // accumulated time penalties, plus an unserved drive-through
+      const secs = (G.penalties && G.penalties[c.driver.id]) || 0;
+      const flashed = G.penaltyFlash && G.penaltyFlash[c.driver.id];
+      const fresh = flashed != null && (G.simTime - flashed) < 5;
+      let penTag = '';
+      if (c.driveThrough && !c.pitState)
+        penTag += ' <span class="p-pen' + (fresh ? ' new' : '') + '">D-T</span>';
+      if (secs > 0)
+        penTag += ' <span class="p-pen' + (fresh ? ' new' : '') + '">+' + secs + 's</span>';
       html += '<div class="pos-row'+(c.driver.player?' me':'')+'">'
         + '<span class="p-num">'+(i+1)+'</span>'
         + '<span class="p-swatch" style="background:'+sw+'"></span>'
         + tyreDot(c.phys.compound)
-        + '<span class="p-name">'+c.driver.id+pitTag+'</span>'
+        + '<span class="p-name">'+c.driver.id+pitTag+penTag+'</span>'
         + '<span class="p-gap">'+gap+'</span></div>';
     });
     panel.style.display = 'block';
@@ -2180,6 +2194,8 @@ function orderDriveThrough(car, reason) {
   if (car.finished || car.driveThroughServed) return;
   car.driveThrough = true;
   armPit(car);
+  G.penaltyFlash = G.penaltyFlash || {};
+  G.penaltyFlash[car.driver.id] = G.simTime;
   stewardMsg('STEWARDS: ' + car.driver.id + '  DRIVE-THROUGH — ' + reason, 'coll');
   if (car.driver.player) showBanner('DRIVE-THROUGH PENALTY — ' + reason.toUpperCase(), 3, '#ff5c5c');
 }
@@ -2187,6 +2203,9 @@ function orderDriveThrough(car, reason) {
 function addPenalty(car, secs, reason, kind) {
   const id = car.driver.id;
   G.penalties[id] = (G.penalties[id] || 0) + secs;
+  // timestamp it so the timing tower can flash the new total
+  G.penaltyFlash = G.penaltyFlash || {};
+  G.penaltyFlash[id] = G.simTime;
   const who = car.driver.id;
   stewardMsg((kind === 'limits' ? 'TRACK LIMITS: ' : 'STEWARDS: ') + who + '  +' + secs + 's — ' + reason, kind);
   if (car.driver.player) showBanner('STEWARDS: +' + secs + 's — ' + reason.toUpperCase(), 2.6, '#ff5c5c');
@@ -2644,6 +2663,23 @@ function inSpan(d, a, b, L) {
   return d >= a || d <= b; // span wraps the start/finish line
 }
 
+// How far ahead another car is ON TRACK, regardless of which lap either of
+// you is on. Using totalDist (race distance) breaks the moment lapping
+// starts: a backmarker sitting right in front of you reads as a whole lap
+// BEHIND, so you get no DRS and no tow off a car you are about to pass —
+// the opposite of real F1, where you very much do.
+// Returns Infinity when the other car isn't genuinely just up the road.
+function roadGapAhead(p, op, t) {
+  const L = t.length;
+  let g = op.lapDist - p.lapDist;
+  if (g < 0) g += L;                    // wrap: they're round the lap in front
+  if (g > L * 0.5) return Infinity;     // more than half a lap = actually behind
+  // sanity check against the geometry, so a car on a parallel section of the
+  // circuit doesn't count as being in front of us
+  if (Math.hypot(op.x - p.x, op.z - p.z) > g + 30) return Infinity;
+  return g;
+}
+
 // signed distance from d to target going forwards around the lap
 function fwdDist(d, target, L) {
   let g = target - d;
@@ -2654,11 +2690,14 @@ function fwdDist(d, target, L) {
 // gap in seconds to the nearest car ahead on the road
 function gapAheadSec(c) {
   const p = c.phys;
+  const t = G.track;
   let best = Infinity;
   for (const o of G.cars) {
     if (o === c || o.finished || o.pitState) continue;
-    const gap = o.phys.totalDist - p.totalDist;
-    if (gap > 0 && gap < best) best = gap;
+    // on-track gap, so lapped cars and cars you're lapping both count —
+    // in real F1 you get DRS behind a backmarker just the same
+    const gap = roadGapAhead(p, o.phys, t);
+    if (gap > 1 && gap < best) best = gap;
   }
   if (!isFinite(best)) return Infinity;
   return best / Math.max(14, p.speed); // metres → seconds at current pace
@@ -2683,10 +2722,9 @@ function updateSlipstream() {
     for (const o of G.cars) {
       if (o === c || o.finished || o.pitState) continue;
       const op = o.phys;
-      const gap = op.totalDist - p.totalDist;
+      // on-track gap: a car's wake doesn't care whose lap it is
+      const gap = roadGapAhead(p, op, t);
       if (gap <= 2 || gap > TOW_RANGE) continue;
-      // must actually be on the road ahead, not a lapped car elsewhere
-      if (Math.hypot(op.x - p.x, op.z - p.z) > TOW_RANGE + 12) continue;
       const dLat = Math.abs(t.lateral(op.x, op.z, op.trackIdx) - myLat);
       if (dLat > TOW_WIDTH) continue;
       const byGap = 1 - (gap - 2) / (TOW_RANGE - 2);
@@ -2927,5 +2965,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 39';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 40';
 })();
