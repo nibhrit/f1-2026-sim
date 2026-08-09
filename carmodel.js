@@ -23,6 +23,21 @@ function _carTex(w, h, draw) {
 }
 const _hex = c => '#' + (c >>> 0).toString(16).padStart(6, '0');
 
+// Canvas textures are expensive to build and expensive to keep on the GPU.
+// Every car used to generate its own set, so a 22-car grid burned 132 of them
+// even though there are only 11 liveries. They're cached per team here and
+// flagged shared, so teardown leaves them alone and the next session reuses
+// them instead of uploading a fresh copy.
+const _texCache = new Map();
+function _shared(key, make) {
+  if (!_texCache.has(key)) {
+    const t = make();
+    t.__shared = true;      // disposeGroup skips these
+    _texCache.set(key, t);
+  }
+  return _texCache.get(key);
+}
+
 // Sponsor wordmarks per team. Generic where a real one isn't obvious — this
 // is a personal project, so these are hand-lettered approximations rather
 // than reproductions of any brand's actual artwork.
@@ -236,7 +251,7 @@ function buildCockpitRig(teamKey) {
   mount.userData.spin = spin;
 
   const mGrip = new THREE.MeshStandardMaterial({ color: 0x17171b, metalness: 0.25, roughness: 0.62 });
-  const mFace = new THREE.MeshStandardMaterial({ map: wheelFaceTex(teamKey), metalness: 0.3, roughness: 0.45 });
+  const mFace = new THREE.MeshStandardMaterial({ map: _shared(teamKey+':face', () => wheelFaceTex(teamKey)), metalness: 0.3, roughness: 0.45 });
   const mMetal= new THREE.MeshStandardMaterial({ color: 0x8d919c, metalness: 0.85, roughness: 0.3 });
   const mGlove= new THREE.MeshStandardMaterial({ color: 0x1b1b22, metalness: 0.1, roughness: 0.78 });
   const mSuit = new THREE.MeshStandardMaterial({ color: TEAMS[teamKey].color, metalness: 0.1, roughness: 0.72 });
@@ -295,9 +310,9 @@ function buildF1Car(teamKey, opts) {
   const g = new THREE.Group();
 
   // PBR paint + carbon: picks up sky reflections via scene.environment (IBL)
-  const liveryMain  = liveryTex(teamKey, 'main');
-  const liveryPod   = liveryTex(teamKey, 'pod');
-  const liveryCover = liveryTex(teamKey, 'cover');
+  const liveryMain  = _shared(teamKey+':main',  () => liveryTex(teamKey, 'main'));
+  const liveryPod   = _shared(teamKey+':pod',   () => liveryTex(teamKey, 'pod'));
+  const liveryCover = _shared(teamKey+':cover', () => liveryTex(teamKey, 'cover'));
   const mBody = new THREE.MeshStandardMaterial({ color: team.color, metalness: 0.38, roughness: 0.32 });
   const mLivery = new THREE.MeshStandardMaterial({ map: liveryMain, metalness: 0.32, roughness: 0.34 });
   const mPod  = new THREE.MeshStandardMaterial({ map: liveryPod, metalness: 0.32, roughness: 0.34 });
@@ -305,9 +320,9 @@ function buildF1Car(teamKey, opts) {
   const mAcc  = new THREE.MeshStandardMaterial({ color: team.accent, metalness: 0.30, roughness: 0.36 });
   const mDark = new THREE.MeshStandardMaterial({ color: 0x131318, metalness: 0.2, roughness: 0.7 });
   const mCarb = new THREE.MeshStandardMaterial({ color: 0x1d1d24, metalness: 0.5, roughness: 0.38 });
-  const mTyre = new THREE.MeshStandardMaterial({ map: tyreTex(), color: 0xffffff, metalness: 0.0, roughness: 0.92 });
+  const mTyre = new THREE.MeshStandardMaterial({ map: _shared('tyre', tyreTex), color: 0xffffff, metalness: 0.0, roughness: 0.92 });
   const mRim  = new THREE.MeshStandardMaterial({ color: 0x9a9aa4, metalness: 0.9, roughness: 0.25 });
-  const mCover2 = new THREE.MeshStandardMaterial({ map: wheelCoverTex(teamKey), metalness: 0.65, roughness: 0.35, side: THREE.DoubleSide });
+  const mCover2 = new THREE.MeshStandardMaterial({ map: _shared(teamKey+':wheel', () => wheelCoverTex(teamKey)), metalness: 0.65, roughness: 0.35, side: THREE.DoubleSide });
   const mDisc = new THREE.MeshStandardMaterial({ color: 0x2b2b2f, metalness: 0.35, roughness: 0.65 });
   const mHelm = new THREE.MeshStandardMaterial({ color: opts.helmet || 0xffffff, metalness: 0.3, roughness: 0.25 });
   [mBody, mLivery, mPod, mCover, mAcc, mCarb, mRim, mCover2, mHelm].forEach(m => { m.envMapIntensity = 0.85; });
@@ -474,14 +489,14 @@ function buildF1Car(teamKey, opts) {
 
   // ---------- soft blob shadow ----------
   {
-    const stex = _carTex(128, 64, (ctx) => {
+    const stex = _shared('blob', () => _carTex(128, 64, (ctx) => {
       const grd = ctx.createRadialGradient(64,32,4, 64,32,60);
       grd.addColorStop(0, 'rgba(0,0,0,0.55)');
       grd.addColorStop(0.6, 'rgba(0,0,0,0.35)');
       grd.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = grd;
       ctx.fillRect(0,0,128,64);
-    });
+    }));
     const shadow = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 6.0),
       new THREE.MeshBasicMaterial({ map: stex, transparent: true, depthWrite: false }));
     shadow.rotation.x = -Math.PI/2;

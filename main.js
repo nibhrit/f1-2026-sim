@@ -586,10 +586,31 @@ function teardownSession() {
   G.player = null;
 }
 
+// THREE's material.dispose() does NOT free the textures hanging off it, so
+// every session was leaving its canvas textures resident on the GPU: the
+// asphalt albedo/normal/roughness, ground, sky dome, barriers, crowd, kerbs
+// and signage. Start enough sessions in one sitting and the driver is juggling
+// hundreds of dead textures, which is exactly what a slow creeping frame rate
+// looks like. Textures flagged __shared (the per-team car liveries) are
+// deliberately kept — they're a bounded set reused by every session.
+const TEX_SLOTS = ['map','normalMap','roughnessMap','metalnessMap','emissiveMap',
+                   'aoMap','alphaMap','bumpMap','displacementMap','envMap','lightMap'];
+
+function disposeMaterial(m) {
+  if (!m) return;
+  for (const slot of TEX_SLOTS) {
+    const tex = m[slot];
+    if (tex && tex.dispose && !tex.__shared) tex.dispose();
+  }
+  m.dispose();
+}
+
 function disposeGroup(grp) {
   grp.traverse(o => {
     if (o.geometry) o.geometry.dispose();
-    if (o.material) { Array.isArray(o.material) ? o.material.forEach(m=>m.dispose()) : o.material.dispose(); }
+    if (o.material) {
+      Array.isArray(o.material) ? o.material.forEach(disposeMaterial) : disposeMaterial(o.material);
+    }
   });
 }
 
@@ -2965,5 +2986,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 40';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 41';
 })();
