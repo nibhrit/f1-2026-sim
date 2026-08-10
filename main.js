@@ -2986,5 +2986,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 42';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 43';
 })();

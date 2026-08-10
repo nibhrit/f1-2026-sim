@@ -117,7 +117,7 @@ class CarPhysics {
     this.onKerb = onKerb;
 
     // kerbs are nearly free; grass costs grip but isn't a wall
-    const gripMul = onGrass ? 0.62 : (onKerb ? 0.96 : 1.0);
+    const gripMul = onGrass ? 0.45 : (onKerb ? 0.94 : 1.0);
 
     // --- tyre temperature: cold tyres grip less, must be worked up to the
     // window; sustained abuse overheats softs. Softs warm fastest.
@@ -166,7 +166,7 @@ class CarPhysics {
         let engine = Math.min(14 * wetTraction, 380 / Math.max(v, 10)) * this.throttle;
         // traction limit: only heavy steering at very low speed costs drive
         if (v < 16 && Math.abs(this.steer) > 0.5) engine *= 0.85;
-        accel += engine * (onGrass ? 0.55 : 1);
+        accel += engine * (onGrass ? 0.40 : 1);
       }
     }
     if (this.brake > 0) {
@@ -191,7 +191,7 @@ class CarPhysics {
       let cd = this.drsOpen ? 0.00045 : 0.0006;
       cd *= (1 - 0.16 * (this.tow || 0));
       accel -= dir * (cd * v * v + 0.4);
-      if (onGrass) accel -= dir * 0.018 * Math.abs(v);
+      if (onGrass) accel -= dir * 0.030 * Math.abs(v);   // cutting must not pay
     }
     this.speed = v + accel * dt;
     if (this.speed < -REVERSE_MAX) this.speed = -REVERSE_MAX;

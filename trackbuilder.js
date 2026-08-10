@@ -7,8 +7,12 @@ class TrackData {
     this.def = def;
     this.width = def.width;
     // street circuits: walls hug the track; permanent circuits have run-off
+    // Street circuits are lined with barriers, not run-off. At +5 m you could
+    // straight-line a Monaco chicane across "grass" that costs almost nothing
+    // and come out 6 s under the theoretical ideal lap. Real Monaco barriers
+    // sit a metre or two off the white line, so the road is the only option.
     this.wallOff = (def.theme && def.theme.indexOf('street') === 0)
-      ? this.width/2 + 5
+      ? this.width/2 + 2.0
       : this.width/2 + 8.2;
     this._sample(def.points);
   }
@@ -825,19 +829,20 @@ function buildTrackScene(track, scene, themeName) {
     // Where a circuit doubles back on itself — Monaco is full of it — a patch
     // of ground can sit between two road sections at different heights. Using
     // the nearest sample meant the terrain took the HIGHER of the two and then
-    // punched up through the lower road. Clearance also raised from 0.55 m to
-    // 1.1 m, because camber alone drops the outer edge of the road by up to
-    // 0.37 m below the centreline height.
+    // punched up through the lower road. The search radius is deliberately
+    // small: at 70 m it also dragged the ground far below the road on any
+    // gradient, which on Monaco's 20 m of elevation opened gaps up to 10 m
+    // deep beside the track that you could see straight through.
     let bd = Infinity, bi = 0, loY = Infinity;
     for (let q=0;q<N;q+=6){
       const dx=track.px[q]-x, dz=track.pz[q]-z;
       const dd=dx*dx+dz*dz;
       if (dd<bd){bd=dd;bi=q;}
-      if (dd < 4900 && track.py[q] < loY) loY = track.py[q];   // within 70 m
+      if (dd < 625 && track.py[q] < loY) loY = track.py[q];    // within 25 m
     }
     const d = Math.sqrt(bd);
     const base = Math.min(track.py[bi], isFinite(loY) ? loY : track.py[bi]);
-    const CLEAR = 1.1;
+    const CLEAR = 0.9;
     if (d < 55) return base - CLEAR;
     let t01 = Math.min(1, (d-55)/180);
     t01 = t01*t01*(3-2*t01); // smoothstep
@@ -879,6 +884,39 @@ function buildTrackScene(track, scene, themeName) {
       polygonOffset: true, polygonOffsetFactor: 4, polygonOffsetUnits: 4 }));
     ground.userData.ground = true;
     grp.add(ground);
+  }
+
+  // --- skirt under the road edge ---
+  // The road is a ribbon floating above a separately generated ground mesh, so
+  // wherever the two diverge there is an open gap you can see under. Rather
+  // than trying to make the terrain follow the road exactly — impossible on a
+  // 150x150 grid — close the gap with a vertical apron dropped from the verge
+  // down past the ground on both sides.
+  {
+    const skirtM = new THREE.MeshStandardMaterial({
+      color: theme.night ? 0x1b1d24 : 0x3f4048, roughness: 0.95, metalness: 0.0,
+      side: THREE.DoubleSide });
+    [1, -1].forEach(side => {
+      const off = side * (hw + 1.15);
+      const v = new Float32Array((N+1)*2*3), uv = new Float32Array((N+1)*2*2), ia = [];
+      for (let i2 = 0; i2 <= N; i2++) {
+        const k = i2 % N;
+        const p = track.posAt(k, off);
+        const top = H(k, off) + 0.04;
+        const ground = terrainY(p.x, p.z) - 1.5;   // always finish below the dirt
+        v[i2*6+0]=p.x; v[i2*6+1]=top;    v[i2*6+2]=p.z;
+        v[i2*6+3]=p.x; v[i2*6+4]=ground; v[i2*6+5]=p.z;
+        uv[i2*4+0]=0; uv[i2*4+1]=i2*0.05; uv[i2*4+2]=1; uv[i2*4+3]=i2*0.05;
+        if (i2 < N) { const b = i2*2; ia.push(b,b+1,b+2, b+1,b+3,b+2); }
+      }
+      const gg = new THREE.BufferGeometry();
+      gg.setAttribute('position', new THREE.BufferAttribute(v,3));
+      gg.setAttribute('uv', new THREE.BufferAttribute(uv,2));
+      gg.setIndex(ia); gg.computeVertexNormals();
+      const m = new THREE.Mesh(gg, skirtM);
+      m.userData.ground = true;      // receives shadow, doesn't cast
+      grp.add(m);
+    });
   }
 
   // --- barriers (striped) + catch fencing, following elevation ---
