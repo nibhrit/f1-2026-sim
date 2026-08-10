@@ -234,6 +234,13 @@ Object.keys(START_SHIFT).forEach(id => {
   t.points = t.points.slice(s).concat(t.points.slice(0, s));
 });
 
+// Covered sections, as a fraction of the lap. Monaco's tunnel runs from just
+// after Portier to the braking zone for the Nouvelle Chicane — roughly 45% to
+// 57% of the way round. Add entries here for any other circuit that needs one.
+const TRACK_TUNNEL = {
+  monaco: [0.45, 0.575],
+};
+
 // ============================================================
 // TEAM PERFORMANCE MODEL
 // ============================================================

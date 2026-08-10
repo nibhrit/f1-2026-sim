@@ -20,7 +20,9 @@ class TrackData {
       const a = pts[i], b = pts[(i+1)%n];
       est += Math.hypot(b.x-a.x, b.z-a.z);
     }
-    const SAMPLES = Math.max(600, Math.min(2600, Math.floor(est / 3)));
+    // ~1.6 m between samples, not 3 m. At 3 m a Monaco chicane was only a
+    // handful of points long and could not survive the smoothing below.
+    const SAMPLES = Math.max(900, Math.min(4200, Math.floor(est / 1.6)));
     this.n = SAMPLES;
     this.px = new Float32Array(SAMPLES);
     this.pz = new Float32Array(SAMPLES);
@@ -45,7 +47,19 @@ class TrackData {
       this.px[i] = cr(p0.x,p1.x,p2.x,p3.x,t);
       this.pz[i] = cr(p0.z,p1.z,p2.z,p3.z,t);
     }
-    // kink smoothing: cap curvature (~9m min radius)
+    // Kink smoothing. This exists to kill unphysical spikes in the source
+    // centreline data, but it was capping curvature at a 9 m radius and
+    // blending 60% toward the midpoint on every one of 120 passes — which
+    // doesn't just clean up noise, it erases real corners. Monaco came out
+    // 3032 m instead of 3337 m with only ONE corner under 30 m radius,
+    // because the hairpin, Rascasse and both chicanes had been rounded off.
+    // The path smoothing itself is kept as it was: the source centrelines are
+    // polylines with points ~30 m apart, and interpolating them finely exposes
+    // kinks that aren't real corners. What changed is the SAMPLING above and
+    // the curvature window below, which is where the lost corners actually
+    // went. Measured over ten circuits with known pole times, relaxing this
+    // as well made every lap ~10% too slow for no extra braking zones.
+    const MIN_R = 9.0;
     for (let pass = 0; pass < 120; pass++) {
       let worst = 0;
       const npx = new Float32Array(this.px), npz = new Float32Array(this.pz);
@@ -56,13 +70,13 @@ class TrackData {
         const hc=Math.hypot(this.px[b]-this.px[a], this.pz[b]-this.pz[a])/2 || 1;
         const c = 2*dev/(hc*hc+dev*dev);
         if (c > worst) worst = c;
-        if (c > 1/9) {
+        if (c > 1/MIN_R) {
           npx[i]=this.px[i]*0.4+mx*0.6;
           npz[i]=this.pz[i]*0.4+mz*0.6;
         }
       }
       this.px=npx; this.pz=npz;
-      if (worst <= 1/9) break;
+      if (worst <= 1/MIN_R) break;
     }
     // tangents, normals, distances
     let d = 0;
@@ -88,7 +102,13 @@ class TrackData {
       const ds = Math.hypot(this.px[j]-this.px[i], this.pz[j]-this.pz[i]) || 1;
       rawC[i] = da/ds;
     }
-    const W = 6;
+    // Smooth the curvature over a fixed LENGTH of road, not a fixed number of
+    // samples. At the old ±6 samples and 3 m spacing this averaged over ±18 m
+    // — longer than a Monaco chicane, so chicanes measured as straight and the
+    // sim never asked you to brake for them. ±8 m at the finer sampling keeps
+    // source noise out while leaving genuine short corners intact: slow-corner
+    // road across the calendar goes from 2.7% of the lap to 3.4%.
+    const W = Math.max(1, Math.round(8 / (d / SAMPLES)));
     for (let i = 0; i < SAMPLES; i++) {
       let s = 0;
       for (let o=-W;o<=W;o++) s += rawC[(i+o+SAMPLES)%SAMPLES];
@@ -801,19 +821,28 @@ function buildTrackScene(track, scene, themeName) {
 
   // --- terrain height query (blends toward track elevation near the circuit) ---
   function terrainY(x, z) {
-    let bd = Infinity, bi = 0;
+    // Take the LOWEST nearby road elevation, not just the nearest sample's.
+    // Where a circuit doubles back on itself — Monaco is full of it — a patch
+    // of ground can sit between two road sections at different heights. Using
+    // the nearest sample meant the terrain took the HIGHER of the two and then
+    // punched up through the lower road. Clearance also raised from 0.55 m to
+    // 1.1 m, because camber alone drops the outer edge of the road by up to
+    // 0.37 m below the centreline height.
+    let bd = Infinity, bi = 0, loY = Infinity;
     for (let q=0;q<N;q+=6){
       const dx=track.px[q]-x, dz=track.pz[q]-z;
       const dd=dx*dx+dz*dz;
       if (dd<bd){bd=dd;bi=q;}
+      if (dd < 4900 && track.py[q] < loY) loY = track.py[q];   // within 70 m
     }
     const d = Math.sqrt(bd);
-    const base = track.py[bi];
-    if (d < 42) return base - 0.55;
-    let t01 = Math.min(1, (d-42)/180);
+    const base = Math.min(track.py[bi], isFinite(loY) ? loY : track.py[bi]);
+    const CLEAR = 1.1;
+    if (d < 55) return base - CLEAR;
+    let t01 = Math.min(1, (d-55)/180);
     t01 = t01*t01*(3-2*t01); // smoothstep
     const rolling = 3.5*Math.sin(x*0.004)*Math.cos(z*0.0047) + 1.5*Math.sin(x*0.011+z*0.009);
-    return (base-0.55)*(1-t01) + rolling*t01;
+    return (base-CLEAR)*(1-t01) + rolling*t01;
   }
 
   // --- terrain mesh (sculpted ground, no more flatland) ---
@@ -1097,6 +1126,49 @@ function buildTrackScene(track, scene, themeName) {
     gantry.position.set(p.x,y0,p.z);
     gantry.rotation.y = dirA;
     grp.add(gantry);
+  }
+
+  // --- tunnel (Monaco) ---
+  // Roof and side walls over a stretch of the lap. Built unlit and dark so it
+  // reads as a covered section, with the far end open to daylight.
+  {
+    const span = (typeof TRACK_TUNNEL !== 'undefined') && TRACK_TUNNEL[track.def.id];
+    if (span) {
+      const i0 = Math.floor(span[0] * N), i1 = Math.floor(span[1] * N);
+      const H_ROOF = 7.2, OUT = hw + 2.6;
+      const wallM = new THREE.MeshStandardMaterial({
+        color: theme.night ? 0x22252e : 0x6d6a63, roughness: 0.92, metalness: 0.0,
+        side: THREE.DoubleSide });
+      const roofM = new THREE.MeshStandardMaterial({
+        color: 0x2a2823, roughness: 0.95, metalness: 0.0, side: THREE.DoubleSide });
+      // sodium lamps down the middle, the thing that makes a tunnel read as one
+      const lampM = new THREE.MeshBasicMaterial({ color: 0xffcc66 });
+      const strip = (o1, o2, y1, y2, mat) => {
+        const cnt = i1 - i0;
+        const v = new Float32Array((cnt+1)*2*3), uv = new Float32Array((cnt+1)*2*2), ia = [];
+        for (let s2 = 0; s2 <= cnt; s2++) {
+          const k = (i0 + s2) % N;
+          const a = track.posAt(k, o1), b = track.posAt(k, o2);
+          v[s2*6+0]=a.x; v[s2*6+1]=track.py[k]+y1; v[s2*6+2]=a.z;
+          v[s2*6+3]=b.x; v[s2*6+4]=track.py[k]+y2; v[s2*6+5]=b.z;
+          uv[s2*4+0]=0; uv[s2*4+1]=s2*0.06; uv[s2*4+2]=1; uv[s2*4+3]=s2*0.06;
+          if (s2 < cnt) { const q = s2*2; ia.push(q,q+1,q+2, q+1,q+3,q+2); }
+        }
+        const gg = new THREE.BufferGeometry();
+        gg.setAttribute('position', new THREE.BufferAttribute(v,3));
+        gg.setAttribute('uv', new THREE.BufferAttribute(uv,2));
+        gg.setIndex(ia); gg.computeVertexNormals();
+        const m = new THREE.Mesh(gg, mat);
+        m.userData.noShadow = true;   // the tunnel shades itself, cheaply
+        return m;
+      };
+      grp.add(strip(-OUT, -OUT, 0, H_ROOF, wallM));   // left wall
+      grp.add(strip( OUT,  OUT, 0, H_ROOF, wallM));   // right wall
+      grp.add(strip(-OUT,  OUT, H_ROOF, H_ROOF, roofM)); // roof
+      // lamp strip just under the roof
+      const lamp = strip(-0.9, 0.9, H_ROOF-0.35, H_ROOF-0.35, lampM);
+      grp.add(lamp);
+    }
   }
 
   // --- shadow flags ---

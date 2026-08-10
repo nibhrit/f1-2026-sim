@@ -1,6 +1,9 @@
 // ============================================================
 // Detailed low-poly F1 car (2026-style). Returns THREE.Group
-// with .userData.wheels {fl,fr,rl,rr}. Car faces +Z, ~5.6m long.
+// with .userData.wheels {fl,fr,rl,rr}. Car faces +Z.
+// 2026 regulations: 1900 mm wide (2025 cars were 2000 mm) and a 3400 mm
+// wheelbase (2025 was 3600 mm) — the new cars are narrower AND longer-coupled
+// than the previous generation, part of the "nimble car" rule set.
 //
 // Contract relied on by main.js and the test harnesses — do not change:
 //   userData.wheels {fl,fr,rl,rr}   each wheel group's children[0] and [1]
@@ -357,19 +360,19 @@ function buildF1Car(teamKey, opts) {
   g.add(tip);
 
   // ---------- front wing (4 elements + endplates) ----------
-  box(1.96, 0.035, 0.62, mCarb, 0, 0.13, 2.78).userData.caster = true;  // front wing plane
-  box(1.96, 0.03, 0.34, mCarb, 0, 0.21, 2.92, -0.28);
-  box(1.96, 0.028, 0.24, mBody, 0, 0.30, 3.0, -0.42);
-  box(1.90, 0.024, 0.16, mAcc,  0, 0.37, 3.06, -0.52);  // top flap, accent trim
+  box(1.88, 0.035, 0.62, mCarb, 0, 0.13, 2.78).userData.caster = true;  // front wing plane
+  box(1.88, 0.03, 0.34, mCarb, 0, 0.21, 2.92, -0.28);
+  box(1.88, 0.028, 0.24, mBody, 0, 0.30, 3.0, -0.42);
+  box(1.82, 0.024, 0.16, mAcc,  0, 0.37, 3.06, -0.52);  // top flap, accent trim
   // endplates with accent stripe + turning vanes under the nose
-  [[-0.99],[0.99]].forEach(([x]) => {
+  [[-0.94],[0.94]].forEach(([x]) => {
     box(0.05, 0.24, 0.72, mCarb, x, 0.24, 2.82);
     box(0.052, 0.05, 0.72, mAcc, x, 0.375, 2.82);
     box(0.04, 0.14, 0.42, mCarb, x*0.42, 0.24, 2.36, 0, 0, x>0 ? -0.2 : 0.2);
   });
 
   // ---------- suspension ----------
-  [[-0.55,1.62,0.02],[0.55,1.62,0.02],[-0.58,-1.42,-0.05],[0.58,-1.42,-0.05]].forEach(p => {
+  [[-0.52,1.80,0.02],[0.52,1.80,0.02],[-0.50,-1.60,-0.05],[0.50,-1.60,-0.05]].forEach(p => {
     box(0.72, 0.03, 0.05, mCarb, p[0], 0.52, p[1], 0, 0, p[0]>0?-0.12:0.12);
     box(0.72, 0.03, 0.05, mCarb, p[0], 0.32, p[1]+0.18, 0, 0, p[0]>0?-0.08:0.08);
   });
@@ -388,7 +391,7 @@ function buildF1Car(teamKey, opts) {
   });
 
   // ---------- floor + diffuser ----------
-  box(1.9, 0.05, 3.3, mCarb, 0, 0.12, 0.0).userData.caster = true;      // floor
+  box(1.86, 0.05, 3.5, mCarb, 0, 0.12, 0.0).userData.caster = true;      // floor
   const diff = box(1.15, 0.22, 0.55, mCarb, 0, 0.24, -1.78, 0.45);
   box(1.05, 0.03, 0.5, mDark, 0, 0.15, -1.72);              // diffuser ceiling
 
@@ -481,10 +484,10 @@ function buildF1Car(teamKey, opts) {
     return w;
   }
   const wheels = {
-    fl: wheel(-0.84, 1.62, true),
-    fr: wheel( 0.84, 1.62, true),
-    rl: wheel(-0.86, -1.42, false),
-    rr: wheel( 0.86, -1.42, false),
+    fl: wheel(-0.80, 1.80, true),
+    fr: wheel( 0.80, 1.80, true),
+    rl: wheel(-0.75, -1.60, false),
+    rr: wheel( 0.75, -1.60, false),
   };
 
   // ---------- soft blob shadow ----------
@@ -497,7 +500,7 @@ function buildF1Car(teamKey, opts) {
       ctx.fillStyle = grd;
       ctx.fillRect(0,0,128,64);
     }));
-    const shadow = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 6.0),
+    const shadow = new THREE.Mesh(new THREE.PlaneGeometry(2.1, 5.6),
       new THREE.MeshBasicMaterial({ map: stex, transparent: true, depthWrite: false }));
     shadow.rotation.x = -Math.PI/2;
     shadow.position.y = 0.07;
