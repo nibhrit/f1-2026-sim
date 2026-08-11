@@ -842,7 +842,11 @@ function buildTrackScene(track, scene, themeName) {
     }
     const d = Math.sqrt(bd);
     const base = Math.min(track.py[bi], isFinite(loY) ? loY : track.py[bi]);
-    const CLEAR = 0.9;
+    // 0.55 m is the smallest clearance that keeps the ground out of the road
+    // on every circuit (measured); any less and Austria, Belgium and Brazil
+    // start punching through again. Keeping it tight matters because the car
+    // has to sit on this when it runs wide.
+    const CLEAR = 0.55;
     if (d < 55) return base - CLEAR;
     let t01 = Math.min(1, (d-55)/180);
     t01 = t01*t01*(3-2*t01); // smoothstep
@@ -885,6 +889,9 @@ function buildTrackScene(track, scene, themeName) {
     ground.userData.ground = true;
     grp.add(ground);
   }
+
+  // the car needs this to sit on the ground when it runs off the road
+  track.terrainY = terrainY;
 
   // --- skirt under the road edge ---
   // The road is a ribbon floating above a separately generated ground mesh, so

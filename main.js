@@ -354,7 +354,7 @@ const G = {
   bestCheckpoints: null,  // for live delta
   curCheckpoints: null,
   msgTimer: 0,
-  difficulty: 1.02,       // AI ability multiplier (Pro default)
+  difficulty: 1.06,       // AI ability multiplier (Pro default)
   penalties: {},          // stewards' time penalties per driver id
   raceDist: 'short',      // race distance: short | half | full
   weekend: false,         // Grand Prix weekend flow
@@ -652,7 +652,10 @@ function makeCar(driver, track) {
     // at 10%: Elite lands ~77.7s at Barcelona against a ~75.5s player race
     // lap, so they pressure you into mistakes rather than outrunning you.
     // (Their braking power is ~33 m/s² vs your 35-38 — always was fair.)
-    const dt2 = Math.max(0, Math.min(1, (G.difficulty - 0.94) / 0.12));
+    // The whole ladder moved up a step: what used to be Elite is now Pro.
+    // The grip curve is re-anchored to match, otherwise 1.06 and 1.10 would
+    // both clamp to full grip and Pro/Elite would be identical.
+    const dt2 = Math.max(0, Math.min(1, (G.difficulty - 0.98) / 0.12));
     phys.gripBonus = (0.98 + dt2 * 0.12) * (1 - (1 - cp / CAR_PACE_TOP) * 4);
   }
   return car;
@@ -1507,11 +1510,26 @@ function endRace() {
     clearRaceSnapshot();
     nextLabel = 'Standings';
   }
+  // Time gap for cars that never took the flag. They have no finishTime, so
+  // work one out from how far behind they actually were and the pace they were
+  // running: distance still to cover / their own average speed. Real timing
+  // screens just say "+1 Lap", but the seconds are more use when you want to
+  // know how close it was.
+  const lapsOf = r => Math.max(1, G.raceLaps + 1 - r.phys.lap);
+  function projectedGap(r) {
+    const raced = r.phys.totalDist;
+    const full = G.raceLaps * G.track.length;
+    const behind = Math.max(0, full - raced);
+    // their own average pace over the race, falling back to the winner's
+    const elapsed = Math.max(1, G.simTime);
+    const pace = raced > 100 ? raced / elapsed : G.track.length / Math.max(1, winner.bestLap || 90);
+    return behind / Math.max(5, pace);
+  }
   const resRows = rows.map((r,i)=>({
     pos:i+1, name:r.driver.name, team:r.driver.team, me:!!r.driver.player,
     val: (r.dsq ? 'DSQ — no mandatory stop'
        : r.finished ? (i===0 ? fmtTime(r.finishTime) : '+'+(r.finishTime-winT).toFixed(3))
-       : '+' + Math.max(1, G.raceLaps + 1 - r.phys.lap) + ' Lap' + ((G.raceLaps+1-r.phys.lap)>1?'s':''))
+       : '+' + fmtTime(projectedGap(r)) + ' (' + lapsOf(r) + ' Lap' + (lapsOf(r)>1?'s':'') + ')')
        + (r.stewPen ? ' (+' + r.stewPen + 's PEN)' : '')
        + (r === flCar ? ' · <span style="color:#a640ff">FL</span>' : ''),
   }));
@@ -2432,8 +2450,19 @@ function frame(now) {
   const trk = G.track;
   G.cars.forEach(c => {
     const p = c.phys;
-    // interpolated surface height (+0.05 = top of the road ribbon) — no floating
-    const y = trk.surfaceY(p.x, p.z, p.trackIdx) + 0.05;
+    // Ride height follows whatever the car is actually on. surfaceY only knows
+    // about the road, so once a car ran wide it stayed pinned at road height
+    // and hovered above the grass, which sits below the tarmac. Past the verge
+    // we blend onto the terrain instead.
+    let y = trk.surfaceY(p.x, p.z, p.trackIdx) + 0.05;
+    if (trk.terrainY) {
+      const lat = Math.abs(trk.lateral(p.x, p.z, p.trackIdx));
+      const edge = trk.width/2 + 1.15;          // outside edge of the turf strip
+      if (lat > edge) {
+        const t01 = Math.min(1, (lat - edge) / 2.5);
+        y = y*(1-t01) + (trk.terrainY(p.x, p.z) + 0.05)*t01;
+      }
+    }
     c.mesh.position.set(p.x, y, p.z);
     c.mesh.rotation.order = 'YXZ';
     c.mesh.rotation.y = p.heading;
@@ -2986,5 +3015,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 43';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 45';
 })();
