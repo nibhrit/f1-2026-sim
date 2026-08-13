@@ -155,9 +155,15 @@ class AIDriver {
       const limit = Math.sqrt(cs[k]*cs[k]*pace*pace + 2*decel*d);
       if (limit < vAllow) vAllow = limit;
     }
-    // 3% margin for the fact the car never tracks the planned line perfectly.
-    // Without it every small pursuit error becomes an excursion.
-    const hereLimit = cs[idx] * pace * 0.97;
+    // Corner-exit release. This clamp stops the car exceeding the lateral
+    // limit at its current radius — but read only at the CURRENT sample it
+    // also pinned the car to the apex speed all the way out of the corner,
+    // long after the road had opened up. Taking the better of here and where
+    // the car will be in 0.2 s lets it get on the power at the exit while
+    // still tightening on entry, where the sample ahead is slower.
+    // Measured: COTA -1.2s, Barcelona -1.3s, Monaco -0.6s.
+    const kSoon = (idx + Math.ceil(Math.max(2, v * 0.20) / (t.length/N))) % N;
+    const hereLimit = Math.max(cs[idx], cs[kSoon]) * pace * 0.97;
     vAllow = Math.min(vAllow, hereLimit * 1.06);
     // AI top speed sits just below the player's (~308-312 vs 315 km/h). Wet
     // barely dents top speed (drag-limited); the corner-pace drop handles the rest.
