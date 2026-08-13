@@ -99,10 +99,20 @@ class CarPhysics {
   step(dt, inp) {
     const t = this.track;
     // smooth steering (faster return to center)
-    const steerSpeed = (Math.abs(inp.steer) > Math.abs(this.steer)) ? 7 : 11;
+    // Slower than before (was 7/11). With realistic grip, instant lock-to-lock
+    // on a keyboard just spins the car; real steering isn't instant either.
+    const steerSpeed = (Math.abs(inp.steer) > Math.abs(this.steer)) ? 4.5 : 8;
     this.steer += Math.max(-steerSpeed*dt, Math.min(steerSpeed*dt, inp.steer - this.steer));
-    this.throttle = inp.throttle;
-    this.brake = inp.brake;
+    // Pedal travel. A keyboard gives instant 0->100%, which is a big part of
+    // why the car felt weightless: real brake pressure builds over ~0.2s and
+    // throttle is fed in, not switched on. Release is quicker than application,
+    // as it is in a real car.
+    const rate = (cur, want, up, down) => {
+      const r = (want > cur ? up : down) * dt;
+      return cur + Math.max(-r, Math.min(r, want - cur));
+    };
+    this.throttle = rate(this.throttle, inp.throttle, 4.5, 9);
+    this.brake    = rate(this.brake,    inp.brake,    6.0, 11);
 
     const v = this.speed;
 
@@ -163,7 +173,13 @@ class CarPhysics {
         // wet cuts mechanical traction (wheelspin off slow corners) but NOT the
         // aero-drag-limited top end — straights stay fast in the rain, like real F1
         const wetTraction = 0.55 + 0.45 * wg;
-        let engine = Math.min(14 * wetTraction, 380 / Math.max(v, 10)) * this.throttle;
+        // Traction-limited at low speed (it cannot just dump 1.4g from rest —
+        // that is what makes a launch feel like it is fighting for grip), then
+        // power-limited. Raising the power term keeps it pulling at the top end
+        // instead of dying against drag, which is the "powerful machinery"
+        // sensation: slower initially, relentless afterwards.
+        const tractionCap = 8.6 + 0.22 * Math.min(v, 25);   // 0.88g at rest -> 1.43g by 90 km/h
+        let engine = Math.min(tractionCap * wetTraction, 470 / Math.max(v, 10)) * this.throttle;
         // traction limit: only heavy steering at very low speed costs drive
         if (v < 16 && Math.abs(this.steer) > 0.5) engine *= 0.85;
         accel += engine * (onGrass ? 0.40 : 1);
@@ -171,7 +187,11 @@ class CarPhysics {
     }
     if (this.brake > 0) {
       if (this.speed > 0.5) {
-        accel -= (30 + v*0.12) * this.brake * gripMul * longMul; // normal braking
+        // Braking is downforce-limited, so it is savage at speed and much
+        // weaker once slow — the old near-flat 30+0.12v gave 3.3g at 70 km/h
+        // and only 4.0g at 290, which is why every braking zone felt the same.
+        //   72 km/h 2.3g · 144 km/h 3.6g · 216 km/h 5.7g · 288 km/h 5.9g
+        accel -= Math.min(58, 18 + 0.0105 * v * v) * this.brake * gripMul * longMul;
       } else if (this.throttle === 0 && this.speed > -REVERSE_MAX) {
         accel -= 9 * this.brake; // reverse gear: back up slowly
       }
@@ -201,7 +221,13 @@ class CarPhysics {
     // --- lateral / steering ---
     // mechanical grip + quadratic aero downforce (F ∝ v²), capped ~5.5g
     // trail-braking load transfer gives a little extra front bite
-    const latMax = Math.min(55, 28 + 0.0068 * v * v) * gripMul * this.tyreMul * this.tempMul * wg * this.gripBonus * (1 + this.brake * 0.10);
+    // Lateral limit = mechanical grip + downforce. The old floor of 28 m/s²
+    // was 2.85g of MECHANICAL grip — about a GT3 car's outright peak — which
+    // is why right-angle corners never needed slowing: at 60 km/h it allowed a
+    // 9.3 m radius where a real F1 car needs 15 m. 17.6 is 1.8g on slicks,
+    // and the v² term carries it to the same ~5.4g at racing speed.
+    //   54 km/h 2.0g · 90 km/h 2.5g · 144 km/h 3.5g · 216+ km/h 5.4g
+    const latMax = Math.min(53, 17.6 + 0.0104 * v * v) * gripMul * this.tyreMul * this.tempMul * wg * this.gripBonus * (1 + this.brake * 0.10);
     // grip-aware steering (modern racing-game keyboard assist):
     // steer input commands a FRACTION of available grip, capped by the
     // physical wheel angle. Partial steering can never exceed the limit,

@@ -86,14 +86,23 @@ class AIDriver {
       for (let o = -4; o <= 4; o++) sum += curv[(i+o+N)%N];
       cSm[i] = sum / 9;
     }
-    const gAero = 55, gMech = 28;
+    // Must mirror physics.js exactly: latMax = min(53, 17.6 + 0.0104 v²).
+    // Solve v² · c = latMax(v) for v — the speed where the corner demands
+    // precisely the grip available. Done by bisection because latMax itself
+    // depends on v. If these constants drift from the physics the AI plans
+    // corner speeds the car cannot actually hold, and scrubs all the way round.
+    const LAT_CAP = 53, LAT_MECH = 17.6, LAT_AERO = 0.0104;
     const cs = new Float32Array(N);
     for (let i = 0; i < N; i++) {
       const c = cSm[i];
       if (c < 1e-4) { cs[i] = 999; continue; }
-      const vCap = Math.sqrt(gAero / c);
-      const vMech = c > 0.0075 ? Math.sqrt(gMech / (c - 0.0066)) : Infinity;
-      cs[i] = Math.min(vCap, vMech);
+      let lo = 3, hi = 100;
+      for (let k = 0; k < 26; k++) {
+        const m = (lo + hi) / 2;
+        const avail = Math.min(LAT_CAP, LAT_MECH + LAT_AERO * m * m);
+        if (m * m * c <= avail) lo = m; else hi = m;
+      }
+      cs[i] = lo;
     }
     track._cornerSpeed = cs;
     track._csKey = 'line';
@@ -125,7 +134,12 @@ class AIDriver {
     // ~34 m/s²; low difficulty brakes early and safely, Elite brakes deep.
     // (diff³ spreads the presets: Rookie ~23, Casual ~26, Pro ~30, Elite ~33.)
     // braking is grip-limited too: in the wet they must brake much earlier
-    const decel = (22 + this.driver.skill * 6) * Math.pow(this.diff, 3) * (0.42 + 0.58 * gripFac);
+    // Braking is downforce-limited now, so the planner has to use the speed it
+    // is actually travelling at rather than one flat figure. Skill and
+    // difficulty decide how close to that limit a driver dares to run.
+    const brakeCap = Math.min(58, 18 + 0.0105 * v * v);
+    const decel = brakeCap * (0.62 + this.driver.skill * 0.20) *
+                  Math.min(1.12, Math.pow(this.diff, 2)) * (0.42 + 0.58 * gripFac);
     let vAllow = 999;
     const scanM = Math.max(40, v*v/(2*decel) + 30);
     let d = 0, k = idx;
