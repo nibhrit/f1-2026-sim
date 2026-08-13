@@ -141,7 +141,11 @@ class AIDriver {
     const decel = brakeCap * (0.62 + this.driver.skill * 0.20) *
                   Math.min(1.12, Math.pow(this.diff, 2)) * (0.42 + 0.58 * gripFac);
     let vAllow = 999;
-    const scanM = Math.max(40, v*v/(2*decel) + 30);
+    // Look ahead far enough to see a corner that keeps tightening. The old
+    // window was braking distance + 30 m — about 1.2 s at racing speed — so at
+    // China the AI arrived at a decreasing-radius spiral still doing 236 km/h,
+    // ran wide, and then could not get back because grass grip is 0.45.
+    const scanM = Math.max(60, v*v/(2*decel) + 30 + v*1.6);
     let d = 0, k = idx;
     const stepM = 5;
     while (d < scanM) {
@@ -151,7 +155,9 @@ class AIDriver {
       const limit = Math.sqrt(cs[k]*cs[k]*pace*pace + 2*decel*d);
       if (limit < vAllow) vAllow = limit;
     }
-    const hereLimit = cs[idx] * pace;
+    // 3% margin for the fact the car never tracks the planned line perfectly.
+    // Without it every small pursuit error becomes an excursion.
+    const hereLimit = cs[idx] * pace * 0.97;
     vAllow = Math.min(vAllow, hereLimit * 1.06);
     // AI top speed sits just below the player's (~308-312 vs 315 km/h). Wet
     // barely dents top speed (drag-limited); the corner-pace drop handles the rest.
@@ -238,6 +244,20 @@ class AIDriver {
     this.laneOffsetNow = this.laneOffsetNow == null ? targetLane : this.laneOffsetNow;
     this.laneOffsetNow += (targetLane - this.laneOffsetNow) * Math.min(1, 3*dt);
 
+    // Running-wide guard. Higher difficulties plan closer to the limit, so any
+    // pursuit error costs more road — which is why Elite was ending up SLOWER
+    // than Pro at Monza and China: it ran wide, and an excursion costs far more
+    // than the extra corner speed earns. Bleed speed as the car approaches the
+    // white line so it self-corrects before it runs out of track.
+    {
+      const latNow = Math.abs(t.lateral(car.x, car.z, car.trackIdx));
+      const warn = t.width/2 - 1.2;
+      if (latNow > warn) {
+        const over = Math.min(1, (latNow - warn) / 1.6);
+        vAllow = Math.min(vAllow, Math.max(14, v * (1 - 0.30 * over)));
+      }
+    }
+
     // ---- steering: pure pursuit toward the chosen lane ----
     const lane = Math.max(-edge, Math.min(edge, this.laneOffsetNow));
     const target = t.posAt(kAhead, lane);
@@ -266,8 +286,17 @@ class AIDriver {
     else if (margin > -0.6) throttle = 0.2; // hold speed through the corner
     else brake = Math.min(1, -margin * 0.45);
 
-    // off-track recovery
-    if (car.offTrack) { throttle = Math.min(throttle, 0.5); }
+    // Off-track recovery. Previously this just eased the throttle, so a car
+    // that ran wide kept travelling at speed across the grass — at China that
+    // was 185 m of a single excursion and three track-limit strikes a lap.
+    // Now it lifts properly and brakes in proportion to how far out it is,
+    // which lets the steering pull it back onto the road.
+    if (car.offTrack) {
+      throttle = Math.min(throttle, 0.25);
+      const myLatNow = t.lateral(car.x, car.z, car.trackIdx);
+      const over = Math.abs(myLatNow) - t.width/2;
+      if (over > 0.6 && v > 20) brake = Math.max(brake, Math.min(0.85, over * 0.22));
+    }
 
     return { throttle, brake, steer };
   }

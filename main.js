@@ -637,12 +637,19 @@ function makeCar(driver, track) {
     car.ai.diff = G.difficulty;
     // Car performance: team ranking × this circuit's character × wet ability.
     const cp = carPace(driver, G.trackDef.id, (G.weather && G.weather.wetness) || 0);
-    // driver quality on top of the car, kept small so the machinery leads
-    car.ai.paceMul = cp * (0.990 + driver.skill * 0.010) * G.difficulty;
+    // Difficulty must NOT multiply pace on top of grip. gripBonus already
+    // raises what the car can do; multiplying paceMul by G.difficulty as well
+    // meant Elite planned at ~109% of its own limit and scrubbed speed all the
+    // way round — which is why Elite was lapping SLOWER than Pro at Monza and
+    // China despite never leaving the road. paceMul is now purely "what
+    // fraction of the available limit this driver uses", and always under 1.
+    const dt2 = Math.max(0, Math.min(1, (G.difficulty - 0.98) / 0.12));
+    car.ai.paceMul = cp * (0.900 + 0.130 * dt2) * (0.990 + driver.skill * 0.010);
     car.ai.buildCornerSpeeds();
     // Pace alone barely separates the field, because the quick cars end up
     // pegged at the grip limit either way. Feeding the same figure into grip
     // is what turns the constructors' table into a real lap-time spread.
+    // (dt2 is computed just above and reused here.)
     //
     // The grip range is the difficulty dial, and it's also the realism dial:
     // whatever sits above 1.0 is corner grip the player's car does not have.
@@ -655,7 +662,6 @@ function makeCar(driver, track) {
     // The whole ladder moved up a step: what used to be Elite is now Pro.
     // The grip curve is re-anchored to match, otherwise 1.06 and 1.10 would
     // both clamp to full grip and Pro/Elite would be identical.
-    const dt2 = Math.max(0, Math.min(1, (G.difficulty - 0.98) / 0.12));
     phys.gripBonus = (0.98 + dt2 * 0.12) * (1 - (1 - cp / CAR_PACE_TOP) * 4);
   }
   return car;
@@ -773,11 +779,25 @@ function weatherPitCheck(c) {
   const want = idealCategory(G.weather.wetness);
   const have = tyreCategory(c.phys.compound);
   if (want === have) return;
-  const dir = want > have ? 1 : -1;
-  if (c._wxDir === dir) return;           // already reacted this direction
-  c._wxDir = dir;
+  // Gate on the CATEGORY we last reacted to, not the direction. Gating on
+  // direction blocked the second step of a drying track — wet → inter → slick
+  // is two changes the same way, so cars got stranded on inters once the
+  // circuit dried out.
+  if (c._wxWant === want) return;         // already committed to this change
+  c._wxWant = want;
   armPit(c);
   c.pitCompound = want === 2 ? 'wet' : want === 1 ? 'inter' : 'medium';
+}
+
+// What this car should be on right now, used at the moment of a stop so a
+// scheduled dry stop never refits the inters a shower called for ten laps ago.
+function compoundForConditions(c) {
+  const cat = idealCategory(G.weather.wetness);
+  if (cat === 2) return 'wet';
+  if (cat === 1) return 'inter';
+  // dry: keep whatever slick was planned, but never a wet-weather tyre
+  const planned = c.pitCompound;
+  return (planned && tyreCategory(planned) === 0) ? planned : 'medium';
 }
 
 // darken the scene when it's wet (greyer fog, lower sun); restore when dry
@@ -979,9 +999,16 @@ function startSession() {
       // AI starting compound: wet-weather tyres if the track's wet, else the
       // usual 40/40/20 soft/medium/hard slick strategy with a pit tyre differing
       if (!d.player) {
-        const wet = G.weather.wetness;
+        // Start compound has to read the FORECAST, not the current wetness.
+        // On a drying track wetness starts around 0.7 and falls to 0.08, so
+        // reading the instant value put the whole grid on full wets for a race
+        // that was slick-dry by lap five. Teams look at where it's going.
+        const now = G.weather.wetness;
+        const soon = G.weather.target != null ? G.weather.target : now;
+        // weight the forecast heavily when the track is heading somewhere else
+        const wet = now * 0.45 + soon * 0.55;
         if (wet > 0.7) { car.phys.setTyre('wet'); car.pitCompound = 'inter'; }
-        else if (wet > 0.35) { car.phys.setTyre('inter'); car.pitCompound = wet > 0.5 ? 'wet' : 'medium'; }
+        else if (wet > 0.35) { car.phys.setTyre('inter'); car.pitCompound = soon < 0.2 ? 'medium' : (soon > 0.7 ? 'wet' : 'medium'); }
         else {
           const r = Math.random();
           const start = r < 0.4 ? 'soft' : r < 0.8 ? 'medium' : 'hard';
@@ -2950,7 +2977,11 @@ function stepSim(dt) {
       const removed = c.phys.compound;
       // work through the planned stops; once the plan runs out, refit fresh
       // tyres of the compound just removed
-      const next = (c.pitPlan && c.pitPlan.length) ? c.pitPlan.shift() : (c.pitCompound || removed);
+      let next = (c.pitPlan && c.pitPlan.length) ? c.pitPlan.shift() : (c.pitCompound || removed);
+      // Sanity-check against the weather at the moment of the stop. Without
+      // this, a car that armed a wet stop earlier would come in later for its
+      // scheduled dry stop and bolt on inters again — twice in a row.
+      if (!c.driver.player) next = compoundForConditions({ pitCompound: next });
       c.phys.setTyre(next);
       c.pitCompound = (c.pitPlan && c.pitPlan.length) ? c.pitPlan[0] : removed;
       c.pitted = true; c.pitState = null; c.pitArmed = false; c.pitArmLap = null;
@@ -3015,5 +3046,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 46';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 47';
 })();
