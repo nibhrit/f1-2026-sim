@@ -1490,6 +1490,7 @@ function endRace() {
   });
   const rows = G.cars.slice().sort((a,b) => {
     if (!!a.dsq !== !!b.dsq) return a.dsq ? 1 : -1; // DSQ classified last
+    if (!!a.retired !== !!b.retired) return a.retired ? 1 : -1;  // DNF below runners
     if (a.finished && b.finished) return a.finishTime - b.finishTime;
     if (a.finished) return -1;
     if (b.finished) return 1;
@@ -1554,7 +1555,8 @@ function endRace() {
   }
   const resRows = rows.map((r,i)=>({
     pos:i+1, name:r.driver.name, team:r.driver.team, me:!!r.driver.player,
-    val: (r.dsq ? 'DSQ — no mandatory stop'
+    val: (r.retired ? 'DNF — damage'
+       : r.dsq ? 'DSQ — no mandatory stop'
        : r.finished ? (i===0 ? fmtTime(r.finishTime) : '+'+(r.finishTime-winT).toFixed(3))
        : '+' + fmtTime(projectedGap(r)) + ' (' + lapsOf(r) + ' Lap' + (lapsOf(r)>1?'s':'') + ')')
        + (r.stewPen ? ' (+' + r.stewPen + 's PEN)' : '')
@@ -2030,6 +2032,18 @@ function updateHUD() {
     const db = $('drs-badge');
     const s = G.playerDrsState;
     db.className = s === 2 ? 'open' : (s === 1 || s === 1.5) ? 'armed' : (s ? 'zone' : '');
+    // damage readout — only appears once something is actually broken
+    {
+      const dmgEl = $('dmg-info');
+      if (dmgEl) {
+        const bits = [];
+        if (p.phys.puncture > 0) bits.push('PUNCTURE');
+        if (p.phys.dmgWing > 0.12) bits.push('WING ' + Math.round(p.phys.dmgWing*100) + '%');
+        if (p.phys.dmgFloor > 0.12) bits.push('FLOOR ' + Math.round(p.phys.dmgFloor*100) + '%');
+        dmgEl.textContent = bits.join(' · ');
+        dmgEl.style.display = bits.length ? 'block' : 'none';
+      }
+    }
     const di = $('drs-info');
     if (di) {
       const tow = G.playerTow || 0;
@@ -2056,6 +2070,7 @@ function updateHUD() {
   const panel = $('pos-panel');
   if (G.mode === 'race' && G.cars.length > 1) {
     const order = G.cars.slice().sort((a,b) => {
+      if (!!a.retired !== !!b.retired) return a.retired ? 1 : -1;
       if (a.finished && b.finished) return a.finishTime - b.finishTime;
       if (a.finished) return -1;
       if (b.finished) return 1;
@@ -2066,15 +2081,17 @@ function updateHUD() {
     order.forEach((c,i) => {
       const sw = '#' + TEAMS[c.driver.team].color.toString(16).padStart(6,'0');
       let gap = '';
-      if (i === 0) gap = c.finished ? 'FIN' : 'Leader';
+      if (c.retired) gap = 'OUT';
+      else if (i === 0) gap = c.finished ? 'FIN' : 'Leader';
       else if (c.finished) gap = '+' + (c.finishTime - leader.finishTime).toFixed(1);
       else {
         const dd = leader.phys.totalDist - c.phys.totalDist;
         gap = '+' + (dd / Math.max(c.phys.speed, 20)).toFixed(1) + 's';
       }
       // broadcast-style in-pit tag next to the driver
-      const pitTag = c.pitState
-        ? ' <span class="p-pit">' + (c.driveThrough ? 'D-T' : 'PIT') + '</span>' : '';
+      const pitTag = c.retired
+        ? ' <span class="p-pen">DNF</span>'
+        : (c.pitState ? ' <span class="p-pit">' + (c.driveThrough ? 'D-T' : 'PIT') + '</span>' : '');
       // outstanding penalties, exactly as the real timing tower carries them:
       // accumulated time penalties, plus an unserved drive-through
       const secs = (G.penalties && G.penalties[c.driver.id]) || 0;
@@ -2332,7 +2349,8 @@ function resolveCollisions() {
   const cars = G.cars;
   for (let i=0;i<cars.length;i++) {
     for (let j=i+1;j<cars.length;j++) {
-      if (cars[i].pitState || cars[j].pitState) continue; // pit cars are ghosts
+      // pit-lane and retired cars are ghosts to everyone else
+      if (cars[i].pitState || cars[j].pitState || cars[i].retired || cars[j].retired) continue;
       const a = cars[i].phys, b = cars[j].phys;
       const dx = b.x-a.x, dz = b.z-a.z;
       const dd = dx*dx+dz*dz;
@@ -2343,12 +2361,33 @@ function resolveCollisions() {
         const ux = dx/d, uz = dz/d;
         a.x -= ux*push; a.z -= uz*push;
         b.x += ux*push; b.z += uz*push;
-        // only the car behind loses speed (prevents chain jams)
+        // Closing speed along the line between the two cars — that, not raw
+        // speed, is what decides whether this is a brush or a shunt.
+        const closeV = Math.abs((a.speed * Math.sin(a.heading) - b.speed * Math.sin(b.heading)) * ux
+                     + (a.speed * Math.cos(a.heading) - b.speed * Math.cos(b.heading)) * uz);
         const rear = a.totalDist > b.totalDist ? b : a;
         const front = rear === a ? b : a;
         rear.speed = Math.min(rear.speed, front.speed * 0.92 + 0.6);
+        // Rear-ending someone breaks YOUR front wing and their floor. Side to
+        // side contact is milder but still costs both cars something.
+        if (closeV > 3) {
+          const bite = Math.min(1, (closeV - 3) / 14);
+          rear.dmgWing  = Math.min(1, rear.dmgWing  + bite * 0.55);
+          front.dmgFloor = Math.min(1, front.dmgFloor + bite * 0.30);
+          rear.lastImpact = Math.max(rear.lastImpact, closeV);
+          front.lastImpact = Math.max(front.lastImpact, closeV);
+          // a proper hit spins both of them and can end a race
+          if (closeV > 9) {
+            const spin = (closeV - 9) * 0.045;
+            rear.heading  += (Math.random()-0.5) * spin;
+            front.heading += (Math.random()-0.5) * spin;
+            rear.speed *= 0.72; front.speed *= 0.86;
+            if (Math.random() < (closeV - 9) * 0.05) front.puncture = 1;
+            if (closeV > 20) { rear.dead = true; front.dead = Math.random() < 0.5; }
+          }
+        }
         if (G.player && (a === G.player.phys || b === G.player.phys) && (G.crashCd||0) <= 0) {
-          AUDIO.crash(0.5);
+          AUDIO.crash(Math.min(1, 0.35 + closeV * 0.05));
           G.crashCd = 0.5;
         }
         // ---- stewards: classify fault (semi-lenient) ----
@@ -2513,6 +2552,22 @@ function frame(now) {
       // steer is positive for a LEFT turn here, and the driver views the wheel
       // from behind, so the sign flips twice: right lock reads clockwise.
       if (rig.visible) c.mesh.userData.steeringWheel.rotation.z = -p.steer * 2.1;
+    }
+    // Visible damage: the wing droops and skews as it breaks up, then drops
+    // away entirely once it's gone. Cheap, and instantly readable from behind.
+    const fw = c.mesh.userData.frontWing;
+    if (fw) {
+      const d = p.dmgWing;
+      const gone = d >= 0.98;
+      fw.forEach((part, k) => {
+        part.visible = !gone;
+        if (!gone) {
+          part.rotation.z = d * 0.22 * (k % 2 ? 1 : -1);
+          part.position.y = part.userData.y0 != null
+            ? part.userData.y0 - d * 0.09
+            : (part.userData.y0 = part.position.y, part.position.y);
+        }
+      });
     }
     if (c.mesh.userData.brakeLight) {
       c.mesh.userData.brakeLight.color.setHex(p.brake > 0.25 ? 0xff2a00 : 0x661111);
@@ -2793,7 +2848,7 @@ function updateSlipstream() {
   if (!t) return;
   for (const c of G.cars) {
     const p = c.phys;
-    if (c.finished || c.pitState || p.speed < 33) { p.tow = 0; continue; }
+    if (c.finished || c.retired || c.pitState || p.speed < 33) { p.tow = 0; continue; }
     let best = 0;
     const myLat = t.lateral(p.x, p.z, p.trackIdx);
     for (const o of G.cars) {
@@ -2822,7 +2877,7 @@ function updateDRS() {
   const rainedOff = G.weather && G.weather.wetness > 0.55; // race director call
   for (const c of G.cars) {
     const p = c.phys;
-    if (c.finished || c.pitState || rainedOff) {
+    if (c.finished || c.retired || c.pitState || rainedOff) {
       p.drsOpen = false; c.drsArmed = -1; c.drsShut = -1;
       if (c.driver.player) { G.playerDrsState = 0; G.drsInfo = rainedOff ? 'DRS DISABLED — WET' : ''; }
       continue;
@@ -2884,12 +2939,28 @@ function updateDRS() {
   }
 }
 
+// A car whose chassis has failed is out. Park it, tell the stewards' ticker,
+// and let the classification treat it as a non-finisher.
+function checkRetirements() {
+  if (G.mode !== 'race' || !G.raceStarted) return;
+  for (const c of G.cars) {
+    if (c.retired || c.finished) continue;
+    if (c.phys.dead) {
+      c.retired = true;
+      c.phys.speed = 0;
+      stewardMsg('RETIREMENT: ' + c.driver.id + ' — terminal damage', 'coll');
+      if (c.driver.player) showBanner('RACE OVER — TERMINAL DAMAGE', 4, '#ff5c5c');
+    }
+  }
+}
+
 function stepSim(dt) {
   updateCountdown(dt);
   const started = G.raceStarted;
   if (started) G.simTime += dt;
   updateSlipstream();
   updateDRS();
+  checkRetirements();
   // qualifying clock: count down; drop the chequered flag at zero
   if (started && G.mode === 'qualify') {
     if (G.qualiTime > 0) {
@@ -2974,6 +3045,13 @@ function stepSim(dt) {
         if (c.driver.player) showBanner('PENALTY SERVED', 2, '#ffd12e');
         continue;
       }
+      // a nose change costs time but restores the front wing
+      if (c.phys.dmgWing > 0.15) {
+        c.phys.dmgWing = 0;
+        c.pitTimer = (c.pitTimer || 0) + 4.5;
+        if (c.driver.player) showBanner('NEW FRONT WING  +4.5s', 2.2, '#ffd12e');
+      }
+      c.phys.puncture = 0;
       const removed = c.phys.compound;
       // work through the planned stops; once the plan runs out, refit fresh
       // tyres of the compound just removed
@@ -3046,5 +3124,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 47';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 48';
 })();

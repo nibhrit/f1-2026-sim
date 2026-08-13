@@ -80,6 +80,10 @@
   .p-pen.new { animation:penflash .5s steps(1) infinite; }
   @keyframes penflash { 50% { background:#e10600; color:#fff; } }
 
+  /* damage readout: only shown when something is broken */
+  #dmg-info { display:none; font-size:11px; font-weight:900; letter-spacing:1.5px;
+    color:#ff6b5c; margin-bottom:2px; animation:penflash 1s steps(1) infinite; }
+
   /* tyre status row in speedo */
   #tyre-row { display:flex; align-items:center; gap:8px; margin-top:8px; justify-content:flex-end; }
   #tyre-temp { font-size:11px; font-weight:800; letter-spacing:1px; }
@@ -370,6 +374,7 @@
     <div id="weather-bar"><div id="weather-fill"></div></div>
   </div>
   <div class="hud-panel" id="speedo">
+    <div id="dmg-info"></div>
     <div id="drs-info"></div>
     <div><span id="drs-badge">DRS</span><span id="speed-val">0</span> <span id="speed-unit">KM/H</span></div>
     <div id="gear-val">N</div>
@@ -445,13 +450,13 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/SSAOPass.js"></script>
-<script src="trackdata.js?v=47"></script>
-<script src="tracks.js?v=47"></script>
-<script src="audio.js?v=47"></script>
-<script src="carmodel.js?v=47"></script>
-<script src="trackbuilder.js?v=47"></script>
-<script src="physics.js?v=47"></script>
-<script src="ai.js?v=47"></script>
-<script src="main.js?v=47"></script>
+<script src="trackdata.js?v=48"></script>
+<script src="tracks.js?v=48"></script>
+<script src="audio.js?v=48"></script>
+<script src="carmodel.js?v=48"></script>
+<script src="trackbuilder.js?v=48"></script>
+<script src="physics.js?v=48"></script>
+<script src="ai.js?v=48"></script>
+<script src="main.js?v=48"></script>
 </body>
 </html>

@@ -361,10 +361,11 @@ function buildF1Car(teamKey, opts) {
   g.add(tip);
 
   // ---------- front wing (4 elements + endplates) ----------
-  box(1.98, 0.035, 0.62, mCarb, 0, 0.13, 2.78).userData.caster = true;  // front wing plane
-  box(1.98, 0.03, 0.34, mCarb, 0, 0.21, 2.92, -0.28);
-  box(1.98, 0.028, 0.24, mBody, 0, 0.30, 3.0, -0.42);
-  box(1.92, 0.024, 0.16, mAcc,  0, 0.37, 3.06, -0.52);  // top flap, accent trim
+  const fwMain = box(1.98, 0.035, 0.62, mCarb, 0, 0.13, 2.78);
+  fwMain.userData.caster = true;  // front wing plane
+  const fwF1 = box(1.98, 0.03, 0.34, mCarb, 0, 0.21, 2.92, -0.28);
+  const fwF2 = box(1.98, 0.028, 0.24, mBody, 0, 0.30, 3.0, -0.42);
+  const fwF3 = box(1.92, 0.024, 0.16, mAcc,  0, 0.37, 3.06, -0.52);  // top flap
   // endplates with accent stripe + turning vanes under the nose
   [[-0.99],[0.99]].forEach(([x]) => {
     box(0.05, 0.24, 0.72, mCarb, x, 0.24, 2.82);
@@ -535,6 +536,8 @@ function buildF1Car(teamKey, opts) {
     g.userData.steeringWheel = rig.userData.spin;
   }
 
+  // front-wing assembly, so damage can bend it and then tear it off
+  g.userData.frontWing = [fwMain, fwF1, fwF2, fwF3];
   g.userData.wheels = wheels;
   g.userData.team = teamKey;
   return g;

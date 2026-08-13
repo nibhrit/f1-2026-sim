@@ -57,6 +57,17 @@ class CarPhysics {
     this.tempMul = 0.9;       // grip multiplier from temperature
     this.drsOpen = false;     // rear wing open (set by the game each step)
     this.tow = 0;             // 0..1 slipstream from the car ahead (set by the game)
+    // ---- damage ----
+    // 0 = pristine, 1 = destroyed. Each has its own consequence:
+    //   wing  — front downforce loss, so the car understeers progressively
+    //   floor — overall downforce loss, worst in fast corners
+    //   punct — one tyre deflating: heavy grip loss, must pit
+    //   dead  — suspension/chassis failure, race over
+    this.dmgWing = 0;
+    this.dmgFloor = 0;
+    this.puncture = 0;
+    this.dead = false;
+    this.lastImpact = 0;      // severity of the most recent hit, for effects
     this.gripBonus = 1;       // AI car performance handicap (difficulty)
   }
 
@@ -111,6 +122,7 @@ class CarPhysics {
       const r = (want > cur ? up : down) * dt;
       return cur + Math.max(-r, Math.min(r, want - cur));
     };
+    if (this.dead) { inp = { throttle: 0, brake: 1, steer: 0 }; }
     this.throttle = rate(this.throttle, inp.throttle, 4.5, 9);
     this.brake    = rate(this.brake,    inp.brake,    6.0, 11);
 
@@ -182,7 +194,7 @@ class CarPhysics {
         let engine = Math.min(tractionCap * wetTraction, 470 / Math.max(v, 10)) * this.throttle;
         // traction limit: only heavy steering at very low speed costs drive
         if (v < 16 && Math.abs(this.steer) > 0.5) engine *= 0.85;
-        accel += engine * (onGrass ? 0.40 : 1);
+        accel += engine * (onGrass ? 0.40 : 1) * (1 - this.puncture * 0.35);
       }
     }
     if (this.brake > 0) {
@@ -227,7 +239,15 @@ class CarPhysics {
     // 9.3 m radius where a real F1 car needs 15 m. 17.6 is 1.8g on slicks,
     // and the v² term carries it to the same ~5.4g at racing speed.
     //   54 km/h 2.0g · 90 km/h 2.5g · 144 km/h 3.5g · 216+ km/h 5.4g
-    const latMax = Math.min(53, 17.6 + 0.0104 * v * v) * gripMul * this.tyreMul * this.tempMul * wg * this.gripBonus * (1 + this.brake * 0.10);
+    // Damage bites the aero term hardest, so a broken car is survivable in
+    // slow corners and horrible in fast ones — exactly like the real thing.
+    const aeroLoss = 1 - Math.min(0.55, this.dmgWing * 0.30 + this.dmgFloor * 0.35);
+    const punctLoss = 1 - this.puncture * 0.45;
+    // Scale the CAP as well as the v² term. Without that, a car at 250 km/h
+    // sat on the 53 ceiling whether its wing was there or not, so damage did
+    // nothing exactly when it should hurt most. Scaling both keeps the right
+    // character: crippling in fast corners, barely felt in slow ones.
+    const latMax = Math.min(53 * aeroLoss, 17.6 + 0.0104 * v * v * aeroLoss) * punctLoss * gripMul * this.tyreMul * this.tempMul * wg * this.gripBonus * (1 + this.brake * 0.10);
     // grip-aware steering (modern racing-game keyboard assist):
     // steer input commands a FRACTION of available grip, capped by the
     // physical wheel angle. Partial steering can never exceed the limit,
@@ -252,6 +272,12 @@ class CarPhysics {
       yawRate = this.speed * Math.tan(this.steer * 0.28) / 3.2;
       this.wheelSpin = Math.max(0, this.wheelSpin - dt*4);
     }
+    // a deflating tyre pulls the car steadily to one side
+    if (this.puncture > 0 && Math.abs(v) > 3) {
+      if (this._punctSide == null) this._punctSide = Math.random() < 0.5 ? -1 : 1;
+      yawRate += this._punctSide * this.puncture * 0.05 * Math.min(1, Math.abs(v)/30);
+      this.speed = Math.max(0, this.speed - this.puncture * 1.4 * dt);
+    }
     this.heading += yawRate * dt;
     this._lastYaw = yawRate; // used by the tyre-temperature model next step
 
@@ -274,6 +300,7 @@ class CarPhysics {
     const lat2 = t.lateral(this.x, this.z, this.trackIdx);
     const wall = t.wallOff || (hw + 8.2);
     this.wallHit = 0;
+    if (Math.abs(lat2) <= wall) this._wallTouch = false;
     if (Math.abs(lat2) > wall) {
       const p = t.posAt(this.trackIdx, Math.sign(lat2) * (wall - 0.2));
       this.x = p.x; this.z = p.z;
@@ -282,10 +309,29 @@ class CarPhysics {
       let dh = ta - this.heading;
       while (dh > Math.PI) dh -= 2*Math.PI;
       while (dh < -Math.PI) dh += 2*Math.PI;
+      // Impact severity is the component of velocity going INTO the wall, in
+      // m/s — a glancing scrape at 300 km/h is far less destructive than a
+      // square hit at 150, and the old model couldn't tell them apart.
       const sev = Math.abs(Math.sin(dh));
-      this.speed *= Math.max(0.35, 1 - sev * 0.09);
+      const normalSpeed = Math.abs(v) * sev;
+      this.speed *= Math.max(0.15, 1 - sev * 0.30);
       this.heading += dh * 0.35;
       this.wallHit = sev;
+      this.lastImpact = Math.max(this.lastImpact, normalSpeed);
+      // Damage lands on the IMPACT, not every frame we remain against the
+      // wall — otherwise a 120 Hz loop wrote off the car in a tenth of a
+      // second. Sliding along the barrier still costs a slow scrape rate.
+      const firstTouch = !this._wallTouch;
+      this._wallTouch = true;
+      if (firstTouch) {
+        if (normalSpeed > 4)  this.dmgWing  = Math.min(1, this.dmgWing  + (normalSpeed - 4) * 0.055);
+        if (normalSpeed > 12) this.dmgFloor = Math.min(1, this.dmgFloor + (normalSpeed - 12) * 0.070);
+        if (normalSpeed > 17 && Math.random() < (normalSpeed - 17) * 0.09) this.puncture = 1;
+        if (normalSpeed > 26) this.dead = true;
+      } else {
+        // grinding along the barrier: slow, cumulative, survivable
+        this.dmgWing = Math.min(1, this.dmgWing + Math.abs(v) * 0.00025);
+      }
     }
 
     this._syncProgress(false);
