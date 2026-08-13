@@ -2154,6 +2154,7 @@ function updateHUD() {
   drawMinimapBase(G.track, $('minimap-canvas'), MAP_ZOOMS[G.mapZoom], p.phys.x, p.phys.z);
   const ctx = $('minimap-canvas').getContext('2d');
   G.cars.forEach(c => {
+    if (c.retired) return;                     // out of the race, off the map
     const pt = mapPoint(G.track, c.phys.x, c.phys.z);
     ctx.fillStyle = c.driver.player ? '#ffd12e' : '#'+TEAMS[c.driver.team].color.toString(16).padStart(6,'0');
     ctx.beginPath();
@@ -2541,6 +2542,7 @@ function frame(now) {
     const w = c.mesh.userData.wheels;
     [w.fl,w.fr,w.rl,w.rr].forEach(wh => { wh.children.forEach((ch,ci) => { if (ci<2) ch.rotation.x += p.speed*0.05; }); });
     w.fl.rotation.y = p.steer*0.35; w.fr.rotation.y = p.steer*0.35;
+    if (c.retired && !c.mesh.visible) return;   // recovered by the marshals
     // the painted blob is only needed when real shadow maps are off
     if (c.mesh.userData.blobShadow) c.mesh.userData.blobShadow.visible = !sun.castShadow;
     // cockpit rig: visible from the helmet cam only. Read-only mirror of the
@@ -2948,9 +2950,38 @@ function checkRetirements() {
     if (c.phys.dead) {
       c.retired = true;
       c.phys.speed = 0;
+      c.retireAt = G.simTime;
       stewardMsg('RETIREMENT: ' + c.driver.id + ' — terminal damage', 'coll');
-      if (c.driver.player) showBanner('RACE OVER — TERMINAL DAMAGE', 4, '#ff5c5c');
+      if (c.driver.player) {
+        showBanner('RACE OVER — TERMINAL DAMAGE', 4, '#ff5c5c');
+        // your race is done: let the rest play out on paper and go to results
+        if (!G.endTimer) G.endTimer = setTimeout(() => { simulateRemainder(); endRace(); }, 4000);
+      }
     }
+    // A retired car is recovered by the marshals. Leaving it sitting on the
+    // racing line as a collision-less ghost made it impossible to tell apart
+    // from a car you could actually hit.
+    if (c.retired && c.mesh && c.mesh.visible && G.simTime - (c.retireAt || 0) > 2.5) {
+      c.mesh.visible = false;
+    }
+  }
+}
+
+// The player is out, so nobody is watching the remaining laps. Project each
+// running car to the flag from the pace it has actually been setting, so the
+// classification is plausible rather than frozen at the moment you crashed.
+function simulateRemainder() {
+  const full = G.raceLaps * G.track.length;
+  for (const c of G.cars) {
+    if (c.finished || c.retired) continue;
+    const raced = Math.max(1, c.phys.totalDist);
+    const pace = raced / Math.max(1, G.simTime);          // m/s averaged over the race
+    const remaining = Math.max(0, full - raced);
+    c.finished = true;
+    c.finishTime = G.simTime + remaining / Math.max(8, pace);
+    // a little scatter so the projected order isn't a perfect copy of the
+    // running order at the moment of the crash
+    c.finishTime += (Math.random() - 0.5) * 1.5;
   }
 }
 
@@ -3124,5 +3155,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 49';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 50';
 })();
