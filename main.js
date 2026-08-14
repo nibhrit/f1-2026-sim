@@ -2369,22 +2369,37 @@ function resolveCollisions() {
         const rear = a.totalDist > b.totalDist ? b : a;
         const front = rear === a ? b : a;
         rear.speed = Math.min(rear.speed, front.speed * 0.92 + 0.6);
-        // Rear-ending someone breaks YOUR front wing and their floor. Side to
-        // side contact is milder but still costs both cars something.
-        if (closeV > 3) {
-          const bite = Math.min(1, (closeV - 3) / 14);
-          rear.dmgWing  = Math.min(1, rear.dmgWing  + bite * 0.55);
-          front.dmgFloor = Math.min(1, front.dmgFloor + bite * 0.30);
+        // Damage lands ONCE per contact, not every frame the two cars overlap.
+        // Without this gate, two cars running nose-to-tail (drafting, or bunched
+        // in wet-race traffic) racked up wing and floor damage at 120 Hz and the
+        // whole field wrote itself off — which is exactly the all-cars-DNF the
+        // rain produced. A short cooldown per car lets a genuine second hit
+        // count while ignoring the sustained rub of side-by-side running.
+        // Damage lands once per contact (0.6 s cooldown). Racing is full of
+        // gentle rubs — 85% of all contact is under 5 m/s closing — so light
+        // touches must cost nothing, or a whole field trades paint into
+        // oblivion. Only a firm hit marks the car, and a race-ending shunt has
+        // to be both very hard AND unlucky, so DNFs stay in the real 0-3 range
+        // rather than the dozen the rain was producing.
+        const dmgReady = (rear.dmgCd || 0) <= 0 && (front.dmgCd || 0) <= 0;
+        if (closeV > 7 && dmgReady) {
+          rear.dmgCd = front.dmgCd = 0.6;   // seconds
+          const bite = Math.min(1, (closeV - 7) / 20);
+          rear.dmgWing  = Math.min(1, rear.dmgWing  + bite * 0.35);
+          front.dmgFloor = Math.min(1, front.dmgFloor + bite * 0.18);
           rear.lastImpact = Math.max(rear.lastImpact, closeV);
           front.lastImpact = Math.max(front.lastImpact, closeV);
-          // a proper hit spins both of them and can end a race
-          if (closeV > 9) {
-            const spin = (closeV - 9) * 0.045;
+          // a heavy hit spins them. The spin is capped and does NOT feed back
+          // into the next frame's closing-speed calc (that loop is what let a
+          // single tangle cascade into the whole field wiping out).
+          if (closeV > 14) {
+            const spin = Math.min(0.25, (closeV - 14) * 0.02);
             rear.heading  += (Math.random()-0.5) * spin;
             front.heading += (Math.random()-0.5) * spin;
-            rear.speed *= 0.72; front.speed *= 0.86;
-            if (Math.random() < (closeV - 9) * 0.05) front.puncture = 1;
-            if (closeV > 20) { rear.dead = true; front.dead = Math.random() < 0.5; }
+            rear.speed *= 0.75; front.speed *= 0.88;
+            if (Math.random() < (closeV - 14) * 0.03) front.puncture = 1;
+            // terminal only on a big, square, unlucky hit
+            if (closeV > 30 && Math.random() < 0.5) rear.dead = true;
           }
         }
         if (G.player && (a === G.player.phys || b === G.player.phys) && (G.crashCd||0) <= 0) {
@@ -2946,8 +2961,8 @@ function updateDRS() {
 function checkRetirements() {
   if (G.mode !== 'race' || !G.raceStarted) return;
   for (const c of G.cars) {
-    if (c.retired || c.finished) continue;
-    if (c.phys.dead) {
+    // New retirement this frame.
+    if (!c.retired && !c.finished && c.phys.dead) {
       c.retired = true;
       c.phys.speed = 0;
       c.retireAt = G.simTime;
@@ -2958,11 +2973,29 @@ function checkRetirements() {
         if (!G.endTimer) G.endTimer = setTimeout(() => { simulateRemainder(); endRace(); }, 4000);
       }
     }
-    // A retired car is recovered by the marshals. Leaving it sitting on the
-    // racing line as a collision-less ghost made it impossible to tell apart
-    // from a car you could actually hit.
+    // Recover a retired car once the moment has passed. This has to run for
+    // cars that are ALREADY retired, so it can't sit behind a `continue` that
+    // skips them — which is exactly the bug that left ghost cars on track.
     if (c.retired && c.mesh && c.mesh.visible && G.simTime - (c.retireAt || 0) > 2.5) {
       c.mesh.visible = false;
+    }
+  }
+
+  // If every car that isn't the player is out (retired or classified), there
+  // is no race left to run — end it rather than leaving the player circulating
+  // alone forever.
+  if (!G.endTimer && G.player && !G.player.retired && !G.player.finished) {
+    const others = G.cars.filter(c => c !== G.player);
+    if (others.length && others.every(c => c.retired || c.finished)) {
+      showBanner('RACE OVER — ALL OTHERS OUT', 3.5, '#ffd12e');
+      G.endTimer = setTimeout(() => {
+        // the player is the only runner: hand them the win and classify.
+        if (!G.player.finished && !G.player.retired) {
+          G.player.finished = true;
+          G.player.finishTime = G.simTime;
+        }
+        endRace();
+      }, 3000);
     }
   }
 }
@@ -3137,7 +3170,7 @@ function stepSim(dt) {
   }
   resolveCollisions();
   // stewards: decay contact cooldowns, monitor track limits
-  for (const c of G.cars) if (c.contactCd > 0) c.contactCd -= dt;
+  for (const c of G.cars) { if (c.contactCd > 0) c.contactCd -= dt; if (c.phys.dmgCd > 0) c.phys.dmgCd -= dt; }
   checkTrackLimits(dt);
 }
 
@@ -3155,5 +3188,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 50';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 51';
 })();
