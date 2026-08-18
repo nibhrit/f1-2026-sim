@@ -653,16 +653,17 @@ function makeCar(driver, track) {
     //
     // The grip range is the difficulty dial, and it's also the realism dial:
     // whatever sits above 1.0 is corner grip the player's car does not have.
-    // At 0.24 the Elite field cornered 22% harder than physically possible
-    // for you — they braked later and carried exit speed no clean lap could
-    // answer, which reads as cheating because it is. 0.12 caps the advantage
-    // at 10%: Elite lands ~77.7s at Barcelona against a ~75.5s player race
-    // lap, so they pressure you into mistakes rather than outrunning you.
+    // The dial: at 0.24 the Elite field cornered 22% harder than physically
+    // possible for you (felt like cheating); 0.12 was 10% (too soft, no real
+    // fight); 0.18 is 16% — enough grip that Elite is properly quick on
+    // grip-limited circuits without the superhuman feel. Note it barely helps
+    // on power/flow tracks like COTA, where the AI is execution-limited, not
+    // grip-limited.
     // (Their braking power is ~33 m/s² vs your 35-38 — always was fair.)
     // The whole ladder moved up a step: what used to be Elite is now Pro.
     // The grip curve is re-anchored to match, otherwise 1.06 and 1.10 would
     // both clamp to full grip and Pro/Elite would be identical.
-    phys.gripBonus = (0.98 + dt2 * 0.12) * (1 - (1 - cp / CAR_PACE_TOP) * 4);
+    phys.gripBonus = (0.98 + dt2 * 0.18) * (1 - (1 - cp / CAR_PACE_TOP) * 4);
   }
   return car;
 }
@@ -3005,6 +3006,7 @@ function checkRetirements() {
 // classification is plausible rather than frozen at the moment you crashed.
 function simulateRemainder() {
   const full = G.raceLaps * G.track.length;
+  const needsStop = G.raceLaps > 20;
   for (const c of G.cars) {
     if (c.finished || c.retired) continue;
     const raced = Math.max(1, c.phys.totalDist);
@@ -3012,9 +3014,18 @@ function simulateRemainder() {
     const remaining = Math.max(0, full - raced);
     c.finished = true;
     c.finishTime = G.simTime + remaining / Math.max(8, pace);
-    // a little scatter so the projected order isn't a perfect copy of the
-    // running order at the moment of the crash
-    c.finishTime += (Math.random() - 0.5) * 1.5;
+    c.finishTime += (Math.random() - 0.5) * 1.5;           // a little scatter
+    // The AI would have completed its mandatory stop over the rest of the race.
+    // Without crediting that, simulateRemainder left everyone finished-but-
+    // unpitted and the DSQ rule wiped the whole field, leaving the crashed
+    // player classified first among the disqualified.
+    if (needsStop && !c.pitted) {
+      c.pitted = true;
+      c.finishTime += 22;                                  // the stop it never took
+      if (c.phys.compound === 'soft') c.pitCompound = 'hard';
+      else if (c.phys.compound === 'hard') c.pitCompound = 'soft';
+      else c.pitCompound = 'medium';
+    }
   }
 }
 
@@ -3188,5 +3199,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 51';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 53';
 })();
