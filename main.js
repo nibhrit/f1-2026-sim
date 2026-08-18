@@ -3007,26 +3007,39 @@ function checkRetirements() {
 function simulateRemainder() {
   const full = G.raceLaps * G.track.length;
   const needsStop = G.raceLaps > 20;
-  for (const c of G.cars) {
-    if (c.finished || c.retired) continue;
-    const raced = Math.max(1, c.phys.totalDist);
-    const pace = raced / Math.max(1, G.simTime);          // m/s averaged over the race
-    const remaining = Math.max(0, full - raced);
-    c.finished = true;
-    c.finishTime = G.simTime + remaining / Math.max(8, pace);
-    c.finishTime += (Math.random() - 0.5) * 1.5;           // a little scatter
-    // The AI would have completed its mandatory stop over the rest of the race.
-    // Without crediting that, simulateRemainder left everyone finished-but-
-    // unpitted and the DSQ rule wiped the whole field, leaving the crashed
-    // player classified first among the disqualified.
-    if (needsStop && !c.pitted) {
-      c.pitted = true;
-      c.finishTime += 22;                                  // the stop it never took
-      if (c.phys.compound === 'soft') c.pitCompound = 'hard';
-      else if (c.phys.compound === 'hard') c.pitCompound = 'soft';
-      else c.pitCompound = 'medium';
+  const running = G.cars.filter(c => !c.finished && !c.retired);
+  if (!running.length) return;
+
+  // Hold the CURRENT running order and gaps to the flag rather than
+  // extrapolating pace. Extrapolation was doubly wrong: running each car to the
+  // full distance produced +3000s gaps, and projecting pace forward amplified
+  // the standing-start spread into a field that was mostly "lapped". The gaps
+  // the player can actually see at the moment of the crash are the honest
+  // basis for the result, so we simply carry them forward.
+  running.sort((a, b) => b.phys.totalDist - a.phys.totalDist);
+  const leader = running[0];
+  const L = G.track.length;
+  const raceSpeed = Math.max(30, leader.phys.totalDist / Math.max(1, G.simTime));
+  // leader's own projected finish time, so the numbers are on a sane scale
+  const winTime = G.simTime + Math.max(0, full - leader.phys.totalDist) / raceSpeed
+                + (needsStop && !leader.pitted ? 22 : 0);
+  running.forEach((c, i) => {
+    const distGap = leader.phys.totalDist - c.phys.totalDist;   // metres behind, now
+    if (distGap < L - 5) {
+      // same lap as the leader → a finisher, gap = that distance in seconds,
+      // with a touch of scatter so positions don't tie
+      c.finished = true;
+      c.finishTime = winTime + distGap / raceSpeed + Math.random() * 0.4;
+      if (needsStop && !c.pitted) {
+        c.pitted = true;
+        if (c.phys.compound === 'soft') c.pitCompound = 'hard';
+        else if (c.phys.compound === 'hard') c.pitCompound = 'soft';
+        else c.pitCompound = 'medium';
+      }
     }
-  }
+    // a car genuinely a lap or more down at the crash keeps its distance and
+    // falls through to the results screen's "+N Laps" path unchanged.
+  });
 }
 
 function stepSim(dt) {
@@ -3199,5 +3212,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 53';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 55';
 })();
