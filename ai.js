@@ -42,10 +42,10 @@ class AIDriver {
     // downforce, a TIGHTER line (further from the edges) is faster than the
     // textbook wide line: the shorter path beats the wider radius, because the
     // car has the grip to take the tighter corner. Measured across COTA,
-    // Barcelona, Monaco and Monza, hw-2.3 is worth ~2s a lap over the old
+    // Barcelona, Monaco and Monza, hw-2.0 is worth ~1.5s a lap over the old
     // hw-1.6. Tight corners still push to the edge via the relaxation below;
     // this mainly straightens the medium and fast corners.
-    const EDGE = Math.max(1.2, hw - 2.3);
+    const EDGE = Math.max(1.2, hw - 2.0);
 
     // Minimum-curvature relaxation. Repeatedly pull every point toward the
     // midpoint of its neighbours (which is what straightens a curve) while
@@ -308,7 +308,10 @@ class AIDriver {
       throttle = Math.min(throttle, 0.25);
       const myLatNow = t.lateral(car.x, car.z, car.trackIdx);
       const over = Math.abs(myLatNow) - t.width/2;
-      if (over > 0.6 && v > 20) brake = Math.max(brake, Math.min(0.85, over * 0.22));
+      // brake harder the further out we are, which lets the existing pursuit
+      // steering reel the car back without an explicit steer override (those
+      // oscillate against the racing line at tight/street circuits).
+      if (over > 0.6 && v > 20) brake = Math.max(brake, Math.min(0.9, over * 0.28));
     }
 
     return { throttle, brake, steer };

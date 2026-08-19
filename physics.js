@@ -241,7 +241,7 @@ class CarPhysics {
     //   54 km/h 2.0g · 90 km/h 2.5g · 144 km/h 3.5g · 216+ km/h 5.4g
     // Damage bites the aero term hardest, so a broken car is survivable in
     // slow corners and horrible in fast ones — exactly like the real thing.
-    const aeroLoss = 1 - Math.min(0.55, this.dmgWing * 0.30 + this.dmgFloor * 0.35);
+    const aeroLoss = 1 - Math.min(0.55, this.dmgWing * 0.30 + this.dmgFloor * 0.28);
     const punctLoss = 1 - this.puncture * 0.45;
     // Scale the CAP as well as the v² term. Without that, a car at 250 km/h
     // sat on the 53 ceiling whether its wing was there or not, so damage did
@@ -325,7 +325,8 @@ class CarPhysics {
       this._wallTouch = true;
       if (firstTouch) {
         if (normalSpeed > 4)  this.dmgWing  = Math.min(1, this.dmgWing  + (normalSpeed - 4) * 0.055);
-        if (normalSpeed > 12) this.dmgFloor = Math.min(1, this.dmgFloor + (normalSpeed - 12) * 0.070);
+        // floor only takes damage from a real impact, not a light brush
+        if (normalSpeed > 18) this.dmgFloor = Math.min(1, this.dmgFloor + (normalSpeed - 18) * 0.045);
         if (normalSpeed > 17 && Math.random() < (normalSpeed - 17) * 0.09) this.puncture = 1;
         if (normalSpeed > 26) this.dead = true;
       } else {

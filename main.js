@@ -959,6 +959,7 @@ function startSession() {
   // reset stewards for a fresh session
   G.penalties = {};
   G.penaltyFlash = {};
+  G.raceFL = null;
   G.refCheckpoints = null;
   G.refTime = null;
   if ($('stewards')) $('stewards').innerHTML = '';
@@ -1273,6 +1274,20 @@ function fmtTime(s) {
   return m + ':' + sec.toFixed(3).padStart(6,'0');
 }
 
+// Race fastest lap: any car (AI or player) that betters it triggers the purple
+// banner and takes the FL marker in the timing tower.
+function noteRaceLap(car, lapTime) {
+  if (G.mode !== 'race' || !(lapTime > 15)) return;
+  const fl = G.raceFL;
+  if (!fl || lapTime < fl.time - 1e-6) {
+    G.raceFL = { time: lapTime, id: car.driver.id };
+    // don't fanfare the very first lap of the race (everyone's is a "record")
+    if (fl) {
+      showBanner('FASTEST LAP  ·  ' + car.driver.id + '  ' + fmtTime(lapTime), 2.6, '#a640ff');
+    }
+  }
+}
+
 function onPlayerLapComplete() {
   const p = G.player;
   const lapTime = G.simTime - p.curLapStart;
@@ -1293,6 +1308,7 @@ function onPlayerLapComplete() {
   } else if (lapTime > 15) { // sanity: ignore instant re-crossings
     p.lapTimes.push(lapTime);
     $('last-time').textContent = fmtTime(lapTime);
+    noteRaceLap(p, lapTime);
     if (!p.bestLap || lapTime < p.bestLap) {
       p.bestLap = lapTime;
       p.bestLapTyre = p.phys.compound; // tyre the best lap was set on
@@ -2005,6 +2021,12 @@ function updateLapPanel() {
   }
 }
 
+// purple FL marker for whoever holds the race fastest lap
+function flTag(c) {
+  return (G.raceFL && G.raceFL.id === c.driver.id)
+    ? ' <span class="p-fl">FL</span>' : '';
+}
+
 function updateHUD() {
   const p = G.player;
   if (!p) return;
@@ -2107,7 +2129,7 @@ function updateHUD() {
         + '<span class="p-num">'+(i+1)+'</span>'
         + '<span class="p-swatch" style="background:'+sw+'"></span>'
         + tyreDot(c.phys.compound)
-        + '<span class="p-name">'+c.driver.id+pitTag+penTag+'</span>'
+        + '<span class="p-name">'+c.driver.id+pitTag+penTag+flTag(c)+'</span>'
         + '<span class="p-gap">'+gap+'</span></div>';
     });
     panel.style.display = 'block';
@@ -2363,6 +2385,13 @@ function resolveCollisions() {
       const dx = b.x-a.x, dz = b.z-a.z;
       const dd = dx*dx+dz*dz;
       const R = 2.6;
+      // Height-aware: two cars on parallel track sections at different
+      // elevations (or one sunk off in a dip) shouldn't collide just because
+      // they line up in the x/z plane. Skip if they're more than 2 m apart
+      // vertically.
+      const ay = cars[i].mesh && cars[i].mesh.userData.groundY;
+      const by = cars[j].mesh && cars[j].mesh.userData.groundY;
+      if (ay != null && by != null && Math.abs(ay - by) > 2) continue;
       if (dd < R*R && dd > 0.0001) {
         const d = Math.sqrt(dd);
         const push = (R-d)/2;
@@ -2396,7 +2425,7 @@ function resolveCollisions() {
           rear.dmgCd = front.dmgCd = 0.6;   // seconds
           const bite = Math.min(1, (closeV - 7) / 20);
           rear.dmgWing  = Math.min(1, rear.dmgWing  + bite * 0.35);
-          front.dmgFloor = Math.min(1, front.dmgFloor + bite * 0.18);
+          front.dmgFloor = Math.min(1, front.dmgFloor + bite * 0.10);
           rear.lastImpact = Math.max(rear.lastImpact, closeV);
           front.lastImpact = Math.max(front.lastImpact, closeV);
           // a heavy hit spins them. The spin is capped and does NOT feed back
@@ -2546,7 +2575,8 @@ function frame(now) {
     // about the road, so once a car ran wide it stayed pinned at road height
     // and hovered above the grass, which sits below the tarmac. Past the verge
     // we blend onto the terrain instead.
-    let y = trk.surfaceY(p.x, p.z, p.trackIdx) + 0.05;
+    const roadY = trk.surfaceY(p.x, p.z, p.trackIdx) + 0.05;
+    let y = roadY;
     if (trk.terrainY) {
       const lat = Math.abs(trk.lateral(p.x, p.z, p.trackIdx));
       const edge = trk.width/2 + 1.15;          // outside edge of the turf strip
@@ -2555,6 +2585,13 @@ function frame(now) {
         y = y*(1-t01) + (trk.terrainY(p.x, p.z) + 0.05)*t01;
       }
     }
+    // Hard floor: never let the car drop more than 0.5 m below the road it's
+    // nearest to. Where a circuit doubles back at different elevations,
+    // terrainY references the LOWER section and a car running wide sank
+    // metres "underground" then popped back up on return — which also fed the
+    // height-blind collision check. Clamping to the local road kills both.
+    y = Math.max(y, roadY - 0.5);
+    c.mesh.userData.groundY = y;                // for the height-aware collision check
     c.mesh.position.set(p.x, y, p.z);
     c.mesh.rotation.order = 'YXZ';
     c.mesh.rotation.y = p.heading;
@@ -3148,6 +3185,12 @@ function stepSim(dt) {
         c.pitTimer = (c.pitTimer || 0) + 4.5;
         if (c.driver.player) showBanner('NEW FRONT WING  +4.5s', 2.2, '#ffd12e');
       }
+      // the crew can patch the floor too — most of it back, for extra time
+      if (c.phys.dmgFloor > 0.15) {
+        c.phys.dmgFloor *= 0.25;
+        c.pitTimer = (c.pitTimer || 0) + 3.5;
+        if (c.driver.player) showBanner('FLOOR REPAIR  +3.5s', 2.2, '#ffd12e');
+      }
       c.phys.puncture = 0;
       const removed = c.phys.compound;
       // work through the planned stops; once the plan runs out, refit fresh
@@ -3173,6 +3216,7 @@ function stepSim(dt) {
         const aiLap = G.simTime - (c._lapStart || 0);
         c._lapStart = G.simTime;
         if (aiLap > 15 && (c.bestLap == null || aiLap < c.bestLap)) c.bestLap = aiLap;
+        if (aiLap > 15) noteRaceLap(c, aiLap);
       }
       if (c.driver.player) {
         onPlayerLapComplete();
@@ -3221,5 +3265,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 56';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 57';
 })();
