@@ -42,10 +42,10 @@ class AIDriver {
     // downforce, a TIGHTER line (further from the edges) is faster than the
     // textbook wide line: the shorter path beats the wider radius, because the
     // car has the grip to take the tighter corner. Measured across COTA,
-    // Barcelona, Monaco and Monza, hw-2.7 is worth ~2-3s a lap over the old
+    // Barcelona, Monaco and Monza, hw-2.3 is worth ~2s a lap over the old
     // hw-1.6. Tight corners still push to the edge via the relaxation below;
     // this mainly straightens the medium and fast corners.
-    const EDGE = Math.max(1.2, hw - 2.7);
+    const EDGE = Math.max(1.2, hw - 2.3);
 
     // Minimum-curvature relaxation. Repeatedly pull every point toward the
     // midpoint of its neighbours (which is what straightens a curve) while

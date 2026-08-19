@@ -2256,7 +2256,7 @@ const STEW = {
   rearFaultOverlap: 0.30,   // hitter this far behind (<30% alongside) = at fault
   entitledOverlap: 0.50,    // >=50% alongside = entitled to room
   contactCooldown: 5,       // s between penalties for the same car
-  limitTime: 0.45,          // s all-wheels-off before a strike counts
+  limitTime: 0.75,          // s all-wheels-off before a strike (was 0.45 — a brief combat clip should not count, only a sustained run-wide)
   limitSpeed: 24,           // only strike when carrying real speed (not a spin)
   // FIA ladder: 3 track-limits warnings (black & white flag), then
   // 4th = 5s, 5th = 10s, 6th+ = drive-through. Collisions escalate the same way.
@@ -2317,6 +2317,12 @@ function checkTrackLimits(dt) {
     const t = G.track;
     const lat = t.lateral(p.x, p.z, p.trackIdx);
     const off = Math.abs(lat) > t.width/2 + 1.9; // clearly all wheels beyond
+    // A car pushed off by contact isn't running wide of its own accord, so it
+    // gets a 1.5 s grace — real stewards don't penalise a forced-off car, and
+    // without this a mid-pack tangle handed strikes to the innocent party too.
+    if (c._contactT != null && G.simTime - c._contactT < 1.5) {
+      c.limitTimer = 0; c._limitFlagged = false; continue;
+    }
     if (off && p.speed > STEW.limitSpeed) {
       c.limitTimer = (c.limitTimer || 0) + dt;
       if (c.limitTimer >= STEW.limitTime && !c._limitFlagged) {
@@ -2363,6 +2369,9 @@ function resolveCollisions() {
         const ux = dx/d, uz = dz/d;
         a.x -= ux*push; a.z -= uz*push;
         b.x += ux*push; b.z += uz*push;
+        // remember the moment of contact so the stewards don't strike a car
+        // that a rival has just shoved off the road
+        cars[i]._contactT = G.simTime; cars[j]._contactT = G.simTime;
         // Closing speed along the line between the two cars — that, not raw
         // speed, is what decides whether this is a brush or a shunt.
         const closeV = Math.abs((a.speed * Math.sin(a.heading) - b.speed * Math.sin(b.heading)) * ux
@@ -3212,5 +3221,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 55';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 56';
 })();
