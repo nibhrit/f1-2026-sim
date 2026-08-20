@@ -2703,11 +2703,16 @@ function frame(now) {
 // 2.8s standstill at 120m before the line (simplified pit model, no lane geometry)
 function pitInput(c, dt) {
   const p = c.phys, t = G.track;
-  const pitLat = -(t.width/2 - 1.6); // toward the pit building side
-  // simple pursuit toward a point ahead on the pit line
-  const lookM = Math.max(6, p.speed * 0.5);
+  p.inPit = true;                              // exempt from the track wall
+  const g = pitLaneGeom(t);
+  // Follow the pit-lane corridor: in the lane use its offset, before it hug the
+  // pit-side edge, and aim at a point a little further along the same corridor.
+  const lookM = Math.max(6, p.speed * 0.45);
+  const aheadDist = (p.lapDist + lookM) % t.length;
+  let aheadTgt = pitLaneOffset(t, aheadDist);
+  if (aheadTgt == null) aheadTgt = -g.edgeOff;
   const kAhead = (p.trackIdx + Math.ceil(lookM / (t.length / t.n))) % t.n;
-  const target = t.posAt(kAhead, pitLat);
+  const target = t.posAt(kAhead, aheadTgt);
   let da = Math.atan2(target.x - p.x, target.z - p.z) - p.heading;
   while (da > Math.PI) da -= 2*Math.PI;
   while (da < -Math.PI) da += 2*Math.PI;
@@ -2724,17 +2729,22 @@ function pitInput(c, dt) {
       c.pitState = 'exiting';
       if (c.driver.player) AUDIO.beep(700, 0.2, 0.12); // wheel-gun release
     }
-    return { throttle: 0, brake: 1, steer: 0 };
+    // Pin the car dead still. Returning brake:1 made the physics engage reverse
+    // gear (braking at zero speed backs the car up), so the car crept backwards
+    // in the box until the player released — now it just sits there like a real
+    // stop. throttle:0 + brake:0 with speed forced to 0 holds position.
+    p.speed = 0;
+    return { throttle: 0, brake: 0, steer: 0 };
   }
-  let vTarget = 22; // pit speed limit
+  let vTarget = 22; // pit speed limit (auto-enforced)
   if (c.pitState === 'entering') {
-    const dStop = Math.max(0, (t.length - 120) - p.lapDist); // box at 120m before the line
-    vTarget = Math.min(22, Math.sqrt(2 * 8 * dStop));
+    const dBox = Math.max(0, g.boxDist - p.lapDist); // distance to the pit box
+    vTarget = Math.min(22, Math.sqrt(2 * 7 * dBox));
     // a drive-through never stops: stay at pit speed and rejoin
     if (c.driveThrough) {
       vTarget = 22;
-      if (p.lapDist > t.length - 60) c.pitState = 'exiting';
-    } else if (dStop < 2.5 && p.speed < 2) {
+      if (p.lapDist > g.exitStart) c.pitState = 'exiting';
+    } else if (p.lapDist >= g.boxDist - 1.5 && p.speed < 3) {
       c.pitState = 'stopped';
       c.pitStopStart = G.simTime;
       if (c.driver.player) {
@@ -2747,7 +2757,8 @@ function pitInput(c, dt) {
         // AI crews: 2.0-3.5s, with the occasional botched stop
         c.pitTimer = Math.random() < 0.06 ? 5 + Math.random()*2 : 2.0 + Math.random()*1.5;
       }
-      return { throttle: 0, brake: 1, steer: 0 };
+      p.speed = 0;                              // pin in the box, don't reverse
+      return { throttle: 0, brake: 0, steer: 0 };
     }
   }
   let throttle = 0, brake = 0;
@@ -3175,7 +3186,7 @@ function stepSim(dt) {
       if (c.driveThrough) {
         // penalty served: no tyres, no stop, does not count as the mandatory stop
         c.driveThrough = false; c.driveThroughServed = true;
-        c.pitState = null; c.pitArmed = false; c.pitArmLap = null;
+        c.pitState = null; c.pitArmed = false; c.pitArmLap = null; c.phys.inPit = false;
         if (c.driver.player) showBanner('PENALTY SERVED', 2, '#ffd12e');
         continue;
       }
@@ -3202,7 +3213,7 @@ function stepSim(dt) {
       if (!c.driver.player) next = compoundForConditions({ pitCompound: next });
       c.phys.setTyre(next);
       c.pitCompound = (c.pitPlan && c.pitPlan.length) ? c.pitPlan[0] : removed;
-      c.pitted = true; c.pitState = null; c.pitArmed = false; c.pitArmLap = null;
+      c.pitted = true; c.pitState = null; c.pitArmed = false; c.pitArmLap = null; c.phys.inPit = false;
       if (c.driver.player) {
         const lane = c.pitLaneStart != null ? (G.simTime - c.pitLaneStart) : 0;
         showBanner('OUT — ' + c.phys.compound.toUpperCase() + 'S · PIT LANE ' + lane.toFixed(1) + 's', 2.4, '#2ecc71');
@@ -3265,5 +3276,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 58';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 60';
 })();

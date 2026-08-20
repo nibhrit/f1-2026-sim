@@ -67,6 +67,7 @@ class CarPhysics {
     this.dmgFloor = 0;
     this.puncture = 0;
     this.dead = false;
+    this.inPit = false;
     this.lastImpact = 0;      // severity of the most recent hit, for effects
     this.gripBonus = 1;       // AI car performance handicap (difficulty)
   }
@@ -298,7 +299,11 @@ class CarPhysics {
     // --- barrier clamp ---
     this.trackIdx = t.nearest(this.x, this.z, this.trackIdx, 8);
     const lat2 = t.lateral(this.x, this.z, this.trackIdx);
-    const wall = t.wallOff || (hw + 8.2);
+    // In the pit lane the car sits beyond the normal track barrier, so push the
+    // clamp out to hold the lane (and don't let a street circuit's tight wall
+    // shove the car back onto the track).
+    const wall = this.inPit ? Math.max(t.wallOff || (hw + 8.2), hw + 9)
+                            : (t.wallOff || (hw + 8.2));
     this.wallHit = 0;
     if (Math.abs(lat2) <= wall) this._wallTouch = false;
     if (Math.abs(lat2) > wall) {

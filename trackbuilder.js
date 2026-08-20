@@ -1063,6 +1063,67 @@ function buildTrackScene(track, scene, themeName) {
     }
   }
 
+  // --- pit lane (surface + wall + box) ---
+  {
+    const g = pitLaneGeom(track);
+    const i0 = track.idxAtDist(g.entryStart), i1 = track.idxAtDist(g.exitEnd);
+    const idxs = [];
+    for (let k = i0; ; k = (k+1)%N) { idxs.push(k); if (k === i1 || idxs.length > N) break; }
+
+    // paved lane surface, tapering at entry/exit
+    const laneMat = new THREE.MeshStandardMaterial({ color: 0x33353d, roughness: 0.92, metalness: 0.0, side: THREE.DoubleSide });
+    const v=[], uv=[], ia=[];
+    idxs.forEach((k, s) => {
+      const off = pitLaneOffset(track, track.dist[k]);
+      const mag = off == null ? g.edgeOff : -off;
+      const inner = -(mag - g.laneHalf), outer = -(mag + g.laneHalf);
+      const a = track.posAt(k, inner), b = track.posAt(k, outer);
+      v.push(a.x, H(k,inner)+0.045, a.z, b.x, H(k,outer)+0.045, b.z);
+      uv.push(0, s*0.1, 1, s*0.1);
+      if (s < idxs.length-1) { const q=s*2; ia.push(q,q+1,q+2, q+1,q+3,q+2); }
+    });
+    const gg = new THREE.BufferGeometry();
+    gg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(v),3));
+    gg.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uv),2));
+    gg.setIndex(ia); gg.computeVertexNormals();
+    const lane = new THREE.Mesh(gg, laneMat); lane.userData.ground = true; grp.add(lane);
+
+    // white line along the lane's outer edge, and the pit wall on the inner
+    const lineMat = new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.6, side: THREE.DoubleSide });
+    const wallMat = new THREE.MeshStandardMaterial({ color: theme.night ? 0x33384a : 0xb8bcc6, roughness: 0.6, metalness: 0.15 });
+    const lv=[], lia=[], wv=[], wia=[];
+    let li=0, wi=0;
+    idxs.forEach((k, s) => {
+      const d = track.dist[k];
+      // pit wall only along the straight part of the lane
+      if (d >= g.entryEnd - 8 && d <= g.exitStart + 8) {
+        const p = track.posAt(k, -g.wallOff);
+        const y0 = track.heightAt(k, -g.wallOff);
+        wv.push(p.x, y0, p.z, p.x, y0+0.85, p.z);
+        if (wi>0){const a=(wi-1)*2; wia.push(a,a+1,a+2, a+1,a+3,a+2);} wi++;
+      }
+    });
+    if (wia.length) {
+      const wg = new THREE.BufferGeometry();
+      wg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(wv),3));
+      wg.setIndex(wia); wg.computeVertexNormals();
+      const wall = new THREE.Mesh(wg, wallMat); wall.userData.caster = true; grp.add(wall);
+    }
+
+    // the pit box — a bright bay marking where the car stops
+    {
+      const k = track.idxAtDist(g.boxDist);
+      const boxMat = new THREE.MeshStandardMaterial({ color: 0xffd12e, roughness: 0.5, side: THREE.DoubleSide });
+      const bx = new THREE.Mesh(new THREE.PlaneGeometry(g.laneHalf*1.6, 5.5), boxMat);
+      const bp = track.posAt(k, -g.laneOff);
+      bx.position.set(bp.x, track.heightAt(k, -g.laneOff)+0.05, bp.z);
+      bx.rotation.order = 'YXZ';
+      bx.rotation.y = Math.atan2(track.tx[k], track.tz[k]);
+      bx.rotation.x = -Math.PI/2;
+      grp.add(bx);
+    }
+  }
+
   // --- city buildings for street circuits ---
   if (theme.buildings) {
     const wtex = windowTex(theme.night);
@@ -1237,6 +1298,41 @@ function buildTrackScene(track, scene, themeName) {
 
   scene.add(grp);
   return grp;
+}
+
+// ---------- pit lane geometry ----------
+// The lane is an offset corridor on the pit side (negative lateral) running
+// along the final straight: the car peels off the track before the line, runs
+// past the garages behind a pit wall, stops in its box, and rejoins. Modelled
+// as a lateral-offset function of lap distance so it slots into the existing
+// centreline+offset world. Shared by the renderer (trackbuilder) and the pit
+// driving logic (main.js).
+function pitLaneGeom(track) {
+  const L = track.length, hw = track.width / 2;
+  return {
+    laneOff:  hw + 5.5,                       // lane centreline, pit side
+    laneHalf: 2.6,                            // half-width of the paved lane
+    wallOff:  hw + 2.2,                       // pit wall between track and lane
+    edgeOff:  hw - 1.6,                       // where the car hugs before peeling
+    entryStart: L - Math.min(340, L * 0.14),
+    entryEnd:   L - Math.min(265, L * 0.11),
+    boxDist:    L - 150,
+    exitStart:  L - 100,
+    exitEnd:    L - 28,
+  };
+}
+
+// smoothstep 0..1
+function _ss(a, b, x) { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t*t*(3-2*t); }
+
+// Target lateral offset (negative = pit side) for a car following the pit lane
+// at a given lap distance. Returns null outside the pit corridor (= on track).
+function pitLaneOffset(track, lapDist) {
+  const g = pitLaneGeom(track);
+  if (lapDist < g.entryStart || lapDist > g.exitEnd) return null;
+  if (lapDist < g.entryEnd) return -(g.edgeOff + (g.laneOff - g.edgeOff) * _ss(g.entryStart, g.entryEnd, lapDist));
+  if (lapDist < g.exitStart) return -g.laneOff;
+  return -(g.laneOff + (g.edgeOff - g.laneOff) * _ss(g.exitStart, g.exitEnd, lapDist));
 }
 
 // grid slot: returns {x,z,angle} for grid position i (0 = pole)
