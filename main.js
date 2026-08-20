@@ -663,7 +663,7 @@ function makeCar(driver, track) {
     // The whole ladder moved up a step: what used to be Elite is now Pro.
     // The grip curve is re-anchored to match, otherwise 1.06 and 1.10 would
     // both clamp to full grip and Pro/Elite would be identical.
-    phys.gripBonus = (0.98 + dt2 * 0.18) * (1 - (1 - cp / CAR_PACE_TOP) * 4);
+    phys.gripBonus = (0.98 + dt2 * 0.24) * (1 - (1 - cp / CAR_PACE_TOP) * 4);
   }
   return car;
 }
@@ -3265,5 +3265,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 57';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 58';
 })();
