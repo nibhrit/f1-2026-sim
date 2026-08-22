@@ -384,14 +384,27 @@ document.querySelectorAll('#screen-main .btn[data-mode]').forEach(b => {
     showScreen('track');
   });
 });
-// AI difficulty selector
-document.querySelectorAll('#diff-row [data-diff]').forEach(b => {
-  b.addEventListener('click', () => {
-    document.querySelectorAll('#diff-row [data-diff]').forEach(x => x.classList.remove('selected'));
-    b.classList.add('selected');
-    G.difficulty = parseFloat(b.dataset.diff);
-  });
-});
+// AI difficulty slider — live, so no rebuild needed to retune the field.
+// 0.95 (easy) .. 1.20 (hardest the AI can run clean). Tier name is cosmetic.
+function diffTier(d) {
+  if (d < 1.00) return 'Rookie';
+  if (d < 1.05) return 'Casual';
+  if (d < 1.095) return 'Pro';
+  if (d < 1.15) return 'Elite';
+  return 'Alien';
+}
+(function initDiffSlider() {
+  const s = document.getElementById('diff-slider');
+  const lab = document.getElementById('diff-label');
+  if (!s) return;
+  const sync = () => {
+    G.difficulty = parseFloat(s.value);
+    const pct = Math.round((G.difficulty - 0.95) / (1.20 - 0.95) * 100);
+    if (lab) lab.textContent = diffTier(G.difficulty) + ' · ' + pct + '%';
+  };
+  s.addEventListener('input', sync);
+  sync();
+})();
 // race distance selector
 document.querySelectorAll('#dist-row [data-dist]').forEach(b => {
   b.addEventListener('click', () => {
@@ -643,7 +656,11 @@ function makeCar(driver, track) {
     // way round — which is why Elite was lapping SLOWER than Pro at Monza and
     // China despite never leaving the road. paceMul is now purely "what
     // fraction of the available limit this driver uses", and always under 1.
-    const dt2 = Math.max(0, Math.min(1, (G.difficulty - 0.98) / 0.12));
+    // dt2 is the normalised difficulty (0 at ~Rookie, 1 at old-Elite 1.10) that
+    // scales grip and pace. The slider now runs past 1.10, so the old Math.min(1)
+    // clamp is lifted — at the 1.20 top end dt2 reaches ~1.85, the level the AI
+    // was validated to run clean. Floored slightly below 0 for the easy end.
+    const dt2 = Math.max(-0.25, Math.min(1.85, (G.difficulty - 0.98) / 0.12));
     car.ai.paceMul = cp * (0.900 + 0.130 * dt2) * (0.990 + driver.skill * 0.010);
     car.ai.buildCornerSpeeds();
     // Pace alone barely separates the field, because the quick cars end up
@@ -3276,5 +3293,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 60';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 61';
 })();

@@ -47,6 +47,13 @@
   .opp-team { font-size:11px; color:#7d8db0; }
 
   .row-opts { display:flex; gap:12px; margin-top:8px; }
+  /* AI difficulty slider */
+  #diff-slider { -webkit-appearance:none; appearance:none; width:100%; height:6px; border-radius:3px;
+    background:linear-gradient(90deg,#2a7d3f 0%,#c9a227 55%,#c1121f 100%); outline:none; cursor:pointer; }
+  #diff-slider::-webkit-slider-thumb { -webkit-appearance:none; appearance:none; width:18px; height:18px;
+    border-radius:50%; background:#eef3ff; border:2px solid #1e3a8a; box-shadow:0 1px 4px rgba(0,0,0,.5); cursor:pointer; }
+  #diff-slider::-moz-range-thumb { width:16px; height:16px; border-radius:50%; background:#eef3ff;
+    border:2px solid #1e3a8a; box-shadow:0 1px 4px rgba(0,0,0,.5); cursor:pointer; }
 
   /* ---------- HUD ---------- */
   #hud { position:absolute; inset:0; pointer-events:none; z-index:10; display:none; }
@@ -246,12 +253,12 @@
     <button class="btn accent" data-mode="gp">Grand Prix Weekend</button>
     <button class="btn" data-mode="season">Season</button>
     <div style="margin-top:10px;">
-      <div style="font-size:11px; letter-spacing:2px; color:#7d8db0; margin-bottom:6px;">AI DIFFICULTY</div>
-      <div class="row-opts" id="diff-row" style="margin-top:0;">
-        <button class="btn small" data-diff="0.98">Rookie</button>
-        <button class="btn small" data-diff="1.02">Casual</button>
-        <button class="btn small selected" data-diff="1.06">Pro</button>
-        <button class="btn small" data-diff="1.10">Elite</button>
+      <div style="font-size:11px; letter-spacing:2px; color:#7d8db0; margin-bottom:6px; display:flex; justify-content:space-between;">
+        <span>AI DIFFICULTY</span><span id="diff-label" style="color:#cdd8f0;">Pro</span>
+      </div>
+      <input type="range" id="diff-slider" min="0.95" max="1.20" step="0.005" value="1.06">
+      <div style="display:flex; justify-content:space-between; font-size:9px; letter-spacing:1px; color:#5b6b8c; margin-top:2px;">
+        <span>ROOKIE</span><span>PRO</span><span>ALIEN</span>
       </div>
     </div>
     <div style="margin-top:10px;">
@@ -455,13 +462,13 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/SSAOPass.js"></script>
-<script src="trackdata.js?v=60"></script>
-<script src="tracks.js?v=60"></script>
-<script src="audio.js?v=60"></script>
-<script src="carmodel.js?v=60"></script>
-<script src="trackbuilder.js?v=60"></script>
-<script src="physics.js?v=60"></script>
-<script src="ai.js?v=60"></script>
-<script src="main.js?v=60"></script>
+<script src="trackdata.js?v=61"></script>
+<script src="tracks.js?v=61"></script>
+<script src="audio.js?v=61"></script>
+<script src="carmodel.js?v=61"></script>
+<script src="trackbuilder.js?v=61"></script>
+<script src="physics.js?v=61"></script>
+<script src="ai.js?v=61"></script>
+<script src="main.js?v=61"></script>
 </body>
 </html>

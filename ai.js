@@ -115,6 +115,51 @@ class AIDriver {
     track._csKey = 'line';
   }
 
+  // ---- velocity profile (forward-backward pass) ------------------------
+  // The established racing-AI approach: precompute the target speed at every
+  // point of the lap in one shot, respecting the corner limit, then braking
+  // (backward), then acceleration (forward). Replaces the old per-frame
+  // braking scan — cleaner, and the base the friction-circle step builds on.
+  // Cached per (pace, decel, traction); recomputed only when grip shifts.
+  speedProfile(pace, brakeFac, tractionMul) {
+    const t = this.track, N = t.n, seg = t.length / N;
+    const cs = t._cornerSpeed;
+    // Quantise the inputs into coarse buckets so the O(N) rebuild fires only
+    // when grip really shifts (a few times a lap at most), not every frame.
+    // brakeFac / tractionMul / pace all move slowly (grip, tyre temp, wetness);
+    // the profile itself is a global plan, so nothing here may depend on the
+    // car's instantaneous speed or the key would churn every frame.
+    const key = (Math.round(pace * 80) * 1e6) + (Math.round(brakeFac * 200) * 1e3) + Math.round(tractionMul * 40);
+    if (this._prof && this._profKey === key) return this._prof;
+    this._profKey = key;
+    const v = this._prof && this._prof.length === N ? this._prof : new Float64Array(N);
+    // corner cap (grip-scaled via pace), clamped to a sane top end
+    for (let i = 0; i < N; i++) v[i] = Math.min(92, cs[i] * pace);
+    // backward pass: never carry more speed than we can brake off for what's
+    // ahead. Braking capability is downforce-limited, so it rises with speed at
+    // each point (18 m/s^2 low, up to 58 flat out) — computed per segment from
+    // the profile's own speed, then scaled by the slow grip/skill/diff factor.
+    for (let s = 0; s < 2; s++)
+      for (let i = N - 1; i >= 0; i--) {
+        const j = (i + 1) % N;
+        const dec = Math.min(58, 18 + 0.0105 * v[i] * v[i]) * brakeFac;
+        const cap = Math.sqrt(v[j] * v[j] + 2 * dec * seg);
+        if (cap < v[i]) v[i] = cap;
+      }
+    // forward pass: never demand more speed than the engine can build from the
+    // point behind (traction-limited low down, power-limited up top, minus drag).
+    for (let s = 0; s < 2; s++)
+      for (let i = 0; i < N; i++) {
+        const j = (i - 1 + N) % N, u = v[j];
+        const acc = Math.min((8.6 + 0.22 * Math.min(u, 25)) * tractionMul, 470 / Math.max(u, 10))
+                  - (0.0006 * u * u + 0.4);
+        const cap = Math.sqrt(Math.max(1, u * u + 2 * Math.max(0.3, acc) * seg));
+        if (cap < v[i]) v[i] = cap;
+      }
+    this._prof = v; this._profPace = pace; this._profBrake = brakeFac; this._profTr = tractionMul;
+    return v;
+  }
+
   compute(dt, allCars) {
     const car = this.car, t = this.track;
     // stuck recovery
@@ -134,7 +179,10 @@ class AIDriver {
     // (latMax scales linearly, so corner speed scales with the square root)
     // wet also makes drivers tentative beyond the raw grip loss
     const caution = 1 - 0.11 * wetness;
-    const pace = this.paceMul * caution * Math.sqrt(gripFac * (car.tempMul || 1) * (car.gripBonus || 1));
+    // 1.05: the global velocity profile plans a hair more conservatively than
+    // the old per-frame scan (it never carries speed it can't justify), so a
+    // small corner-cap lift restores hotlap pace without any off-track cost.
+    const pace = this.paceMul * caution * Math.sqrt(gripFac * (car.tempMul || 1) * (car.gripBonus || 1)) * 1.05;
 
     // ---- speed planning: scan braking distance ahead ----
     // Braking is the AI's main pace limiter. The car can physically brake at
@@ -144,34 +192,24 @@ class AIDriver {
     // Braking is downforce-limited now, so the planner has to use the speed it
     // is actually travelling at rather than one flat figure. Skill and
     // difficulty decide how close to that limit a driver dares to run.
-    const brakeCap = Math.min(58, 18 + 0.0105 * v * v);
-    const decel = brakeCap * (0.62 + this.driver.skill * 0.20) *
-                  Math.min(1.12, Math.pow(this.diff, 2)) * (0.42 + 0.58 * gripFac);
-    let vAllow = 999;
-    // Look ahead far enough to see a corner that keeps tightening. The old
-    // window was braking distance + 30 m — about 1.2 s at racing speed — so at
-    // China the AI arrived at a decreasing-radius spiral still doing 236 km/h,
-    // ran wide, and then could not get back because grass grip is 0.45.
-    const scanM = Math.max(60, v*v/(2*decel) + 30 + v*1.6);
-    let d = 0, k = idx;
-    const stepM = 5;
-    while (d < scanM) {
-      const k2 = (k + Math.ceil(stepM / (t.length/N))) % N;
-      d += stepM;
-      k = k2;
-      const limit = Math.sqrt(cs[k]*cs[k]*pace*pace + 2*decel*d);
-      if (limit < vAllow) vAllow = limit;
-    }
-    // Corner-exit release. This clamp stops the car exceeding the lateral
-    // limit at its current radius — but read only at the CURRENT sample it
-    // also pinned the car to the apex speed all the way out of the corner,
-    // long after the road had opened up. Taking the better of here and where
-    // the car will be in 0.2 s lets it get on the power at the exit while
-    // still tightening on entry, where the sample ahead is slower.
-    // Measured: COTA -1.2s, Barcelona -1.3s, Monaco -0.6s.
-    const kSoon = (idx + Math.ceil(Math.max(2, v * 0.20) / (t.length/N))) % N;
-    const hereLimit = Math.max(cs[idx], cs[kSoon]) * pace * 0.97;
-    vAllow = Math.min(vAllow, hereLimit * 1.06);
+    // How deep a driver dares to brake, as a fraction of the car's downforce-
+    // limited capability. Skill and difficulty push it toward the limit; grip
+    // (wet) pulls it back. Speed-independent so the profile cache stays stable —
+    // the actual per-segment m/s^2 is derived inside speedProfile from downforce.
+    const brakeFac = (0.62 + this.driver.skill * 0.20) *
+                     Math.min(1.12, Math.pow(this.diff, 2)) * (0.42 + 0.58 * gripFac) * 1.15;
+    // Precomputed velocity profile: the target speed at every point of the lap,
+    // solved once (corner cap -> braking -> acceleration) instead of scanned
+    // every frame. tractionMul feeds the wet traction drop into the forward pass.
+    const tractionMul = 0.55 + 0.45 * gripFac;
+    const prof = this.speedProfile(pace, brakeFac, tractionMul);
+    // aim a touch ahead so the car reacts to the corner it's arriving at, not
+    // the one under its wheels — the equivalent of the old exit-release logic.
+    // The backward pass already guarantees prof[idx] is a speed we can brake off
+    // for every corner ahead, so we can target it directly. A tiny 1-sample peek
+    // ahead only guards against discrete-step overshoot at the actual turn-in.
+    const kSoon = (idx + 1) % N;
+    let vAllow = Math.min(prof[idx], prof[kSoon] + 0.5);
     // AI top speed sits just below the player's (~308-312 vs 315 km/h). Wet
     // barely dents top speed (drag-limited); the corner-pace drop handles the rest.
     // DRS open raises the cap so the tow actually completes overtakes.
@@ -182,7 +220,12 @@ class AIDriver {
       * (0.88 + 0.12 * gripFac) + (car.drsOpen ? 8 : 0) + (car.tow || 0) * 6);
 
     // ---- base lane = racing line (clean air) ----
-    const lookM = Math.min(50, Math.max(9, v * 0.5));
+    // Look-ahead distance for the pursuit target. A long peek made the car cut
+    // corners and run wide through fast flowing sequences (Qatar, Suzuka),
+    // tripping the running-wide speed-cut and bleeding ~10 s/lap there. A
+    // shorter peek tracks the line tightly; going below ~0.4 gets twitchy in the
+    // slow stuff (Monaco), so this is the sweet spot across the calendar.
+    const lookM = Math.min(40, Math.max(9, v * 0.40));
     const kAhead = (idx + Math.ceil(lookM / (t.length/N))) % N;
     const edge = t.width/2 - 1.6;
     const rl = t._raceLine;
