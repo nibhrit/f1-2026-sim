@@ -162,9 +162,22 @@ class AIDriver {
 
   compute(dt, allCars) {
     const car = this.car, t = this.track;
-    // stuck recovery
+    // stuck recovery — but never teleport onto another car. resetToTrack snaps
+    // to the centreline at the current index; in a bunched pack that used to
+    // drop several stuck cars onto the same point, spawning instant overlaps
+    // that fed the collision/damage cascade. Only reset if the landing spot is
+    // clear; otherwise wait it out (collision resolution will nudge us free).
     this.stuck = (car.speed < 2.5) ? (this.stuck||0) + dt : 0;
-    if (this.stuck > 2.5) { car.resetToTrack(); this.stuck = 0; }
+    if (this.stuck > 2.5) {
+      const ti = car.trackIdx, rx = t.px[ti], rz = t.pz[ti];
+      let clear = true;
+      for (const o of allCars) {
+        if (o === car) continue;
+        if (Math.hypot(o.x - rx, o.z - rz) < 4.5) { clear = false; break; }
+      }
+      if (clear) { car.resetToTrack(); this.stuck = 0; }
+      else this.stuck = 1.5; // re-check shortly rather than reset into traffic
+    }
     if (this.launchT > 0) this.launchT -= dt;
     const cs = t._cornerSpeed;
     const N = t.n;
@@ -246,32 +259,46 @@ class AIDriver {
     const kCorner = (idx + Math.ceil(35 / (t.length/N))) % N;
     const insideSign = Math.sign(t.curv[kCorner]) || (baseLane >= 0 ? 1 : -1);
 
-    // nearest car ahead (progress-wise, <30m) and behind (<15m)
+    // nearest car ahead and behind. Ahead is scanned further now (a car at
+    // 90 m/s needs ~35 m of buffer) so following can start easing early instead
+    // of only waking up at 13 m and rear-ending the car in front.
     let ahead=null, aheadGap=1e9, behind=null, behindGap=1e9;
     for (const other of allCars) {
       if (other === car) continue;
       const gap = other.totalDist - car.totalDist;
       const dd = Math.hypot(other.x-car.x, other.z-car.z);
-      if (gap > 0 && gap < 30 && dd < 34 && gap < aheadGap) { aheadGap = gap; ahead = other; }
+      if (gap > 0 && gap < 55 && dd < 58 && gap < aheadGap) { aheadGap = gap; ahead = other; }
       if (gap < 0 && gap > -15 && dd < 22 && -gap < behindGap) { behindGap = -gap; behind = other; }
     }
 
     if (ahead) {
       const otherLat = t.lateral(ahead.x, ahead.z, ahead.trackIdx);
       const myLat = t.lateral(car.x, car.z, car.trackIdx);
-      // Hold station to avoid ramming. The old test fired whenever a car was
-      // within 18 m and merely a touch slower, which on the run to turn 1 —
-      // where the whole field is nose-to-tail by definition — made all 21 AI
-      // cars lift at once and handed the player the lead. Now it only reacts
-      // when we are actually closing, in the same lane, and close enough that
-      // it matters.
+      const latOff = Math.abs(otherLat - myLat);
       const closing = v - ahead.speed;
-      const sameLane = Math.abs(otherLat - myLat) < 2.2;
-      const range = this.launchT > 0 ? 8 : 13;
-      if (sameLane && closing > 0.5 && aheadGap < range) {
-        // match their speed by the time we're 5 m back, no earlier
-        const follow = ahead.speed + Math.max(0, aheadGap - 5) * 2.6;
-        vAllow = Math.min(vAllow, follow);
+      // Adaptive car-following. Maintain a speed-scaled safe bubble behind the
+      // car in front whenever we are still lined up behind it (not clearly
+      // alongside/passing). Inside the bubble the target speed drops below the
+      // car ahead, proportional to how far in we are, so we settle at the bubble
+      // edge instead of closing to a hit. This is what stops the field
+      // rear-ending itself into a damage cascade over a full race. The launch
+      // phase uses a tighter bubble so the pack doesn't all lift at once on the
+      // run to turn 1 (the old over-eager version handed the player the lead).
+      // Treat the car ahead as a moving obstacle and cap our speed to what we
+      // can physically brake down to ITS speed before we reach it — the same
+      // backward-pass maths the velocity profile uses for corners. This makes a
+      // rear-end impossible while we're lined up behind it, whatever it does
+      // (brakes for a corner, is damaged and crawling, etc). It naturally eases
+      // off early on a straight and only bites hard when we're genuinely closing
+      // too fast. Using the 3-D distance (not just along-track progress) so it
+      // holds through corners where the two differ.
+      const blocked = latOff < 3.0;
+      if (blocked) {
+        const minGap = 7;                        // ~1.5 car lengths of buffer
+        const eff = Math.max(0, aheadGap - minGap);
+        const DEC = 17;                          // firm, comfortably achievable
+        const maxApproach = Math.sqrt(ahead.speed * ahead.speed + 2 * DEC * eff);
+        vAllow = Math.min(vAllow, maxApproach);
       }
       // attacker: faster and close → make a move
       if (v > ahead.speed - 3 && aheadGap < 24) {

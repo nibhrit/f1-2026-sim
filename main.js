@@ -2438,24 +2438,36 @@ function resolveCollisions() {
         // to be both very hard AND unlucky, so DNFs stay in the real 0-3 range
         // rather than the dozen the rain was producing.
         const dmgReady = (rear.dmgCd || 0) <= 0 && (front.dmgCd || 0) <= 0;
+        // Player contact keeps full consequences; pure AI-vs-AI contact is
+        // heavily attenuated. A 22-car spec field on a tight circuit trades
+        // paint constantly, and at full damage that ground the whole field down
+        // to a dozen DNFs a race (unrealistic — real races see 0-4). Softening
+        // AI/AI damage keeps racing hard-but-survivable while YOUR mistakes
+        // still cost you. aiOnly scales both the accrual and the dice rolls.
+        const playerHit = G.player && (a === G.player.phys || b === G.player.phys);
+        const aiOnly = !playerHit;
+        const dmgScale = aiOnly ? 0.2 : 1;
         if (closeV > 7 && dmgReady) {
           rear.dmgCd = front.dmgCd = 0.6;   // seconds
           const bite = Math.min(1, (closeV - 7) / 20);
-          rear.dmgWing  = Math.min(1, rear.dmgWing  + bite * 0.35);
-          front.dmgFloor = Math.min(1, front.dmgFloor + bite * 0.10);
+          rear.dmgWing  = Math.min(1, rear.dmgWing  + bite * 0.35 * dmgScale);
+          front.dmgFloor = Math.min(1, front.dmgFloor + bite * 0.10 * dmgScale);
           rear.lastImpact = Math.max(rear.lastImpact, closeV);
           front.lastImpact = Math.max(front.lastImpact, closeV);
           // a heavy hit spins them. The spin is capped and does NOT feed back
           // into the next frame's closing-speed calc (that loop is what let a
           // single tangle cascade into the whole field wiping out).
           if (closeV > 14) {
-            const spin = Math.min(0.25, (closeV - 14) * 0.02);
+            const spin = Math.min(0.25, (closeV - 14) * 0.02) * (aiOnly ? 0.6 : 1);
             rear.heading  += (Math.random()-0.5) * spin;
             front.heading += (Math.random()-0.5) * spin;
             rear.speed *= 0.75; front.speed *= 0.88;
-            if (Math.random() < (closeV - 14) * 0.03) front.puncture = 1;
-            // terminal only on a big, square, unlucky hit
-            if (closeV > 30 && Math.random() < 0.5) rear.dead = true;
+            if (Math.random() < (closeV - 14) * 0.03 * (aiOnly ? 0.22 : 1)) front.puncture = 1;
+            // terminal only on a big, square, unlucky hit. AI-vs-AI is almost
+            // never race-ending on contact alone (real DNFs are mostly mechanical
+            // or a single big shunt) — this is what stops a spec field grinding
+            // itself down to a dozen retirements over a race.
+            if (closeV > 30 && Math.random() < (aiOnly ? 0.05 : 0.5)) rear.dead = true;
           }
         }
         if (G.player && (a === G.player.phys || b === G.player.phys) && (G.crashCd||0) <= 0) {
@@ -3293,5 +3305,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 61';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 62';
 })();
