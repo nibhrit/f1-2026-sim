@@ -2606,7 +2606,11 @@ function frame(now) {
     // we blend onto the terrain instead.
     const roadY = trk.surfaceY(p.x, p.z, p.trackIdx) + 0.05;
     let y = roadY;
-    if (trk.terrainY) {
+    // The pit lane is a paved surface sitting beside the track at road level, but
+    // it lies BEYOND the track edge — so the terrain-blend below (meant for cars
+    // running wide onto grass) used to drag a pitting car down onto the lower
+    // ground mesh, sinking it "underground". Cars in the pit stay at road height.
+    if (trk.terrainY && !p.inPit) {
       const lat = Math.abs(trk.lateral(p.x, p.z, p.trackIdx));
       const edge = trk.width/2 + 1.15;          // outside edge of the turf strip
       if (lat > edge) {
@@ -2794,6 +2798,24 @@ function pitInput(c, dt) {
   if (p.speed > vTarget + 0.5) brake = Math.min(1, (p.speed - vTarget) * 0.3);
   else if (p.speed < vTarget - 0.8) throttle = 0.7;
   return { throttle, brake, steer };
+}
+
+// Watchdog: a stop is ~20-25s. If a car is somehow still in the pit lane well
+// past that (stuck against the pit wall, an odd position, a botched entry), end
+// the stop cleanly and hand it back to normal driving so it can never hang the
+// race for 50s+. It keeps whatever progress it made; the AI/racing line pulls it
+// back onto track from the lane edge on the next frames.
+function forcePitComplete(c) {
+  const p = c.phys;
+  if (p.dmgWing > 0.15) p.dmgWing = 0;
+  if (p.dmgFloor > 0.15) p.dmgFloor *= 0.25;
+  p.puncture = 0;
+  const next = (c.pitPlan && c.pitPlan.length) ? c.pitPlan.shift() : (c.pitCompound || p.compound);
+  p.setTyre(c.ai ? compoundForConditions({ pitCompound: next }) : next);
+  c.pitted = true; c.pitState = null; c.pitArmed = false; c.pitArmLap = null;
+  c.driveThrough = false; p.inPit = false;
+  if (p.speed < 12) p.speed = 12;                  // get it moving again
+  if (c.driver.player) showBanner('OUT OF PITS', 2, '#2ecc71');
 }
 
 // ---------- reaction-light pit stop game ----------
@@ -3163,6 +3185,12 @@ function stepSim(dt) {
   // (the player can box in any session; AI strategy stops are race-only)
   if (started) {
     for (const c of G.cars) {
+      // safety net: no stop may take longer than 40s (runs before the pit-state
+      // skip below, so it can actually catch a car stuck IN the pit lane)
+      if (c.pitState && c.pitLaneStart != null && G.simTime - c.pitLaneStart > 40) {
+        forcePitComplete(c);
+        continue;
+      }
       if (c.finished || c.pitState) continue;
       if (G.mode !== 'race' && c.ai) continue; // no AI stops outside a race
       if (pitsOpen && c.ai && !c.pitArmed && !c.pitted && c.pitLap && c.phys.lap === c.pitLap) armPit(c);
@@ -3305,5 +3333,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 62';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 63';
 })();
