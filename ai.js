@@ -148,11 +148,22 @@ class AIDriver {
       }
     // forward pass: never demand more speed than the engine can build from the
     // point behind (traction-limited low down, power-limited up top, minus drag).
+    // Friction circle: while a tyre is spending grip on cornering it has less to
+    // spare for driving forward, so tractive effort is scaled by how much
+    // lateral grip is already in use ((u/cornerSpeed)^2 = fraction of the budget
+    // spent turning). Near a corner's limit this cuts acceleration to ~0, which
+    // stops the AI getting on the power mid-corner and washing wide on exit —
+    // exactly what was pitching cars off at Austria's fast Turn 6/7.
     for (let s = 0; s < 2; s++)
       for (let i = 0; i < N; i++) {
         const j = (i - 1 + N) % N, u = v[j];
-        const acc = Math.min((8.6 + 0.22 * Math.min(u, 25)) * tractionMul, 470 / Math.max(u, 10))
-                  - (0.0006 * u * u + 0.4);
+        const latFrac = cs[j] > 1 ? Math.min(1, (u / cs[j]) * (u / cs[j])) : 0;
+        // physically-correct circle: drive available falls as cornering grip is
+        // spent, reaching ~0 at the limit. Kills the exit-understeer that pitched
+        // cars off at Austria's fast corners, at every difficulty.
+        const circle = Math.sqrt(Math.max(0, 1 - latFrac * latFrac));
+        const tractive = Math.min((8.6 + 0.22 * Math.min(u, 25)) * tractionMul, 470 / Math.max(u, 10));
+        const acc = tractive * circle - (0.0006 * u * u + 0.4);
         const cap = Math.sqrt(Math.max(1, u * u + 2 * Math.max(0.3, acc) * seg));
         if (cap < v[i]) v[i] = cap;
       }
