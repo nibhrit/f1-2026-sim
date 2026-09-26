@@ -3,6 +3,9 @@
 // based speed planning, simple overtaking offsets.
 // ============================================================
 
+// extra fraction of planned pace the AI gives up per unit of wetness
+let AI_WET_CAUTION = 0.16;
+
 class AIDriver {
   constructor(car, track, driver) {
     this.car = car;
@@ -157,7 +160,13 @@ class AIDriver {
     for (let s = 0; s < 2; s++)
       for (let i = 0; i < N; i++) {
         const j = (i - 1 + N) % N, u = v[j];
-        const latFrac = cs[j] > 1 ? Math.min(1, (u / cs[j]) * (u / cs[j])) : 0;
+        // limit at this point is the grip-scaled corner speed (cs × pace), not
+        // the raw one — in the wet pace drops, and comparing against raw cs
+        // made the circle think the tyres had grip to spare on corner exit
+        // (only ever tightens: in the dry pace sits above 1, and loosening the
+        // circle there brought back the Austria exit run-wide BUILD 64 fixed)
+        const lim = cs[j] * Math.min(1, pace);
+        const latFrac = lim > 1 ? Math.min(1, (u / lim) * (u / lim)) : 0;
         // physically-correct circle: drive available falls as cornering grip is
         // spent, reaching ~0 at the limit. Kills the exit-understeer that pitched
         // cars off at Austria's fast corners, at every difficulty.
@@ -202,11 +211,11 @@ class AIDriver {
     // plan with the grip that's actually available: wet AND tyre temperature
     // (latMax scales linearly, so corner speed scales with the square root)
     // wet also makes drivers tentative beyond the raw grip loss
-    const caution = 1 - 0.11 * wetness;
+    const caution = 1 - AI_WET_CAUTION * wetness;
     // 1.05: the global velocity profile plans a hair more conservatively than
     // the old per-frame scan (it never carries speed it can't justify), so a
     // small corner-cap lift restores hotlap pace without any off-track cost.
-    const pace = this.paceMul * caution * Math.sqrt(gripFac * (car.tempMul || 1) * (car.gripBonus || 1)) * 1.05;
+    const pace = this.paceMul * caution * Math.sqrt(gripFac * (car.tempMul || 1) * (car.tyreMul || 1) * (typeof effGripBonus === 'function' ? effGripBonus(car.gripBonus) : (car.gripBonus || 1))) * 1.05;
 
     // ---- speed planning: scan braking distance ahead ----
     // Braking is the AI's main pace limiter. The car can physically brake at
@@ -220,8 +229,13 @@ class AIDriver {
     // limited capability. Skill and difficulty push it toward the limit; grip
     // (wet) pulls it back. Speed-independent so the profile cache stays stable —
     // the actual per-segment m/s^2 is derived inside speedProfile from downforce.
-    const brakeFac = (0.62 + this.driver.skill * 0.20) *
-                     Math.min(1.12, Math.pow(this.diff, 2)) * (0.42 + 0.58 * gripFac) * 1.15;
+    // wet term matches physics' own longitudinal grip (0.35 + 0.65·wetGrip), and
+    // in the wet the planner never assumes more than 95% of it — otherwise it
+    // plans braking the car can't deliver and overshoots corners in the rain.
+    const wetLong = 0.35 + 0.65 * gripFac;
+    let brakeFac = (0.62 + this.driver.skill * 0.20) *
+                   Math.min(1.12, Math.pow(this.diff, 2)) * wetLong * 1.15;
+    if (wetness > 0.05) brakeFac = Math.min(brakeFac, wetLong * 0.95);
     // Precomputed velocity profile: the target speed at every point of the lap,
     // solved once (corner cap -> braking -> acceleration) instead of scanned
     // every frame. tractionMul feeds the wet traction drop into the forward pass.
@@ -337,6 +351,18 @@ class AIDriver {
     targetLane = Math.max(-edge, Math.min(edge, targetLane));
     this.laneOffsetNow = this.laneOffsetNow == null ? targetLane : this.laneOffsetNow;
     this.laneOffsetNow += (targetLane - this.laneOffsetNow) * Math.min(1, 3*dt);
+    // Off-line penalty: the velocity profile's corner speeds assume the racing
+    // line. A car diving down the inside or running a defensive line through a
+    // corner is on a tighter radius and must carry less speed, or it runs wide
+    // and collects track-limit strikes (the Austria traffic penalties).
+    {
+      const rlNow = rl ? rl[idx] : 0;
+      const offLine = Math.abs(this.laneOffsetNow - rlNow);
+      const inCorner = cs[idx] < 90;
+      if (inCorner && offLine > 0.8) {
+        vAllow *= 1 - 0.05 * Math.min(1, (offLine - 0.8) / 4);
+      }
+    }
 
     // Running-wide guard. Higher difficulties plan closer to the limit, so any
     // pursuit error costs more road — which is why Elite was ending up SLOWER

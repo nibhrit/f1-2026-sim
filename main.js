@@ -791,18 +791,61 @@ function weatherHints(dt) {
 function tyreCategory(name) { return name === 'wet' ? 2 : name === 'inter' ? 1 : 0; }
 function idealCategory(wet) { return wet > 0.7 ? 2 : wet > 0.4 ? 1 : 0; }
 
+// Where the wetness will actually be `lapsAhead` laps from now, using the same
+// scenario model updateWeather() runs. The old start-tyre logic read the
+// drying scenario's END target (0.08) as the forecast, but that track dries
+// linearly over the WHOLE race — so the grid started on slicks at ~0.7 wet and
+// the pit check then called everyone in on lap 1.
+function projectedWetness(lapsAhead) {
+  const w = G.weather;
+  const laps = Math.max(1, G.raceLaps || 1);
+  const prog = Math.min(1, sessionProgress() + lapsAhead / laps);
+  if (w.scenario === 'drying') return Math.min(w.wetness, Math.max(0.05, 0.72 * (1 - prog)));
+  if (w.scenario === 'incoming') {
+    const f = Math.max(0, Math.min(1, (prog - (w.arriveFrac - 0.15)) / 0.35));
+    return Math.max(w.wetness, w.peak * f);
+  }
+  return w.wetness;
+}
+
+// Category with hysteresis: only leave the current category once the track is
+// clearly past the crossover (±0.05), so a car sitting right on a threshold
+// doesn't flip-flop into the pits.
+function wantedCategory(have, wet) {
+  const ideal = idealCategory(wet);
+  if (ideal === have) return have;
+  if (ideal > have) return idealCategory(wet - 0.05) > have ? ideal : have;
+  return idealCategory(wet + 0.05) < have ? ideal : have;
+}
+
 // AI reacts to a conditions crossover: arm one weather stop per direction
 function weatherPitCheck(c) {
   if (!G.raceStarted || c.phys.lap < 1) return;
-  const want = idealCategory(G.weather.wetness);
+  const w = G.weather;
   const have = tyreCategory(c.phys.compound);
-  if (want === have) return;
+  const want = wantedCategory(have, w.wetness);
+  if (want === have) { c._wxAt = null; return; }
+  // never go UP a category on a drying track, or DOWN while rain is building —
+  // the conditions are moving back toward what you're already on
+  if (w.scenario === 'drying' && want > have) return;
+  if (w.scenario === 'incoming' && want < have && w.target > w.wetness) return;
+  // only stop if the change still holds two laps from now (worth the stop)
+  if (wantedCategory(have, projectedWetness(2)) !== want) return;
   // Gate on the CATEGORY we last reacted to, not the direction. Gating on
   // direction blocked the second step of a drying track — wet → inter → slick
   // is two changes the same way, so cars got stranded on inters once the
   // circuit dried out.
   if (c._wxWant === want) return;         // already committed to this change
-  c._wxWant = want;
+  // Stagger: a marginal crossover (within 0.12 of the threshold) splits the
+  // field over two laps like real pit walls gambling; clearly wrong tyres
+  // (e.g. slicks in proper rain) come in straight away.
+  if (c._wxAt == null) {
+    const thr = want > have ? (want === 2 ? 0.7 : 0.4) : (have === 2 ? 0.7 : 0.4);
+    const marginal = Math.abs(w.wetness - thr) < 0.12;
+    c._wxAt = c.phys.lap + (marginal && Math.random() < 0.5 ? 1 : 0);
+  }
+  if (c.phys.lap < c._wxAt) return;
+  c._wxWant = want; c._wxAt = null;
   armPit(c);
   c.pitCompound = want === 2 ? 'wet' : want === 1 ? 'inter' : 'medium';
 }
@@ -1022,12 +1065,13 @@ function startSession() {
         // On a drying track wetness starts around 0.7 and falls to 0.08, so
         // reading the instant value put the whole grid on full wets for a race
         // that was slick-dry by lap five. Teams look at where it's going.
-        const now = G.weather.wetness;
-        const soon = G.weather.target != null ? G.weather.target : now;
-        // weight the forecast heavily when the track is heading somewhere else
-        const wet = now * 0.45 + soon * 0.55;
-        if (wet > 0.7) { car.phys.setTyre('wet'); car.pitCompound = 'inter'; }
-        else if (wet > 0.35) { car.phys.setTyre('inter'); car.pitCompound = soon < 0.2 ? 'medium' : (soon > 0.7 ? 'wet' : 'medium'); }
+        // Start on what the track will be over the opening laps (projected with
+        // the real weather model, same thresholds as the in-race pit check), so
+        // nobody starts on the wrong tyre and pits en masse on lap 1.
+        const cat = idealCategory(projectedWetness(2));
+        const late = projectedWetness(Math.max(3, G.raceLaps * 0.6));
+        if (cat === 2) { car.phys.setTyre('wet'); car.pitCompound = 'inter'; }
+        else if (cat === 1) { car.phys.setTyre('inter'); car.pitCompound = idealCategory(late) === 2 ? 'wet' : 'medium'; }
         else {
           const r = Math.random();
           const start = r < 0.4 ? 'soft' : r < 0.8 ? 'medium' : 'hard';
@@ -1784,6 +1828,7 @@ function restoreRace(snap) {
   G.simTime = snap.simTime || 0;
   G.firstFinish = snap.firstFinish || null;
   G.penalties = snap.penalties || {};
+  G.raceFL = snap.raceFL ? { time: snap.raceFL.time, id: snap.raceFL.id } : null;
   if (snap.weather) { G.weather = snap.weather; setWetness(G.weather.wetness); applyWeatherVisuals(); }
 
   snap.cars.forEach(cs => {
@@ -1806,6 +1851,18 @@ function restoreRace(snap) {
     car.limitStrikes = cs.limitStrikes; car.collCount = cs.collCount;
     car.driveThroughServed = cs.dtServed;
     car._lapStart = cs.lapStart; car.curLapStart = cs.curLapStart;
+    // damage, retirements and outstanding stewards' business
+    p.dmgWing = cs.dmgWing || 0; p.dmgFloor = cs.dmgFloor || 0; p.puncture = cs.puncture || 0;
+    car.dsq = !!cs.dsq; car.stewPen = cs.stewPen || 0;
+    car.driveThrough = !!cs.driveThrough;
+    car.pitArmed = !!cs.pitArmed; car.pitArmLap = cs.pitArmLap != null ? cs.pitArmLap : null;
+    if (cs.retired) {
+      car.retired = true; p.dead = true; p.speed = 0;
+      car.retireAt = G.simTime - 10;           // hidden straight away, stays OUT on the tower
+      if (car.mesh) car.mesh.visible = false;
+    }
+    // a restored AI is already mid-race: no grid-lane blend, no launch phase
+    if (car.ai) { car.ai.laneBlend = 1; car.ai.launchT = 0; }
     G.cars.push(car);
     if (d.player) G.player = car;
   });
@@ -1862,7 +1919,15 @@ function saveRaceSnapshot() {
         limitStrikes: c.limitStrikes || 0, collCount: c.collCount || 0,
         dtServed: !!c.driveThroughServed,
         lapStart: c._lapStart || 0, curLapStart: c.curLapStart || 0,
+        // full race state: damage, retirements, outstanding pit calls/penalties
+        dmgWing: c.phys.dmgWing || 0, dmgFloor: c.phys.dmgFloor || 0,
+        puncture: c.phys.puncture || 0,
+        retired: !!c.retired, dsq: !!c.dsq,
+        driveThrough: !!c.driveThrough,
+        pitArmed: !!c.pitArmed, pitArmLap: c.pitArmLap != null ? c.pitArmLap : null,
+        stewPen: c.stewPen || 0,
       })),
+      raceFL: G.raceFL ? { time: G.raceFL.time, id: G.raceFL.id } : null,
       player: {
         lapTimes: G.player.lapTimes, bestLap: G.player.bestLap, bestLapTyre: G.player.bestLapTyre,
         sectorSB: G.sectorSB, pbLapSectors: G.pbLapSectors,
@@ -2446,28 +2511,33 @@ function resolveCollisions() {
         // still cost you. aiOnly scales both the accrual and the dice rolls.
         const playerHit = G.player && (a === G.player.phys || b === G.player.phys);
         const aiOnly = !playerHit;
-        const dmgScale = aiOnly ? 0.2 : 1;
         if (closeV > 7 && dmgReady) {
           rear.dmgCd = front.dmgCd = 0.6;   // seconds
-          const bite = Math.min(1, (closeV - 7) / 20);
-          rear.dmgWing  = Math.min(1, rear.dmgWing  + bite * 0.35 * dmgScale);
-          front.dmgFloor = Math.min(1, front.dmgFloor + bite * 0.10 * dmgScale);
           rear.lastImpact = Math.max(rear.lastImpact, closeV);
           front.lastImpact = Math.max(front.lastImpact, closeV);
-          // a heavy hit spins them. The spin is capped and does NOT feed back
-          // into the next frame's closing-speed calc (that loop is what let a
-          // single tangle cascade into the whole field wiping out).
-          if (closeV > 14) {
-            const spin = Math.min(0.25, (closeV - 14) * 0.02) * (aiOnly ? 0.6 : 1);
-            rear.heading  += (Math.random()-0.5) * spin;
-            front.heading += (Math.random()-0.5) * spin;
-            rear.speed *= 0.75; front.speed *= 0.88;
-            if (Math.random() < (closeV - 14) * 0.03 * (aiOnly ? 0.22 : 1)) front.puncture = 1;
-            // terminal only on a big, square, unlucky hit. AI-vs-AI is almost
-            // never race-ending on contact alone (real DNFs are mostly mechanical
-            // or a single big shunt) — this is what stops a spec field grinding
-            // itself down to a dozen retirements over a race.
-            if (closeV > 30 && Math.random() < (aiOnly ? 0.05 : 0.5)) rear.dead = true;
+          if (aiOnly) {
+            // AI-vs-AI contact is near-cosmetic: no wing/floor damage, no spin,
+            // no speed kill, no punctures — the field races hard without bleeding
+            // pace to paint-trading. Only a genuinely huge, square shunt can
+            // still end a race, and rarely.
+            if (closeV > 30 && Math.random() < 0.03) rear.dead = true;
+          } else {
+            // Anything involving the player keeps full, realistic consequences.
+            const bite = Math.min(1, (closeV - 7) / 20);
+            rear.dmgWing  = Math.min(1, rear.dmgWing  + bite * 0.35);
+            front.dmgFloor = Math.min(1, front.dmgFloor + bite * 0.10);
+            // a heavy hit spins them. The spin is capped and does NOT feed back
+            // into the next frame's closing-speed calc (that loop is what let a
+            // single tangle cascade into the whole field wiping out).
+            if (closeV > 14) {
+              const spin = Math.min(0.25, (closeV - 14) * 0.02);
+              rear.heading  += (Math.random()-0.5) * spin;
+              front.heading += (Math.random()-0.5) * spin;
+              rear.speed *= 0.75; front.speed *= 0.88;
+              if (Math.random() < (closeV - 14) * 0.03) front.puncture = 1;
+              // terminal only on a big, square, unlucky hit
+              if (closeV > 30 && Math.random() < 0.5) rear.dead = true;
+            }
           }
         }
         if (G.player && (a === G.player.phys || b === G.player.phys) && (G.crashCd||0) <= 0) {
@@ -2475,7 +2545,9 @@ function resolveCollisions() {
           G.crashCd = 0.5;
         }
         // ---- stewards: classify fault (semi-lenient) ----
-        if (G.state === 'driving' && G.raceStarted && G.mode === 'race') {
+        // AI-vs-AI contact is cosmetic, so it isn't investigated either; any
+        // incident involving the player still is, from both sides.
+        if (!aiOnly && G.state === 'driving' && G.raceStarted && G.mode === 'race') {
           const carA = cars[i], carB = cars[j];
           const gap = Math.abs(a.totalDist - b.totalDist);
           const overlap = 1 - Math.min(1, gap / 5); // 1 = side by side, 0 = a car-length apart
@@ -3333,5 +3405,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 64';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 65';
 })();

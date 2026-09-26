@@ -7,6 +7,17 @@
 // main.js pushes G.weather.wetness here each sim step via setWetness().
 let TRACK_WETNESS = 0;
 function setWetness(w) { TRACK_WETNESS = Math.max(0, Math.min(1, w || 0)); }
+// The AI's difficulty grip bonus fades as the track gets wet. In the dry the AI
+// can't use all of it (power/execution-limited), but in the wet grip becomes
+// THE limit, so a full +30% bonus let the AI lose only ~9% in heavy rain while
+// the player's car lost ~20%. Fading it keeps the wet gap in line with the dry
+// one. Shared by physics and the AI planner so they always agree.
+function effGripBonus(b) {
+  b = b || 1;
+  if (b <= 1) return b;
+  return 1 + (b - 1) * (1 - WET_BONUS_FADE * TRACK_WETNESS);
+}
+let WET_BONUS_FADE = 0.6;
 
 // Effective grip multiplier (~0.5..1.05) for a compound at a given wetness.
 // Slicks (wetOptimal 0) are perfect dry and fall off steeply in the wet; the
@@ -248,7 +259,7 @@ class CarPhysics {
     // sat on the 53 ceiling whether its wing was there or not, so damage did
     // nothing exactly when it should hurt most. Scaling both keeps the right
     // character: crippling in fast corners, barely felt in slow ones.
-    const latMax = Math.min(53 * aeroLoss, 17.6 + 0.0104 * v * v * aeroLoss) * punctLoss * gripMul * this.tyreMul * this.tempMul * wg * this.gripBonus * (1 + this.brake * 0.10);
+    const latMax = Math.min(53 * aeroLoss, 17.6 + 0.0104 * v * v * aeroLoss) * punctLoss * gripMul * this.tyreMul * this.tempMul * wg * effGripBonus(this.gripBonus) * (1 + this.brake * 0.10);
     // grip-aware steering (modern racing-game keyboard assist):
     // steer input commands a FRACTION of available grip, capped by the
     // physical wheel angle. Partial steering can never exceed the limit,
