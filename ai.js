@@ -5,6 +5,8 @@
 
 // extra fraction of planned pace the AI gives up per unit of wetness
 let AI_WET_CAUTION = 0.16;
+// fraction of the pace optimism removed in slow corners (tuned by gauntlet)
+let SLOW_CUT = 0.0;
 
 class AIDriver {
   constructor(car, track, driver) {
@@ -137,7 +139,15 @@ class AIDriver {
     this._profKey = key;
     const v = this._prof && this._prof.length === N ? this._prof : new Float64Array(N);
     // corner cap (grip-scaled via pace), clamped to a sane top end
-    for (let i = 0; i < N; i++) v[i] = Math.min(92, cs[i] * pace);
+    // Slow-corner realism: the pace factor carries some optimism (the 1.05
+    // late-braking lift) and the AI's steering only ever asks for 88% of grip.
+    // Fast corners absorb that; a 6m-radius hairpin doesn't — the car needed
+    // ~60% more grip than it had and slid across to the outside wall (China
+    // T14, Monaco). Below ~40 m/s the optimism is taken back out, fully by 20.
+    for (let i = 0; i < N; i++) {
+      const slow = Math.max(0, Math.min(1, (40 - cs[i]) / 20));
+      v[i] = Math.min(92, cs[i] * pace * (1 - SLOW_CUT * slow));
+    }
     // backward pass: never carry more speed than we can brake off for what's
     // ahead. Braking capability is downforce-limited, so it rises with speed at
     // each point (18 m/s^2 low, up to 58 flat out) — computed per segment from
@@ -248,6 +258,26 @@ class AIDriver {
     // ahead only guards against discrete-step overshoot at the actual turn-in.
     const kSoon = (idx + 1) % N;
     let vAllow = Math.min(prof[idx], prof[kSoon] + 0.5);
+    // Brake-onset lag: the pedal takes ~0.17s to reach full pressure, so a car
+    // that starts braking exactly on the profile arrives ~15m late and, already
+    // at the physical braking limit, never claws it back. Into a normal corner
+    // that overshoot is absorbed; into a slow hairpin after a long straight it
+    // meant arriving at twice the planned speed (China T14, Monaco). So
+    // anticipate the ramp — but only when the corner ahead is genuinely slow,
+    // keeping the late braking that makes the AI quick everywhere else.
+    {
+      const segM = t.length / N;
+      const kLag = (idx + Math.ceil(v * 0.18 / segM)) % N;
+      let minAhead = 1e9;
+      const span = Math.ceil(Math.max(60, v * 2.2) / segM);
+      for (let s = 0; s < span; s += 2) { const q = prof[(idx + s) % N]; if (q < minAhead) minAhead = q; }
+      const wSlow = Math.max(0, Math.min(1, (24 - minAhead) / 8));    // hairpins only: 0 above ~86 km/h, 1 below ~58
+      // ...and only for a HUGE stop (shedding 45+ m/s into it, like the end of
+      // China's back straight) — ordinary slow corners keep the late braking
+      const wBig = Math.max(0, Math.min(1, (v - minAhead - 45) / 15));
+      const w = wSlow * wBig;
+      if (w > 0 && prof[kLag] < vAllow) vAllow = vAllow + (prof[kLag] - vAllow) * w;
+    }
     // AI top speed sits just below the player's (~308-312 vs 315 km/h). Wet
     // barely dents top speed (drag-limited); the corner-pace drop handles the rest.
     // DRS open raises the cap so the tow actually completes overtakes.
@@ -289,7 +319,7 @@ class AIDriver {
     // of only waking up at 13 m and rear-ending the car in front.
     let ahead=null, aheadGap=1e9, behind=null, behindGap=1e9;
     for (const other of allCars) {
-      if (other === car) continue;
+      if (other === car || other.finished || other.dead) continue;  // finished/retired cars aren't racing
       const gap = other.totalDist - car.totalDist;
       const dd = Math.hypot(other.x-car.x, other.z-car.z);
       if (gap > 0 && gap < 55 && dd < 58 && gap < aheadGap) { aheadGap = gap; ahead = other; }
@@ -389,7 +419,10 @@ class AIDriver {
     // steer maps to a FRACTION of available grip, so anything past ~0.91
     // makes the physics scrub speed. Cap below that: the AI now rides the
     // limit instead of constantly over-demanding it and bleeding speed.
-    const STEER_CAP = 0.88;
+    // ...but at hairpin speeds the scrub hardly matters and the cap was the
+    // limit: 0.88 couldn't turn a car tighter than ~7m at 12 m/s, and the line
+    // through China T14 needs ~6.5m. Blend up to 0.98 below ~25 m/s.
+    const STEER_CAP = 0.88 + 0.10 * Math.max(0, Math.min(1, (25 - v) / 10));
     let steer = Math.max(-STEER_CAP, Math.min(STEER_CAP, da * 3.4));
 
     // small human wobble

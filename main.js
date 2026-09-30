@@ -1000,6 +1000,7 @@ function startSession() {
   G.drsInfo = '';
   G.countdown = null;
   G.firstFinish = null;
+  G.endedRace = false;
   G.bestCheckpoints = null;
   G.curCheckpoints = [];
   G.msgTimer = 0;
@@ -1547,35 +1548,48 @@ function endQualifyEarly() {
 
 $('btn-endq').addEventListener('click', endQualifyEarly);
 
+// After YOU take the flag, everyone still running finishes on their next
+// crossing. Rather than guess their times, fast-forward the real simulation
+// (rendering paused) until they've all crossed — in small chunks so the page
+// never freezes — then classify from genuine finishing times.
+function finishAndClassify() {
+  if (G.endedRace) return;
+  const t0 = G.simTime, t1 = performance.now();
+  const pending = () => G.cars.some(c => !c.finished && !c.retired);
+  while (pending() && G.simTime - G.firstFinish < 110 && performance.now() - t1 < 25) {
+    stepSim(FIXED);
+  }
+  if (pending() && G.simTime - G.firstFinish < 110) { setTimeout(finishAndClassify, 0); return; }
+  endRace();
+}
+
 function endRace() {
   // classify: finished cars by time, others by progress
   // mandatory-stop rule (races > 20 laps): +25s if a car never pitted
   // FIA: failing to use two dry compounds is a DISQUALIFICATION, not a time
   // penalty — so skipping the stop can never be the quick way out.
-  if (G.raceLaps > 20) {
-    G.cars.forEach(c => {
-      if (c.finished && !c.pitted) c.dsq = true;
-    });
-  }
-  // stewards' time penalties applied to the finishing time
-  G.cars.forEach(c => {
-    const pen = (G.penalties && G.penalties[c.driver.id]) || 0;
-    if (pen > 0 && c.finished && !c._stewApplied) {
-      c.finishTime += pen;
-      c._stewApplied = true;
-      c.stewPen = pen;
-    }
+  if (G.endedRace) return;          // classify exactly once
+  G.endedRace = true;
+  // FIA classification (rules.js): laps completed, then race time INCLUDING
+  // stewards' penalties — so a 45s penalty with a 7s lead drops you back.
+  // Mandatory-stop rule (races > 20 laps) is a disqualification.
+  const cls = classifyRace(G.cars.map(c => ({
+    id: c.driver.id, retired: !!c.retired, dsq: !!c.dsq, finished: !!c.finished,
+    finishTime: c.finishTime, lapsDone: c.lapsDone, lap: c.phys.lap,
+    lapDist: c.phys.lapDist, totalDist: c.phys.totalDist, bestLap: c.bestLap,
+    pitted: !!c.pitted, _car: c,
+  })), {
+    raceLaps: G.raceLaps, trackLen: G.track.length, simTime: G.simTime,
+    penalties: G.penalties || {}, mandatoryStop: G.raceLaps > 20,
   });
-  const rows = G.cars.slice().sort((a,b) => {
-    if (!!a.dsq !== !!b.dsq) return a.dsq ? 1 : -1; // DSQ classified last
-    if (!!a.retired !== !!b.retired) return a.retired ? 1 : -1;  // DNF below runners
-    if (a.finished && b.finished) return a.finishTime - b.finishTime;
-    if (a.finished) return -1;
-    if (b.finished) return 1;
-    return b.phys.totalDist - a.phys.totalDist;
+  cls.forEach(r => {
+    const c = r.src._car;
+    c.stewPen = r.pen || 0;
+    c.dsq = r.status === 'dsq';
+    c._cls = r;
   });
-  const winner = rows.find(r => !r.dsq && r.finished) || rows[0];
-  const winT = winner.finishTime || G.simTime;
+  const rows = cls.map(r => r.src._car);
+  const winner = rows[0];
   const myPos = rows.findIndex(r => r.driver && r.driver.player) + 1;
   // fastest race lap across the whole field (AI laps timed in stepSim)
   let flCar = null;
@@ -1621,25 +1635,15 @@ function endRace() {
   // running: distance still to cover / their own average speed. Real timing
   // screens just say "+1 Lap", but the seconds are more use when you want to
   // know how close it was.
-  const lapsOf = r => Math.max(1, G.raceLaps + 1 - r.phys.lap);
-  function projectedGap(r) {
-    const raced = r.phys.totalDist;
-    const full = G.raceLaps * G.track.length;
-    const behind = Math.max(0, full - raced);
-    // their own average pace over the race, falling back to the winner's
-    const elapsed = Math.max(1, G.simTime);
-    const pace = raced > 100 ? raced / elapsed : G.track.length / Math.max(1, winner.bestLap || 90);
-    return behind / Math.max(5, pace);
-  }
-  const resRows = rows.map((r,i)=>({
-    pos:i+1, name:r.driver.name, team:r.driver.team, me:!!r.driver.player,
-    val: (r.retired ? 'DNF — damage'
-       : r.dsq ? 'DSQ — no mandatory stop'
-       : r.finished ? (i===0 ? fmtTime(r.finishTime) : '+'+(r.finishTime-winT).toFixed(3))
-       : '+' + fmtTime(projectedGap(r)) + ' (' + lapsOf(r) + ' Lap' + (lapsOf(r)>1?'s':'') + ')')
-       + (r.stewPen ? ' (+' + r.stewPen + 's PEN)' : '')
-       + (r === flCar ? ' · <span style="color:#a640ff">FL</span>' : ''),
-  }));
+  const resRows = rows.map((r,i)=>{
+    const k = r._cls;
+    return {
+      pos:i+1, name:r.driver.name, team:r.driver.team, me:!!r.driver.player,
+      val: (i === 0 && k.status === 'run' ? fmtTime(k.corrected) : k.text)
+         + (r.stewPen ? ' (incl. +' + r.stewPen + 's PEN)' : '')
+         + (r === flCar ? ' · <span style="color:#a640ff">FL</span>' : ''),
+    };
+  });
   const title = 'Race — ' + G.trackDef.gp
     + (flCar ? ' · FASTEST LAP: ' + flCar.driver.id + ' ' + fmtTime(flCar.bestLap) : '');
   if (myPos >= 1 && myPos <= 3) {
@@ -1845,6 +1849,7 @@ function restoreRace(snap) {
     p.setTyre(cs.compound);            // resets wear/temp, so restore them after
     p.tyreWearKm = cs.wear; p.tyreTemp = cs.temp;
     car.finished = cs.finished; car.finishTime = cs.finishTime; car.bestLap = cs.bestLap;
+    p.finished = !!cs.finished; car.lapsDone = cs.lapsDone;
     car.pitted = cs.pitted; car.pitted2 = cs.pitted2;
     car.pitPlan = cs.pitPlan ? cs.pitPlan.slice() : null;
     car.pitCompound = cs.pitCompound; car.pitLap = cs.pitLap; car.pitLap2 = cs.pitLap2;
@@ -1913,7 +1918,7 @@ function saveRaceSnapshot() {
         x: c.phys.x, z: c.phys.z, heading: c.phys.heading, speed: c.phys.speed,
         lap: c.phys.lap, totalDist: c.phys.totalDist,
         compound: c.phys.compound, wear: c.phys.tyreWearKm, temp: c.phys.tyreTemp,
-        finished: c.finished, finishTime: c.finishTime, bestLap: c.bestLap,
+        finished: c.finished, finishTime: c.finishTime, bestLap: c.bestLap, lapsDone: c.lapsDone,
         pitted: c.pitted, pitted2: c.pitted2, pitPlan: c.pitPlan || null,
         pitCompound: c.pitCompound, pitLap: c.pitLap, pitLap2: c.pitLap2,
         limitStrikes: c.limitStrikes || 0, collCount: c.collCount || 0,
@@ -2462,7 +2467,11 @@ function resolveCollisions() {
   for (let i=0;i<cars.length;i++) {
     for (let j=i+1;j<cars.length;j++) {
       // pit-lane and retired cars are ghosts to everyone else
-      if (cars[i].pitState || cars[j].pitState || cars[i].retired || cars[j].retired) continue;
+      // pit-lane, retired and FINISHED cars are ghosts to everyone else — a car
+      // cruising after the flag sat on the racing line and got hit at full
+      // speed by the next car taking the flag (finish-line DNFs)
+      if (cars[i].pitState || cars[j].pitState || cars[i].retired || cars[j].retired
+          || cars[i].finished || cars[j].finished) continue;
       const a = cars[i].phys, b = cars[j].phys;
       const dx = b.x-a.x, dz = b.z-a.z;
       const dd = dx*dx+dz*dz;
@@ -3362,17 +3371,20 @@ function stepSim(dt) {
         onPlayerLapComplete();
         updateLapPanel();
         if (G.mode === 'race') {
-          if (c.phys.lap > G.raceLaps) {
-            c.finished = true; c.finishTime = G.simTime;
+          if (c.phys.lap > G.raceLaps || G.firstFinish) {
+            // your race is over when you take the chequered flag — on the lead
+            // lap, or on your next crossing once someone else has won
+            c.finished = true; c.finishTime = G.simTime; c.lapsDone = c.phys.lap - 1; c.phys.finished = true;
+            if (!G.firstFinish) G.firstFinish = G.simTime;
             if (G.raceLaps > 20 && !c.pitted) showBanner('DISQUALIFIED — NO MANDATORY PIT STOP', 3, '#ff5c5c');
-            else showBanner('FINISHED', 3, '#ffd12e');
-            G.endTimer = setTimeout(endRace, 1800);
+            else showBanner('CHEQUERED FLAG', 3, '#ffd12e');
+            G.endTimer = setTimeout(finishAndClassify, 1800);
           } else if (c.phys.lap === G.raceLaps) {
             showBanner('FINAL LAP', 2, '#ffd12e');
           }
         }
-      } else if (G.mode === 'race' && c.phys.lap > G.raceLaps) {
-        c.finished = true; c.finishTime = G.simTime;
+      } else if (G.mode === 'race' && (c.phys.lap > G.raceLaps || G.firstFinish)) {
+        c.finished = true; c.finishTime = G.simTime; c.lapsDone = c.phys.lap - 1; c.phys.finished = true;
         if (!G.firstFinish) {
           G.firstFinish = G.simTime;
           showBanner(c.driver.id + ' WINS THE RACE', 2.5, '#ff5c5c');
@@ -3382,7 +3394,11 @@ function stepSim(dt) {
   }
   if (started && G.player && !G.player.finished) { recordCheckpoint(); updateSectors(); }
   // safety: classify stragglers 45s after the winner
-  if (G.mode === 'race' && G.firstFinish && !G.endTimer && G.simTime - G.firstFinish > 45) {
+  // AI won: once every runner has taken the flag (or 110s), classify. If you're
+  // still out there you finish on your next crossing, which triggers it anyway.
+  const meOut = !G.player || G.player.finished || G.player.retired;
+  if (G.mode === 'race' && G.firstFinish && !G.endTimer && meOut
+      && (G.cars.every(c => c.finished || c.retired) || G.simTime - G.firstFinish > 110)) {
     G.endTimer = setTimeout(endRace, 100);
   }
   resolveCollisions();
@@ -3405,5 +3421,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 65';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 66';
 })();

@@ -361,14 +361,25 @@ class CarPhysics {
     let delta = newDist - this.lapDist;
     // wrap detection (guard against jitter double-crossings)
     if (this._lastCrossDist == null) this._lastCrossDist = -1e9;
+    // A backward crossing (reversing over the line, or a one-frame jitter at pit
+    // exit / in a shove) no longer decrements the lap — it's remembered as
+    // pending, and the forward re-cross simply cancels it. The old
+    // decrement-then-guard dropped a lap outright: +1, -1, then the re-cross was
+    // rejected as a "double count", leaving a car a lap short of the distance it
+    // had driven (the "+0.000 (2 Laps)" results bug).
     if (delta < -t.length * 0.5) {
       delta += t.length;
-      if (this.totalDist - this._lastCrossDist > t.length * 0.5) {
+      if (this._backPending > 0) { this._backPending--; this.crossedLine = false; }
+      else if (this.totalDist - this._lastCrossDist > t.length * 0.5) {
         this.lap++; this.crossedLine = true;
         this._lastCrossDist = this.totalDist;
       } else this.crossedLine = false;
     }
-    else if (delta > t.length * 0.5) { delta -= t.length; this.lap = Math.max(1, this.lap-1); }
+    else if (delta > t.length * 0.5) {
+      delta -= t.length;
+      this._backPending = (this._backPending || 0) + 1;
+      this.crossedLine = false;
+    }
     else this.crossedLine = false;
     if (Math.abs(delta) < t.length * 0.5) this.totalDist += delta;
     this.lapDist = newDist;
