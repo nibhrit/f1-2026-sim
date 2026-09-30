@@ -1116,6 +1116,7 @@ function startSession() {
       const wet = G.weather.wetness;
       if (wet > 0.7) car.phys.setTyre('wet');
       else if (wet > 0.35) car.phys.setTyre('inter');
+      spawnPracticeTraffic(wet);
       G.raceStarted = true;
       G.state = 'driving';
       const wx = G.weather.forecast !== 'DRY' ? ' · ' + G.weather.forecast : '';
@@ -1126,6 +1127,33 @@ function startSession() {
   updateLapPanel();
   AUDIO.musicDuck(true);
   lastT = performance.now();
+}
+
+// Practice traffic: a handful of AI cars already on the move, spread around
+// the lap, so there are other cars on track to judge speed and scale against
+// (practice used to be the player alone). They lap at their normal pace with
+// fresh-ish tyres, stay out of the pits, and never affect any timing.
+const PRACTICE_TRAFFIC = 7;
+function spawnPracticeTraffic(wet) {
+  const t = G.track, N = t.n;
+  const pool = DRIVERS.filter(d => !d.player).sort(() => Math.random() - 0.5).slice(0, PRACTICE_TRAFFIC);
+  const comp = wet > 0.7 ? 'wet' : wet > 0.35 ? 'inter' : ['soft', 'medium', 'hard'];
+  pool.forEach((d, k) => {
+    const car = makeCar(d, t);
+    // spread from ~15% to ~88% of the lap so nobody starts on top of the player
+    const idx = Math.floor(N * (0.15 + 0.73 * k / Math.max(1, PRACTICE_TRAFFIC - 1))) % N;
+    const lat = ((k % 3) - 1) * 1.2;
+    const pos = t.posAt(idx, lat);
+    car.phys.placeAt(pos.x, pos.z, Math.atan2(t.tx[idx], t.tz[idx]));
+    car.phys.trackIdx = idx; car.phys.lapDist = t.dist[idx];
+    car.phys.totalDist = t.dist[idx]; car.phys._lastCrossDist = t.dist[idx];
+    car.phys.lap = 1;
+    car.phys.speed = 35;
+    car.phys.setTyre(Array.isArray(comp) ? comp[k % 3] : comp);
+    car.practice = true;
+    if (car.ai) { car.ai.laneBlend = 1; car.ai.launchT = 0; car.ai.gridLane = null; }
+    G.cars.push(car);
+  });
 }
 
 // simulate AI qualifying lap times via point-mass over corner speeds
@@ -2766,7 +2794,8 @@ function frame(now) {
     if (c.mesh.userData.drsFlap) {
       // flap swings up when DRS is open
       const f = c.mesh.userData.drsFlap;
-      const tgt = p.drsOpen ? -1.25 : -0.18;
+      // pivot group: closed = the flap's built-in angle of attack, open = flattened
+      const tgt = p.drsOpen ? -0.50 : 0;
       f.rotation.x += (tgt - f.rotation.x) * 0.3;
     }
   });
@@ -3401,6 +3430,7 @@ function stepSim(dt) {
 
     if (started && c.phys.crossedLine) {
       // lightweight AI lap timing (player timing lives in onPlayerLapComplete)
+      if (c.practice) c.phys.tyreWearKm = 0;   // practice traffic never runs its tyres to the canvas
       if (!c.driver.player) {
         const aiLap = G.simTime - (c._lapStart || 0);
         c._lapStart = G.simTime;
@@ -3462,5 +3492,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 69';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 70';
 })();
