@@ -19,6 +19,18 @@ function effGripBonus(b) {
 }
 let WET_BONUS_FADE = 0.6;
 
+// Standing water. Fixed places on the lap (seeded by track length) so a
+// puddle is always in the same spot and can be learned, mainly on straights
+// where water pools, strength 0..1. Replaces the old per-frame random kicks
+// (3-4 unpredictable twitches a second at 270 km/h in heavy rain).
+function puddleAt(track, lapDist, idx) {
+  const s = track.length * 0.0137;
+  const a = Math.sin(lapDist * 0.019 + s) * Math.sin(lapDist * 0.0067 + s * 1.7);
+  const pud = Math.max(0, (a - 0.45) / 0.55);
+  const straight = Math.max(0, 1 - Math.abs(track.curv[idx] || 0) * 150);
+  return pud * straight;
+}
+
 // Effective grip multiplier (~0.5..1.05) for a compound at a given wetness.
 // Slicks (wetOptimal 0) are perfect dry and fall off steeply in the wet; the
 // wet-weather tyres are bell-curves centred on their optimal wetness, with the
@@ -259,7 +271,14 @@ class CarPhysics {
     // sat on the 53 ceiling whether its wing was there or not, so damage did
     // nothing exactly when it should hurt most. Scaling both keeps the right
     // character: crippling in fast corners, barely felt in slow ones.
-    const latMax = Math.min(53 * aeroLoss, 17.6 + 0.0104 * v * v * aeroLoss) * punctLoss * gripMul * this.tyreMul * this.tempMul * wg * effGripBonus(this.gripBonus) * (1 + this.brake * 0.10);
+    // aquaplaning: heavy standing water at speed → smooth, repeatable grip loss
+    let aq = 0;
+    if (TRACK_WETNESS > 0.6 && v > 65) {
+      aq = ((TRACK_WETNESS - 0.6) / 0.4) * Math.min(1, (v - 65) / 25) * puddleAt(t, this.lapDist, this.trackIdx);
+    }
+    this.aquaplane = aq;
+    this.aquaplaning = aq > 0.2;
+    const latMax = (1 - 0.30 * aq) * Math.min(53 * aeroLoss, 17.6 + 0.0104 * v * v * aeroLoss) * punctLoss * gripMul * this.tyreMul * this.tempMul * wg * effGripBonus(this.gripBonus) * (1 + this.brake * 0.10);
     // grip-aware steering (modern racing-game keyboard assist):
     // steer input commands a FRACTION of available grip, capped by the
     // physical wheel angle. Partial steering can never exceed the limit,
@@ -294,12 +313,13 @@ class CarPhysics {
     this._lastYaw = yawRate; // used by the tyre-temperature model next step
 
     // aquaplaning: standing water at high speed → occasional twitch / grip loss
-    if (TRACK_WETNESS > 0.6 && this.speed > 75 && Math.random() < (TRACK_WETNESS - 0.6) * 0.12) {
-      this.vLatDrift += (Math.random() - 0.5) * 3.2 * TRACK_WETNESS;
-      this.heading += (Math.random() - 0.5) * 0.02 * TRACK_WETNESS;
-      this.speed *= 0.995;
-      this.aquaplaning = true;
-    } else this.aquaplaning = false;
+    // in a puddle the car floats a little toward the water's pull (the same
+    // side for the same puddle, so it's learnable) and the water drags it back
+    if (this.aquaplane > 0) {
+      const side = Math.sin(this.lapDist * 0.0131 + t.length) >= 0 ? 1 : -1;
+      this.vLatDrift += side * this.aquaplane * 2.2 * dt;
+      this.speed -= this.speed * 0.12 * this.aquaplane * dt;
+    }
 
     // --- integrate position ---
     const sx = Math.sin(this.heading), cz = Math.cos(this.heading);
