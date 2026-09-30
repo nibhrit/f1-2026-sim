@@ -2195,8 +2195,12 @@ function updateHUD() {
       else if (i === 0) gap = c.finished ? 'FIN' : 'Leader';
       else if (c.finished) gap = '+' + (c.finishTime - leader.finishTime).toFixed(1);
       else {
-        const dd = leader.phys.totalDist - c.phys.totalDist;
-        gap = '+' + (dd / Math.max(c.phys.speed, 20)).toFixed(1) + 's';
+        let g = timingGap(c, leader);
+        if (g == null) {
+          const dd = leader.phys.totalDist - c.phys.totalDist;   // fallback: first lap / after resume
+          g = dd / Math.max(c.phys.speed, 20);
+        }
+        gap = '+' + g.toFixed(1) + 's';
       }
       // broadcast-style in-pit tag next to the driver
       const pitTag = c.retired
@@ -3008,6 +3012,30 @@ function inSpan(d, a, b, L) {
 // BEHIND, so you get no DRS and no tow off a car you are about to pass —
 // the opposite of real F1, where you very much do.
 // Returns Infinity when the other car isn't genuinely just up the road.
+// ---------- live timing (checkpoint based, like real F1 timing loops) ----------
+// Each car logs the race time it passes each of TIMING_CP points per lap. The
+// gap to the car ahead / leader is then "how long after them did I pass the
+// last point I've reached" — stable through braking zones, unlike the old
+// distance ÷ current-speed estimate that leapt around in every slow corner.
+const TIMING_CP = 64;
+function recordTiming(c, L, now) {
+  const p = c.phys;
+  if (p.lap < 1) return;
+  const key = p.lap * TIMING_CP + Math.min(TIMING_CP - 1, Math.floor(p.lapDist / L * TIMING_CP));
+  if (c._cpKey == null || key > c._cpKey) {
+    if (!c._cpT) c._cpT = {};
+    for (let k = (c._cpKey == null ? key : c._cpKey + 1); k <= key; k++) c._cpT[k] = now;
+    c._cpKey = key;
+  }
+}
+// seconds between `ref` and `c` at the last checkpoint `c` has passed;
+// null if there's no common checkpoint yet (start, or just after a resume)
+function timingGap(c, ref) {
+  if (!c._cpT || !ref._cpT || c._cpKey == null) return null;
+  const tc = c._cpT[c._cpKey], tr = ref._cpT[c._cpKey];
+  return (tc != null && tr != null) ? Math.max(0, tc - tr) : null;
+}
+
 function roadGapAhead(p, op, t) {
   const L = t.length;
   let g = op.lapDist - p.lapDist;
@@ -3030,16 +3058,19 @@ function fwdDist(d, target, L) {
 function gapAheadSec(c) {
   const p = c.phys;
   const t = G.track;
-  let best = Infinity;
+  let best = Infinity, bestCar = null;
   for (const o of G.cars) {
     if (o === c || o.finished || o.pitState) continue;
     // on-track gap, so lapped cars and cars you're lapping both count —
     // in real F1 you get DRS behind a backmarker just the same
     const gap = roadGapAhead(p, o.phys, t);
-    if (gap > 1 && gap < best) best = gap;
+    if (gap > 1 && gap < best) { best = gap; bestCar = o; }
   }
   if (!isFinite(best)) return Infinity;
-  return best / Math.max(14, p.speed); // metres → seconds at current pace
+  // real timing-loop gap when both cars share a checkpoint (same lap)
+  const tg = bestCar ? timingGap(c, bestCar) : null;
+  if (tg != null && tg < 5) return tg;
+  return best / Math.max(14, p.speed); // fallback: metres → seconds at current pace
 }
 
 // ---------- slipstream ----------
@@ -3402,6 +3433,7 @@ function stepSim(dt) {
     G.endTimer = setTimeout(endRace, 100);
   }
   resolveCollisions();
+  if (started && G.mode === 'race') for (const c of G.cars) if (!c.finished && !c.retired) recordTiming(c, G.track.length, G.simTime);
   // stewards: decay contact cooldowns, monitor track limits
   for (const c of G.cars) { if (c.contactCd > 0) c.contactCd -= dt; if (c.phys.dmgCd > 0) c.phys.dmgCd -= dt; }
   checkTrackLimits(dt);
@@ -3421,5 +3453,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 66';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 67';
 })();
