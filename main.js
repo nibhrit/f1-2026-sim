@@ -2115,6 +2115,8 @@ function flTag(c) {
 }
 
 function updateHUD() {
+  // key help fades once you're under way — it sat over the speedo all race
+  { const ch = $('controls-hint'); if (ch) ch.classList.toggle('faded', G.simTime > 12); }
   const p = G.player;
   if (!p) return;
   $('speed-val').textContent = p.phys.kmh;
@@ -2286,6 +2288,9 @@ function updateCamera(dt) {
   const sx = Math.sin(p.heading) * back, cz = Math.cos(p.heading) * back;
   const rx = cz, rz = -sx; // right vector
   const baseY = G.player.mesh ? G.player.mesh.position.y : 0;
+  // full-size halo strut in every view except the helmet cam (set below)
+  if (G.player && G.player.mesh && G.player.mesh.userData.haloStrut && G.camMode !== 1)
+    G.player.mesh.userData.haloStrut.scale.set(1, 1, 1);
   if (G.camMode === 0) {
     // F1-game chase: low, tight behind the rear wing
     const dist = 6.3 + p.speed*0.022;
@@ -2311,6 +2316,10 @@ function updateCamera(dt) {
     camera.fov = 63 + Math.min(13, p.speed*0.10);
   } else if (G.camMode === 1) {
     // cockpit / helmet cam: driver's-eye height, halo strut and nose in frame
+    // Two eyes see past the 6cm halo strut; a single camera can't, so it read
+    // as a solid black bar down the middle of the view. Slim it for this
+    // camera only (every other view, and every other car, keeps the real one).
+    if (G.player.mesh.userData.haloStrut) G.player.mesh.userData.haloStrut.scale.set(0.4, 1, 0.6);
     const tA = G.track, kA = (p.trackIdx + Math.floor(12 / (tA.length/tA.n))) % tA.n;
     camera.position.set(p.x + sx*0.05, baseY + 1.02, p.z + cz*0.05);
     // look ahead, biased into the upcoming corner like a driver's gaze
@@ -3453,5 +3462,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 68';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 69';
 })();

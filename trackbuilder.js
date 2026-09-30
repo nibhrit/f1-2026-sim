@@ -275,7 +275,11 @@ function canvasTex(w, h, draw, repX, repY) {
 }
 
 function skyTex(theme) {
-  return canvasTex(64, 512, (ctx,w,h) => {
+  // Night skies need real horizontal resolution: this canvas wraps the whole
+  // sky dome, so at 64px wide every 1px star was stretched into a long grey
+  // smear across the sky (and the moon into a streak). Day skies are pure
+  // vertical gradients and stay cheap.
+  return canvasTex(theme.night ? 2048 : 64, 512, (ctx,w,h) => {
     const c = '#' + theme.sky.toString(16).padStart(6,'0');
     const grd = ctx.createLinearGradient(0,0,0,h);
     if (theme.night) {
@@ -303,12 +307,26 @@ function skyTex(theme) {
       ctx.fillStyle = haze; ctx.fillRect(0, h*0.6, w, h*0.24);
     }
     if (theme.night) {
-      for (let i=0;i<130;i++) {
-        ctx.fillStyle = 'rgba(255,255,255,' + (0.3+Math.random()*0.7) + ')';
-        ctx.fillRect(Math.random()*w, Math.random()*h*0.5, 1, 1);
+      // stars: point-sized, thinning toward the horizon glow
+      for (let i=0;i<1400;i++) {
+        const y = Math.pow(Math.random(), 1.6) * h*0.52;
+        const a = (0.25+Math.random()*0.75) * (1 - y/(h*0.6));
+        ctx.fillStyle = 'rgba(235,240,255,' + a.toFixed(2) + ')';
+        const s = Math.random() < 0.06 ? 2 : 1;
+        ctx.fillRect(Math.random()*w, y, s, s);
       }
-      ctx.fillStyle = '#e8e4d8';
-      ctx.beginPath(); ctx.arc(w*0.7, h*0.22, 5, 0, 7); ctx.fill();
+      // moon with a soft halo. The dome maps 2048px round the full circle but
+      // 512px over only half of it vertically, so a horizontal pixel covers
+      // half the angle of a vertical one — draw everything 2x wide to land
+      // round on screen.
+      const mx = w*0.7, my = h*0.22;
+      ctx.save(); ctx.translate(mx, my); ctx.scale(2, 1);
+      const halo = ctx.createRadialGradient(0, 0, 2, 0, 0, 30);
+      halo.addColorStop(0, 'rgba(232,228,216,0.35)'); halo.addColorStop(1, 'rgba(232,228,216,0)');
+      ctx.fillStyle = halo; ctx.fillRect(-30, -30, 60, 60);
+      ctx.fillStyle = '#ece8dc';
+      ctx.beginPath(); ctx.arc(0, 0, 7, 0, 7); ctx.fill();
+      ctx.restore();
     }
   });
 }
@@ -324,6 +342,7 @@ function barrierTex(night) {
   });
 }
 
+const ASPHALT_GAIN = 6.0;
 function asphaltTex() {
   return canvasTex(256, 256, (ctx,w,h) => {
     ctx.fillStyle = '#3d3d44'; ctx.fillRect(0,0,w,h);
@@ -589,6 +608,12 @@ function buildTrackScene(track, scene, themeName) {
       side: THREE.DoubleSide,
     });
     roadMat.envMapIntensity = 0.18; // asphalt barely reflects the sky/env
+    // The canvas asphalt averages ~44/255 sRGB = ~2.6% linear reflectance;
+    // real asphalt is 5-12%, and after ACES tone mapping 2.6% read as a black
+    // void in every view, day and night. Lifting it 6x (linear) lands the
+    // average near 15% — mid-grey tarmac with visible grain and a darker
+    // rubbered line, and the car now stands out against it.
+    roadMat.color.setScalar(ASPHALT_GAIN);
     grp.add(ribbon(hw, -hw, roadMat, 0.05, 0.02));
   }
 
@@ -1071,7 +1096,9 @@ function buildTrackScene(track, scene, themeName) {
     for (let k = i0; ; k = (k+1)%N) { idxs.push(k); if (k === i1 || idxs.length > N) break; }
 
     // paved lane surface, tapering at entry/exit
-    const laneMat = new THREE.MeshStandardMaterial({ color: 0x33353d, roughness: 0.92, metalness: 0.0, side: THREE.DoubleSide });
+    // was 0x33353d (~3% reflectance, read black like the old road); pit lanes
+    // are paved a touch lighter than the circuit
+    const laneMat = new THREE.MeshStandardMaterial({ color: 0x6c6e75, roughness: 0.92, metalness: 0.0, side: THREE.DoubleSide });
     const v=[], uv=[], ia=[];
     idxs.forEach((k, s) => {
       const off = pitLaneOffset(track, track.dist[k]);

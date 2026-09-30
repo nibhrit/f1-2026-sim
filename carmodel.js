@@ -413,7 +413,7 @@ function buildF1Car(teamKey, opts) {
   haloRing.position.set(0, 0.90, 0.42);
   haloRing.rotation.x = Math.PI/2;
   g.add(haloRing);
-  box(0.06, 0.38, 0.09, mCarb, 0, 0.84, 0.82);              // centre strut
+  g.userData.haloStrut = box(0.06, 0.38, 0.09, mCarb, 0, 0.84, 0.82); // centre strut
   box(0.05, 0.12, 0.10, mCarb, -0.40, 0.86, 0.42);          // side mounts
   box(0.05, 0.12, 0.10, mCarb,  0.40, 0.86, 0.42);
 
