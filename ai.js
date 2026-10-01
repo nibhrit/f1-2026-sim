@@ -378,6 +378,8 @@ class AIDriver {
     }
 
     let targetLane = combatLane != null ? combatLane : baseLane;
+    // pit approach (set by main.js): hold the pit-lane side of the track
+    if (this.laneOverride != null) targetLane = this.laneOverride;
     targetLane = Math.max(-edge, Math.min(edge, targetLane));
     this.laneOffsetNow = this.laneOffsetNow == null ? targetLane : this.laneOffsetNow;
     this.laneOffsetNow += (targetLane - this.laneOffsetNow) * Math.min(1, 3*dt);
@@ -407,6 +409,9 @@ class AIDriver {
         vAllow = Math.min(vAllow, Math.max(14, v * (1 - 0.30 * over)));
       }
     }
+
+    // pit approach speed cap (set by main.js): arrive at the pit entry slowly
+    if (this.speedCap != null) vAllow = Math.min(vAllow, this.speedCap);
 
     // ---- steering: pure pursuit toward the chosen lane ----
     const lane = Math.max(-edge, Math.min(edge, this.laneOffsetNow));

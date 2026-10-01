@@ -2421,8 +2421,35 @@ const STEW = {
 // sideways into a box it has already driven past.
 function armPit(c) {
   c.pitArmed = true;
-  c.pitArmLap = c.phys.lap + (c.phys.lapDist >= G.track.length - 320 ? 1 : 0);
+  // too late to get across to the pit side and slow down safely this lap?
+  // then the stop rolls over to next lap rather than diving in at speed
+  const g = pitLaneGeom(G.track), L = G.track.length;
+  const toEntry = ((g.entryStart - c.phys.lapDist) % L + L) % L;
+  const inLane = pitS(G.track, c.phys.lapDist) <= g.total;
+  c.pitArmLap = c.phys.lap + ((toEntry < 120 || inLane) ? 1 : 0);
   return c.pitArmLap > c.phys.lap; // true = it'll be next lap
+}
+
+// ---------- pit approach ----------
+// A car told to box used to stay on the racing line at full speed until 300m
+// before the line — 40m AFTER the pit entry — then swerve across and brake,
+// arriving in the lane at ~200 km/h and clipping walls. Now, over the
+// approach before the entry, it moves to the pit side of the track and brakes
+// on a curve that reaches pit-entry speed exactly at the entry point.
+const PIT_APPROACH = 420;   // metres before the pit entry the approach starts
+const PIT_ENTRY_V = 24;     // m/s (~86 km/h) at the entry; limiter takes over
+function pitApproachTarget(c) {
+  const g = pitLaneGeom(G.track), ld = c.phys.lapDist, L = G.track.length;
+  if (!c.pitArmed || c.pitState || (c.pitArmLap != null && c.phys.lap < c.pitArmLap)) return null;
+  const toEntry = ((g.entryStart - ld) % L + L) % L;
+  if (toEntry <= 0 || toEntry > PIT_APPROACH) return null;
+  return { lane: -g.edgeOff, vCap: Math.sqrt(PIT_ENTRY_V * PIT_ENTRY_V + 2 * 16 * toEntry) };
+}
+function updatePitApproach(c) {
+  if (!c.ai) return;
+  const a = pitApproachTarget(c);
+  c.ai.laneOverride = a ? a.lane : null;
+  c.ai.speedCap = a ? a.vCap : null;
 }
 
 function orderDriveThrough(car, reason) {
@@ -2894,13 +2921,14 @@ function pitInput(c, dt) {
   }
   let vTarget = 22; // pit speed limit (auto-enforced)
   if (c.pitState === 'entering') {
-    const dBox = Math.max(0, g.boxDist - p.lapDist); // distance to the pit box
+    const sNow = pitS(t, p.lapDist);
+    const dBox = Math.max(0, g.sBox - sNow);      // distance to the pit box
     vTarget = Math.min(22, Math.sqrt(2 * 7 * dBox));
     // a drive-through never stops: stay at pit speed and rejoin
     if (c.driveThrough) {
       vTarget = 22;
-      if (p.lapDist > g.exitStart) c.pitState = 'exiting';
-    } else if (p.lapDist >= g.boxDist - 1.5 && p.speed < 3) {
+      if (sNow > g.sExitStart && sNow <= g.total) c.pitState = 'exiting';
+    } else if (sNow >= g.sBox - 1.5 && sNow <= g.total && p.speed < 3) {
       c.pitState = 'stopped';
       c.pitStopStart = G.simTime;
       if (c.driver.player) {
@@ -3335,9 +3363,9 @@ function stepSim(dt) {
   // (the player can box in any session; AI strategy stops are race-only)
   if (started) {
     for (const c of G.cars) {
-      // safety net: no stop may take longer than 40s (runs before the pit-state
+      // safety net: no stop may take longer than 60s (runs before the pit-state
       // skip below, so it can actually catch a car stuck IN the pit lane)
-      if (c.pitState && c.pitLaneStart != null && G.simTime - c.pitLaneStart > 40) {
+      if (c.pitState && c.pitLaneStart != null && G.simTime - c.pitLaneStart > 60) {
         forcePitComplete(c);
         continue;
       }
@@ -3349,8 +3377,13 @@ function stepSim(dt) {
         armPit(c); c.pitted2 = true;
       }
       if (c.ai && !c.pitArmed) weatherPitCheck(c);
+      updatePitApproach(c);
+      // the pit-lane machine takes over AT the pit entry (it used to start 40m
+      // past it, so cars had already missed the entry when it kicked in)
+      const pg = pitLaneGeom(G.track);
       if (c.pitArmed && !c.pitState && (c.pitArmLap == null || c.phys.lap >= c.pitArmLap)
-          && c.phys.lapDist >= G.track.length - 300) {
+          && pitS(G.track, c.phys.lapDist) < pg.sEntryEnd * 0.6) {
+        if (c.ai) { c.ai.laneOverride = null; c.ai.speedCap = null; }
         c.pitState = 'entering';
         c.pitLaneStart = G.simTime; // start the pit-lane clock
         if (c.driver.player) showBanner('IN PIT', 1.6, '#6fa0ff');
@@ -3389,7 +3422,10 @@ function stepSim(dt) {
     // pit exit: crossing the line rejoins the race on fresh tyres. The compound
     // just removed becomes the default for a further stop (multi-stop allowed);
     // the weather logic can override pitCompound at any time.
-    if (c.pitState && c.phys.crossedLine) {
+    // Rejoin at the END of the pit corridor. (It used to be the start/finish
+    // line, but lanes now straddle the line, so that can be mid-lane.)
+    const pgx = pitLaneGeom(G.track), sx = pitS(G.track, c.phys.lapDist);
+    if (c.pitState === 'exiting' && (sx >= pgx.total - 2 && sx <= pgx.total + 40)) {
       if (c.driveThrough) {
         // penalty served: no tyres, no stop, does not count as the mandatory stop
         c.driveThrough = false; c.driveThroughServed = true;
@@ -3492,5 +3528,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 70';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 71';
 })();

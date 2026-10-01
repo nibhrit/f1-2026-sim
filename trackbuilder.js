@@ -1123,7 +1123,8 @@ function buildTrackScene(track, scene, themeName) {
     idxs.forEach((k, s) => {
       const d = track.dist[k];
       // pit wall only along the straight part of the lane
-      if (d >= g.entryEnd - 8 && d <= g.exitStart + 8) {
+      const sd = pitS(track, d);
+      if (sd >= g.sEntryEnd - 8 && sd <= g.sExitStart + 8) {
         const p = track.posAt(k, -g.wallOff);
         const y0 = track.heightAt(k, -g.wallOff);
         wv.push(p.x, y0, p.z, p.x, y0+0.85, p.z);
@@ -1335,18 +1336,50 @@ function buildTrackScene(track, scene, themeName) {
 // centreline+offset world. Shared by the renderer (trackbuilder) and the pit
 // driving logic (main.js).
 function pitLaneGeom(track) {
-  const L = track.length, hw = track.width / 2;
-  return {
+  if (track._pitG) return track._pitG;
+  const L = track.length, hw = track.width / 2, N = track.n;
+  // Fit the pit lane to THIS circuit's start/finish straight. It used to be
+  // the fixed last 340m before the line, which on many tracks ran through a
+  // tight corner (Spa's Bus Stop R11m, COTA's last corner R12m, Shanghai,
+  // Abu Dhabi...). Offsetting a lane 11m round an 11m-radius corner folds the
+  // lane back on itself — cars ended up chasing a scrambled line into walls.
+  // Real pit lanes run along the straight and straddle the line; so do these.
+  const THR = 0.006;               // |curvature| above this = no longer straight
+  let back = 0, fwd = 0;
+  for (let k = 1; k < N; k++) { const i = (N - k) % N; if (Math.abs(track.curv[i]) > THR) break; back = L - track.dist[i]; }
+  for (let i = 1; i < N; i++) { if (Math.abs(track.curv[i]) > THR) break; fwd = track.dist[i]; }
+  // corridor [a, b] in metres relative to the line (negative = before it)
+  let a = -Math.max(0, back - 12), b = Math.max(0, fwd - 12);
+  if (a < -300) a = -300;                       // long straights: don't start miles back
+  if (b - a > 430) b = a + 430;                 // real pit lanes run ~350-450m
+  if (b - a < 200) { b = a + 200; }             // floor (no track is this short; safety)
+  const total = b - a;
+  const entryLen = Math.min(75, total * 0.20), exitLen = Math.min(70, total * 0.18);
+  const sExitStart = total - exitLen;
+  // the box sits at the line where possible, otherwise as close as the lane allows
+  const sBox = Math.max(entryLen + 30, Math.min(sExitStart - 40, -a));
+  const entryStart = ((a % L) + L) % L;
+  const at = s => (entryStart + s) % L;
+  track._pitG = {
     laneOff:  hw + 5.5,                       // lane centreline, pit side
     laneHalf: 2.6,                            // half-width of the paved lane
     wallOff:  hw + 2.2,                       // pit wall between track and lane
     edgeOff:  hw - 1.6,                       // where the car hugs before peeling
-    entryStart: L - Math.min(340, L * 0.14),
-    entryEnd:   L - Math.min(265, L * 0.11),
-    boxDist:    L - 150,
-    exitStart:  L - 100,
-    exitEnd:    L - 28,
+    // corridor coordinates (metres from the pit entry; the lane may wrap past
+    // the start/finish line, so ALWAYS compare positions with pitS(), never
+    // raw lap distance)
+    total, sEntryEnd: entryLen, sBox, sExitStart, sExitEnd: total,
+    // absolute lap distances, for drawing and markers
+    entryStart, entryEnd: at(entryLen), boxDist: at(sBox), exitStart: at(sExitStart), exitEnd: at(total),
   };
+  return track._pitG;
+}
+
+// distance along the pit corridor from its entry (wraps across the line).
+// Values > g.total mean "not in the corridor".
+function pitS(track, lapDist) {
+  const g = pitLaneGeom(track), L = track.length;
+  return ((lapDist - g.entryStart) % L + L) % L;
 }
 
 // smoothstep 0..1
@@ -1355,11 +1388,11 @@ function _ss(a, b, x) { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); r
 // Target lateral offset (negative = pit side) for a car following the pit lane
 // at a given lap distance. Returns null outside the pit corridor (= on track).
 function pitLaneOffset(track, lapDist) {
-  const g = pitLaneGeom(track);
-  if (lapDist < g.entryStart || lapDist > g.exitEnd) return null;
-  if (lapDist < g.entryEnd) return -(g.edgeOff + (g.laneOff - g.edgeOff) * _ss(g.entryStart, g.entryEnd, lapDist));
-  if (lapDist < g.exitStart) return -g.laneOff;
-  return -(g.laneOff + (g.edgeOff - g.laneOff) * _ss(g.exitStart, g.exitEnd, lapDist));
+  const g = pitLaneGeom(track), s = pitS(track, lapDist);
+  if (s > g.total) return null;
+  if (s < g.sEntryEnd) return -(g.edgeOff + (g.laneOff - g.edgeOff) * _ss(0, g.sEntryEnd, s));
+  if (s < g.sExitStart) return -g.laneOff;
+  return -(g.laneOff + (g.edgeOff - g.laneOff) * _ss(g.sExitStart, g.total, s));
 }
 
 // grid slot: returns {x,z,angle} for grid position i (0 = pole)
