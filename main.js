@@ -299,7 +299,7 @@ window.addEventListener('keydown', e => {
       && !G.player.finished && !G.player.pitState) {
     const c = G.player;
     if (c.pitArmed) {                       // press again to call it off
-      c.pitArmed = false; c.pitArmLap = null;
+      c.pitArmed = false; c.pitArmLap = null; c.boxCall = null;
       showBanner('BOX CANCELLED', 1.4, '#8fa3c8');
     } else if (G.mode === 'practice' || !(c.pitPlan && c.pitPlan.length)) {
       // no planned stop left (practice, a short race, or the plan is used up)
@@ -307,7 +307,21 @@ window.addEventListener('keydown', e => {
       showTyrePicker('pit');
     } else {
       const nextLap = armPit(c);
+      c.boxCall = suggestBoxTyre(c);
       showBanner(nextLap ? 'BOX NEXT LAP' : 'BOX THIS LAP', 1.8, '#ffd12e');
+    }
+  }
+  // box call: 1-5 picks the compound for this stop until you're in the box
+  const BOX_KEYS = { Digit1:'soft', Digit2:'medium', Digit3:'hard', Digit4:'inter', Digit5:'wet',
+                     Numpad1:'soft', Numpad2:'medium', Numpad3:'hard', Numpad4:'inter', Numpad5:'wet' };
+  if (BOX_KEYS[e.code] && G.state === 'driving' && G.player && G.player.pitArmed
+      && (!G.player.pitState || G.player.pitState === 'entering') && !G.player.driveThrough) {
+    const want = BOX_KEYS[e.code], c = G.player;
+    if (boxMustChange(c) && want === c.phys.compound) {
+      showBanner('DRY RACE — MUST CHANGE COMPOUND', 1.6, '#ff8a85');
+    } else {
+      c.boxCall = want;
+      showBanner('BOX — ' + want.toUpperCase() + 'S', 1.2, '#ffd12e');
     }
   }
   // SPACE resolves the reaction-light pit game while stationary
@@ -1271,15 +1285,26 @@ document.querySelectorAll('#tp-pit-row .tyre-btn').forEach(b => {
 function showTyrePicker(mode) {
   tpMode = mode || 'session';
   const wet = G.weather && G.weather.wetness > 0.3;
-  document.querySelectorAll('.tyre-btn.wet-tyre').forEach(b => b.classList.toggle('hidden', !wet));
+  // Inters/wets for the STOPS whenever rain is in play today (forecast
+  // incoming, drying, drizzle, steady) — you used to only see them if the
+  // track was already wet, so "rain expected ~lap 13" left no way to plan for
+  // it. For the START they show only if the opening laps will be wet.
+  const sc = G.weather ? G.weather.scenario : 'dry';
+  const rainInPlay = wet || ['incoming', 'drying', 'drizzle', 'steady'].includes(sc);
+  const wetStart = wet || (typeof projectedWetness === 'function' && projectedWetness(2) > 0.3);
+  document.querySelectorAll('#tp-start-row .tyre-btn.wet-tyre').forEach(b => b.classList.toggle('hidden', !wetStart));
+  document.querySelectorAll('#tp-pit-row .tyre-btn.wet-tyre, #tp-pit2-row .tyre-btn.wet-tyre')
+    .forEach(b => b.classList.toggle('hidden', !rainInPlay));
   const isWetC = n => n === 'inter' || n === 'wet';
   if (wet) tpStart = G.weather.wetness > 0.7 ? 'wet' : 'inter';
   else if (isWetC(tpStart)) tpStart = 'medium';
   // never leave a selection pointing at a compound whose button is hidden —
   // that's how a wet session's choice leaked into the next dry one
-  if (!wet) {
+  if (!wet && !rainInPlay) {
     if (isWetC(tpPit)) tpPit = 'hard';
     if (isWetC(tpPit2)) tpPit2 = 'soft';
+  } else if (!wet) {
+    // dry now, rain in play: keep any wet choice the player made for a stop
   } else if (!isWetC(tpPit)) {
     tpPit = tpStart;              // sensible wet default: another set of the same
   }
@@ -1289,7 +1314,9 @@ function showTyrePicker(mode) {
   if (race) {
     const rec = recommendedStops();
     tpStops = rec;
-    $('tp-rec').textContent = 'RECOMMENDED HERE: ' + (rec === 0 ? 'NO STOP' : rec + (rec > 1 ? ' STOPS' : ' STOP'));
+    $('tp-rec').textContent = 'RECOMMENDED HERE: ' + (rec === 0 ? 'NO STOP' : rec + (rec > 1 ? ' STOPS' : ' STOP'))
+      + (sc === 'incoming' && !wet ? ' · RAIN DUE ~LAP ' + G.weather.arriveLap + ' — PLAN INTERS/WETS FOR A STOP' : '')
+      + (sc === 'drying' && wet ? ' · TRACK DRYING — PLAN SLICKS FOR A STOP' : '');
     document.querySelector('#tp-strat-row [data-stops="0"]').classList.toggle('hidden', G.raceLaps > 20);
   }
   $('tp-strat-label').classList.toggle('hidden', !race);
@@ -1325,6 +1352,7 @@ $('tp-confirm').addEventListener('click', () => {
     // mid-session stop: fit this compound at the next box
     c.pitPlan = [tpStart];
     const nextLap = armPit(c);
+    c.boxCall = tpStart;              // shows in the box-call bar; still changeable
     showBanner(nextLap ? 'BOX NEXT LAP' : 'BOX THIS LAP', 1.8, '#ffd12e');
     G.state = 'driving';
     lastT = performance.now();
@@ -2142,7 +2170,28 @@ function flTag(c) {
     ? ' <span class="p-fl">FL</span>' : '';
 }
 
+function updateBoxCall() {
+  const el = $('box-call'); if (!el) return;
+  const c = G.player;
+  const show = c && c.pitArmed && c.boxCall && !c.driveThrough && (!c.pitState || c.pitState === 'entering')
+    && G.state === 'driving';
+  el.classList.toggle('hidden', !show);
+  if (!show) return;
+  const lapNow = c.pitArmLap == null || c.phys.lap >= c.pitArmLap;
+  $('bc-title').textContent = (lapNow ? 'BOX THIS LAP' : 'BOX NEXT LAP') + ' — TYRE';
+  const must = boxMustChange(c);
+  el.querySelectorAll('.bc-chip').forEach(ch => {
+    ch.classList.toggle('sel', ch.dataset.t === c.boxCall);
+    ch.classList.toggle('off', must && ch.dataset.t === c.phys.compound);
+  });
+  const w = G.weather ? G.weather.wetness : 0, ideal = idealCategory(w), cat = tyreCategory(c.boxCall);
+  $('bc-hint').textContent = cat < ideal ? (ideal === 2 ? 'TRACK SOAKED — WETS ADVISED' : 'TRACK WET — INTERS ADVISED')
+    : cat > ideal ? (ideal === 0 ? 'TRACK DRY ENOUGH FOR SLICKS' : 'INTERS WOULD BE QUICKER')
+    : (G.weather && G.weather.scenario === 'incoming' && w < 0.15 ? 'RAIN DUE ~LAP ' + G.weather.arriveLap : '1-5 TO CHANGE · P TO CANCEL');
+}
+
 function updateHUD() {
+  updateBoxCall();
   // key help fades once you're under way — it sat over the speedo all race
   { const ch = $('controls-hint'); if (ch) ch.classList.toggle('faded', G.simTime > 12); }
   const p = G.player;
@@ -2419,6 +2468,25 @@ const STEW = {
 // Arm a pit stop from anywhere on the lap. If we're already past the pit entry
 // the stop rolls over to the next lap, so a late call never yanks the car
 // sideways into a box it has already driven past.
+// FIA two-compound rule: a dry race over 20 laps must use a different slick
+// at the first stop (wet tyres are exempt).
+function boxMustChange(c) {
+  return G.mode === 'race' && G.raceLaps > 20 && !c.pitted
+    && !(G.weather && G.weather.wetness > 0.3) && tyreCategory(c.phys.compound) === 0;
+}
+// What the box call is pre-set to when you press P: your planned tyre, unless
+// the conditions have moved to a different category (slick/inter/wet), in
+// which case the tyre that suits the track right now.
+function suggestBoxTyre(c) {
+  const planned = (c.pitPlan && c.pitPlan.length) ? c.pitPlan[0] : (c.pitCompound || c.phys.compound);
+  const ideal = idealCategory(G.weather ? G.weather.wetness : 0);
+  if (tyreCategory(planned) === ideal) return planned;
+  if (ideal === 2) return 'wet';
+  if (ideal === 1) return 'inter';
+  const slick = tyreCategory(planned) === 0 ? planned : 'medium';
+  return (boxMustChange(c) && slick === c.phys.compound) ? (slick === 'hard' ? 'medium' : 'hard') : slick;
+}
+
 function armPit(c) {
   c.pitArmed = true;
   // too late to get across to the pit side and slow down safely this lap?
@@ -3450,6 +3518,8 @@ function stepSim(dt) {
       // work through the planned stops; once the plan runs out, refit fresh
       // tyres of the compound just removed
       let next = (c.pitPlan && c.pitPlan.length) ? c.pitPlan.shift() : (c.pitCompound || removed);
+      // the player's call at the box overrides the plan for this stop
+      if (c.driver.player && c.boxCall) { next = c.boxCall; c.boxCall = null; }
       // Sanity-check against the weather at the moment of the stop. Without
       // this, a car that armed a wet stop earlier would come in later for its
       // scheduled dry stop and bolt on inters again — twice in a row.
@@ -3528,5 +3598,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 71';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 72';
 })();

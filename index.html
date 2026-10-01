@@ -235,6 +235,19 @@
 
   #pause-screen { background:rgba(5,6,10,.85); }
   #loading-note { position:absolute; bottom:14px; left:50%; transform:translateX(-50%); color:#54648a; font-size:12px; letter-spacing:1px; z-index:20; }
+  /* box call: pick the compound for this stop on the way in */
+  #box-call { position:absolute; top:150px; left:50%; transform:translateX(-50%); z-index:13; text-align:center;
+    background:rgba(8,12,24,.86); border:1px solid #2c4270; border-radius:10px; padding:8px 14px; pointer-events:none; }
+  #bc-title { font-size:11px; font-weight:900; letter-spacing:2px; color:#ffd12e; margin-bottom:6px; }
+  #bc-row { display:flex; gap:6px; justify-content:center; }
+  .bc-chip { min-width:34px; padding:4px 6px; border-radius:6px; font-size:14px; font-weight:900; color:#cfd8ea;
+    border:2px solid #34405c; background:#111a2e; }
+  .bc-chip b { display:block; font-size:9px; color:#7d8db0; }
+  .bc-chip[data-t=soft] { border-color:#7a2a2a; } .bc-chip[data-t=medium] { border-color:#7a6a20; }
+  .bc-chip[data-t=hard] { border-color:#6c6c74; } .bc-chip[data-t=inter] { border-color:#23703a; } .bc-chip[data-t=wet] { border-color:#1f4f8a; }
+  .bc-chip.sel { background:#ffd12e; color:#111; border-color:#fff; } .bc-chip.sel b { color:#333; }
+  .bc-chip.off { opacity:.3; }
+  #bc-hint { font-size:10px; letter-spacing:1px; color:#8fa3c8; margin-top:5px; min-height:12px; }
   #controls-hint { position:absolute; bottom:24px; left:50%; transform:translateX(-50%); color:#8fa3c8; font-size:12px; letter-spacing:1px;
     background:rgba(8,12,24,.6); padding:6px 16px; border-radius:20px; pointer-events:none; }
   #controls-hint { transition: opacity 1.2s ease; }
@@ -404,6 +417,13 @@
     <div id="pit-stationary">--.-</div>
     <div id="pit-msg"></div>
   </div></div>
+  <div id="box-call" class="hidden">
+    <div id="bc-title">BOX THIS LAP — TYRE</div>
+    <div id="bc-row">
+      <span class="bc-chip" data-t="soft"><b>1</b>S</span><span class="bc-chip" data-t="medium"><b>2</b>M</span><span class="bc-chip" data-t="hard"><b>3</b>H</span><span class="bc-chip wetc" data-t="inter"><b>4</b>I</span><span class="bc-chip wetc" data-t="wet"><b>5</b>W</span>
+    </div>
+    <div id="bc-hint"></div>
+  </div>
   <div id="stewards"></div>
   <div id="controls-hint">W/&uarr; throttle &nbsp;&middot;&nbsp; S/&darr;/SPACE brake &nbsp;&middot;&nbsp; A/D steer &nbsp;&middot;&nbsp; C camera &nbsp;&middot;&nbsp; V look back &nbsp;&middot;&nbsp; P pit &nbsp;&middot;&nbsp; M map zoom &nbsp;&middot;&nbsp; N sound &nbsp;&middot;&nbsp; R reset &nbsp;&middot;&nbsp; ESC pause</div>
 </div>
@@ -464,14 +484,14 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/SSAOPass.js"></script>
-<script src="trackdata.js?v=71"></script>
-<script src="tracks.js?v=71"></script>
-<script src="audio.js?v=71"></script>
-<script src="carmodel.js?v=71"></script>
-<script src="trackbuilder.js?v=71"></script>
-<script src="physics.js?v=71"></script>
-<script src="ai.js?v=71"></script>
-<script src="rules.js?v=71"></script>
-<script src="main.js?v=71"></script>
+<script src="trackdata.js?v=72"></script>
+<script src="tracks.js?v=72"></script>
+<script src="audio.js?v=72"></script>
+<script src="carmodel.js?v=72"></script>
+<script src="trackbuilder.js?v=72"></script>
+<script src="physics.js?v=72"></script>
+<script src="ai.js?v=72"></script>
+<script src="rules.js?v=72"></script>
+<script src="main.js?v=72"></script>
 </body>
 </html>
