@@ -1108,6 +1108,7 @@ function startSession() {
       G.cars.push(car);
       if (d.player) G.player = car;
     });
+    setupRival();
     // countdown is created once the player confirms a tyre choice
     showTyrePicker();
   } else {
@@ -1679,6 +1680,14 @@ function endRace() {
       playerPos: myPos,
       flId: flCar ? flCar.driver.id : null,
     });
+    if (G.rivalCar) {
+      const rid = G.rivalCar.driver.id, myId = G.player.driver.id;
+      const pm = G.seasonData.points[myId] || 0, pr = G.seasonData.points[rid] || 0;
+      const before = G.rivalStart.me - G.rivalStart.rv, after = pm - pr;
+      const rPos = rows.indexOf(G.rivalCar) + 1;
+      G.rivalRecap = 'TITLE: YOU ' + pm + ' · ' + rid + ' ' + pr + ' (' + (after >= 0 ? '+' : '') + after
+        + ', was ' + (before >= 0 ? '+' : '') + before + ') · ' + rid + ' ' + (G.rivalCar.retired ? 'DNF' : 'P' + rPos);
+    }
     G.seasonData.round++;
     G.seasonData.session = null;   // weekend done — next entry lands on standings
     G.seasonData.grid = null;
@@ -1701,7 +1710,9 @@ function endRace() {
     };
   });
   const title = 'Race — ' + G.trackDef.gp
-    + (flCar ? ' · FASTEST LAP: ' + flCar.driver.id + ' ' + fmtTime(flCar.bestLap) : '');
+    + (flCar ? ' · FASTEST LAP: ' + flCar.driver.id + ' ' + fmtTime(flCar.bestLap) : '')
+    + (G.rivalRecap ? ' · ' + G.rivalRecap : '');
+  G.rivalRecap = null;
   if (myPos >= 1 && myPos <= 3) {
     // podium finish: celebrate first, results follow on Continue
     G.pendingResults = { title, rows: resRows, nextLabel };
@@ -1945,6 +1956,7 @@ function restoreRace(snap) {
   if (G.player) G.player.curLapStart = G.simTime; // current lap restarts cleanly
   if (pl.bestLap) $('best-time').textContent = fmtTime(pl.bestLap);
 
+  setupRival();
   // straight back to green — no countdown, no tyre picker
   G.countdown = null;
   G.raceStarted = true;
@@ -2170,6 +2182,135 @@ function flTag(c) {
     ? ' <span class="p-fl">FL</span>' : '';
 }
 
+// ---------- championship rivalry (Season) ----------
+// Your title rival is the driver closest to you on points (round 1, with no
+// points yet: the quickest car that isn't your teammate). They race you
+// harder (ai.rivalTarget), you get the live points swing, radio calls for the
+// moments that matter, and a recap on the results screen.
+function setupRival() {
+  G.rivalCar = null; G._rv = null; G.radioQ = [];
+  if (!G.seasonActive || G.mode !== 'race' || !G.player || !G.seasonData) return;
+  const me = G.player, pts = G.seasonData.points || {}, myPts = pts[me.driver.id] || 0;
+  const others = G.cars.filter(c => c !== me && c.ai);
+  const anyPts = Object.values(pts).some(v => v > 0);
+  let best = null, score = Infinity;
+  others.forEach(c => {
+    let sc;
+    if (anyPts) sc = Math.abs((pts[c.driver.id] || 0) - myPts) - (pts[c.driver.id] || 0) * 0.001;
+    else sc = (c.driver.team === me.driver.team ? 1 : 0) - carPace(c.driver, G.trackDef.id, 0) * (0.9 + 0.1 * c.driver.skill);
+    if (sc < score) { score = sc; best = c; }
+  });
+  if (!best) return;
+  G.rivalCar = best;
+  G.rivalStart = { me: myPts, rv: pts[best.driver.id] || 0 };
+  if (best.ai) best.ai.rivalTarget = me.phys;
+}
+
+// radio: queued engineer calls, one at a time, never over another banner
+function radio(text) {
+  if (!G.radioQ) G.radioQ = [];
+  if (G.radioQ.length < 4) G.radioQ.push(text);
+}
+function pumpRadio() {
+  if (!G.radioQ || !G.radioQ.length || (G.msgTimer || 0) > 0.2) return;
+  showBanner('📻 ' + G.radioQ.shift(), 3.0, '#7fd1ff');
+}
+
+// current running order, the same way the timing tower ranks it
+function liveOrder() {
+  return G.cars.slice().sort((a, b) => {
+    if (!!a.retired !== !!b.retired) return a.retired ? 1 : -1;
+    if (a.finished && b.finished) return a.finishTime - b.finishTime;
+    if (a.finished) return -1;
+    if (b.finished) return 1;
+    return b.phys.totalDist - a.phys.totalDist;
+  });
+}
+
+function updateRivalry() {
+  const el = $('title-battle');
+  const rv = G.rivalCar, me = G.player;
+  if (!el) return;
+  if (!rv || !me || G.mode !== 'race' || !G.raceStarted) { el.classList.add('hidden'); pumpRadio(); return; }
+  // live points swing "if it ended now"
+  const order = liveOrder();
+  const pos = c => order.indexOf(c) + 1;
+  const ptsFor = c => c.retired ? 0 : (SEASON_POINTS[pos(c) - 1] || 0);
+  const nowMe = G.rivalStart.me + ptsFor(me), nowRv = G.rivalStart.rv + ptsFor(rv);
+  const diff = nowMe - nowRv, rid = rv.driver.id;
+  el.classList.remove('hidden');
+  el.innerHTML = '<span class="tb-k">TITLE IF IT ENDS NOW</span> YOU <b>' + nowMe + '</b> · ' + rid + ' <b>' + nowRv
+    + '</b> <span class="' + (diff >= 0 ? 'tb-up' : 'tb-dn') + '">' + (diff >= 0 ? '+' : '') + diff + '</span>';
+
+  // radio moments
+  const st = G._rv || (G._rv = { ahead: null, closeCall: false, huntCall: false, pitCall: false, pen: 0, out: false });
+  const inPit = me.pitState || rv.pitState;
+  const meAhead = me.phys.totalDist > rv.phys.totalDist;
+  if (st.ahead !== null && st.ahead !== meAhead && !inPit && !me.finished && !rv.finished && !rv.retired) {
+    radio(meAhead ? 'YOU\'RE AHEAD OF ' + rid + ' — P' + pos(me) + '. KEEP HIM BEHIND' : rid + ' HAS GOT PAST. HE\'S P' + pos(rv));
+    st.closeCall = st.huntCall = false;
+  }
+  st.ahead = meAhead;
+  if (!inPit && !rv.retired) {
+    const gBehind = meAhead ? timingGap(rv, me) : null, gAhead = !meAhead ? timingGap(me, rv) : null;
+    if (gBehind != null) {
+      if (gBehind < 1.0 && !st.closeCall) { radio(rid + ' IS ' + gBehind.toFixed(1) + 's BEHIND — DEFEND'); st.closeCall = true; }
+      if (gBehind > 2.0) st.closeCall = false;
+    }
+    if (gAhead != null) {
+      if (gAhead < 1.0 && !st.huntCall) { radio(rid + ' ' + gAhead.toFixed(1) + 's AHEAD — DRS RANGE, GO GET HIM'); st.huntCall = true; }
+      if (gAhead > 2.0) st.huntCall = false;
+    }
+  }
+  if (rv.pitState === 'entering' && !st.pitCall) { radio(rid + ' IS PITTING — PUSH NOW'); st.pitCall = true; }
+  if (!rv.pitState) st.pitCall = false;
+  const pen = (G.penalties && G.penalties[rid]) || 0;
+  if (pen > st.pen) radio(rid + ' HAS A ' + (pen - st.pen) + 's PENALTY');
+  st.pen = pen;
+  if (rv.retired && !st.out) { radio(rid + ' IS OUT OF THE RACE! BIG POINTS SWING'); st.out = true; }
+  pumpRadio();
+}
+
+// Cars within a second of you, ahead and behind, with the trend over the last
+// second: green = going your way (closing on the car ahead / pulling away from
+// the one behind), red = the opposite.
+function updateCloseGaps() {
+  const box = $('close-gaps'); if (!box) return;
+  const me = G.player;
+  if (!(G.mode === 'race' && G.raceStarted && me && !me.finished && !me.retired && !me.pitState)) {
+    box.classList.add('hidden'); return;
+  }
+  let ahead = null, behind = null, da = 1e9, db = 1e9;
+  const L = G.track.length;
+  for (const o of G.cars) {
+    if (o === me || o.finished || o.retired || o.pitState) continue;
+    const d = o.phys.totalDist - me.phys.totalDist;
+    if (d > 0 && d < da && d < L * 0.5) { da = d; ahead = o; }
+    if (d < 0 && -d < db && -d < L * 0.5) { db = -d; behind = o; }
+  }
+  const ga = ahead ? timingGap(me, ahead) : null;
+  const gb = behind ? timingGap(behind, me) : null;
+  if (!G._cg) G._cg = {};
+  const row = (el, car, gap, isAhead) => {
+    const show = car && gap != null && gap <= 1.0;
+    el.classList.toggle('hidden', !show);
+    if (!show) return false;
+    const key = (isAhead ? 'a:' : 'b:') + car.driver.id;
+    const hist = G._cg[key] || (G._cg[key] = []);
+    hist.push([G.simTime, gap]);
+    while (hist.length && G.simTime - hist[0][0] > 1.0) hist.shift();
+    const trend = gap - hist[0][1];                       // + = gap growing
+    const goodWay = isAhead ? trend < -0.02 : trend > 0.02;
+    const badWay = isAhead ? trend > 0.02 : trend < -0.02;
+    el.className = 'cg-row ' + (goodWay ? 'good' : badWay ? 'bad' : 'flat') + (car === G.rivalCar ? ' rival' : '');
+    el.querySelector('.cg-name').textContent = car.driver.id;
+    el.querySelector('.cg-val').textContent = (isAhead ? '+' : '−') + gap.toFixed(2);
+    return true;
+  };
+  const a = row($('cg-ahead'), ahead, ga, true), b = row($('cg-behind'), behind, gb, false);
+  box.classList.toggle('hidden', !(a || b));
+}
+
 function updateBoxCall() {
   const el = $('box-call'); if (!el) return;
   const c = G.player;
@@ -2192,6 +2333,8 @@ function updateBoxCall() {
 
 function updateHUD() {
   updateBoxCall();
+  updateCloseGaps();
+  updateRivalry();
   // key help fades once you're under way — it sat over the speedo all race
   { const ch = $('controls-hint'); if (ch) ch.classList.toggle('faded', G.simTime > 12); }
   const p = G.player;
@@ -2295,7 +2438,7 @@ function updateHUD() {
         penTag += ' <span class="p-pen' + (fresh ? ' new' : '') + '">D-T</span>';
       if (secs > 0)
         penTag += ' <span class="p-pen' + (fresh ? ' new' : '') + '">+' + secs + 's</span>';
-      html += '<div class="pos-row'+(c.driver.player?' me':'')+'">'
+      html += '<div class="pos-row'+(c.driver.player?' me':'')+(c===G.rivalCar?' rival':'')+'">'
         + '<span class="p-num">'+(i+1)+'</span>'
         + '<span class="p-swatch" style="background:'+sw+'"></span>'
         + tyreDot(c.phys.compound)
@@ -2764,6 +2907,10 @@ function updateCountdown(dt) {
       });
       AUDIO.beep(880, 0.5, 0.16);
       showBanner("LIGHTS OUT AND AWAY WE GO!", 2.2, '#2ecc71');
+      if (G.rivalCar) {
+        const d = G.rivalStart.me - G.rivalStart.rv, rid = G.rivalCar.driver.id;
+        radio('TITLE RIVAL: ' + rid + (d === 0 ? ' — LEVEL ON POINTS' : d > 0 ? ' — ' + d + ' PTS BEHIND YOU' : ' — ' + (-d) + ' PTS AHEAD OF YOU'));
+      }
     }
   }
 }
@@ -2854,6 +3001,12 @@ function frame(now) {
     const w = c.mesh.userData.wheels;
     [w.fl,w.fr,w.rl,w.rr].forEach(wh => { wh.children.forEach((ch,ci) => { if (ci<2) ch.rotation.x += p.speed*0.05; }); });
     w.fl.rotation.y = p.steer*0.35; w.fr.rotation.y = p.steer*0.35;
+    // sidewall band shows the compound actually fitted (updates after a stop)
+    if (c._ringComp !== p.compound && c.mesh.userData.tyreRings) {
+      const col = (COMPOUNDS[p.compound] || {}).color;
+      if (col != null) c.mesh.userData.tyreRings.forEach(m => m.color.setHex(col));
+      c._ringComp = p.compound;
+    }
     if (c.retired && !c.mesh.visible) return;   // recovered by the marshals
     // the painted blob is only needed when real shadow maps are off
     if (c.mesh.userData.blobShadow) c.mesh.userData.blobShadow.visible = !sun.castShadow;
@@ -3146,28 +3299,45 @@ function inSpan(d, a, b, L) {
 // BEHIND, so you get no DRS and no tow off a car you are about to pass —
 // the opposite of real F1, where you very much do.
 // Returns Infinity when the other car isn't genuinely just up the road.
-// ---------- live timing (checkpoint based, like real F1 timing loops) ----------
-// Each car logs the race time it passes each of TIMING_CP points per lap. The
-// gap to the car ahead / leader is then "how long after them did I pass the
-// last point I've reached" — stable through braking zones, unlike the old
-// distance ÷ current-speed estimate that leapt around in every slow corner.
-const TIMING_CP = 64;
+// ---------- live timing (distance-time, continuous) ----------
+// Each car logs WHEN it reached every 5 m of race distance (interpolated
+// between frames, so it's exact to well under a millisecond). The gap from
+// car c to car ref is then simply: now − the moment ref was where c is now.
+// That updates every frame with no steps. The previous version used 64
+// timing loops a lap: between loops the gap froze, and a car sitting in its
+// pit box passed no loops at all, so its gap stood still and then leapt
+// ~20 s when it moved off (measured spikes of 13-17 s per half-second).
+const TIMING_STEP = 5, TIMING_OFF = 4000;      // m; OFF covers the grid's negative distance
 function recordTiming(c, L, now) {
-  const p = c.phys;
-  if (p.lap < 1) return;
-  const key = p.lap * TIMING_CP + Math.min(TIMING_CP - 1, Math.floor(p.lapDist / L * TIMING_CP));
-  if (c._cpKey == null || key > c._cpKey) {
-    if (!c._cpT) c._cpT = {};
-    for (let k = (c._cpKey == null ? key : c._cpKey + 1); k <= key; k++) c._cpT[k] = now;
-    c._cpKey = key;
+  const d = c.phys.totalDist;
+  if (c._td == null) { c._td = []; c._tdMax = -1; c._pd = d; c._pt = now; }
+  const idx = Math.floor((d + TIMING_OFF) / TIMING_STEP);
+  if (idx > c._tdMax && d > c._pd) {
+    for (let k = Math.max(c._tdMax + 1, Math.floor((c._pd + TIMING_OFF) / TIMING_STEP) + 1); k <= idx; k++) {
+      const dk = k * TIMING_STEP - TIMING_OFF;
+      c._td[k] = c._pt + (dk - c._pd) / (d - c._pd) * (now - c._pt);
+    }
+    if (c._tdMax < 0) c._td[idx] = now;
+    c._tdMax = idx;
   }
+  if (d > c._pd) { c._pd = d; c._pt = now; }
+  c._tNow = now;
 }
-// seconds between `ref` and `c` at the last checkpoint `c` has passed;
-// null if there's no common checkpoint yet (start, or just after a resume)
+// the race time `c` reached race distance D (null if it hasn't yet)
+function timeAtDist(c, D) {
+  if (!c._td) return null;
+  const x = (D + TIMING_OFF) / TIMING_STEP, i = Math.floor(x);
+  if (i + 1 > c._tdMax) return null;
+  const a = c._td[i], b = c._td[i + 1];
+  if (a == null || b == null) return null;
+  return a + (x - i) * (b - a);
+}
+// seconds `c` is behind `ref` on the road; null if ref hasn't been here yet
+// (ref is behind c) or there's no history (start, just after a resume)
 function timingGap(c, ref) {
-  if (!c._cpT || !ref._cpT || c._cpKey == null) return null;
-  const tc = c._cpT[c._cpKey], tr = ref._cpT[c._cpKey];
-  return (tc != null && tr != null) ? Math.max(0, tc - tr) : null;
+  if (c._tNow == null) return null;
+  const tr = timeAtDist(ref, c.phys.totalDist);
+  return tr == null ? null : Math.max(0, c._tNow - tr);
 }
 
 function roadGapAhead(p, op, t) {
@@ -3598,5 +3768,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 72';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 73';
 })();

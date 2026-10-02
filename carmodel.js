@@ -588,6 +588,7 @@ function buildF1Car(teamKey, opts) {
   // children[0] = tyre, children[1] = rim assembly. main.js spins exactly
   // those two, so anything that should turn with the wheel goes inside the
   // rim group and anything static goes after index 1.
+  const tyreRings = [];
   function wheel(x, z, front) {
     const w = new THREE.Group();
     const r = front ? 0.345 : 0.36;
@@ -624,8 +625,11 @@ function buildF1Car(teamKey, opts) {
     w.add(rimGrp);
 
     // coloured compound band on the outer sidewall (static, reads at speed)
-    const ring = new THREE.Mesh(new THREE.RingGeometry(r*0.84, r*0.96, 20),
-      new THREE.MeshBasicMaterial({ color: 0xd02020, side: THREE.DoubleSide }));
+    // compound band on the sidewall — main.js tints it to the fitted compound
+    // (it used to be fixed red on every car, whatever tyre was on)
+    const ringMat = new THREE.MeshBasicMaterial({ color: 0xd02020, side: THREE.DoubleSide });
+    tyreRings.push(ringMat);
+    const ring = new THREE.Mesh(new THREE.RingGeometry(r*0.84, r*0.96, 20), ringMat);
     ring.rotation.y = Math.PI/2;
     ring.position.x = outer * (tw/2 + 0.012);
     w.add(ring);                                   // child 2 — static
@@ -694,6 +698,7 @@ function buildF1Car(teamKey, opts) {
   // front-wing assembly, so damage can bend it and then tear it off
   g.userData.frontWing = [fwGrp];
   g.userData.wheels = wheels;
+  g.userData.tyreRings = tyreRings;
   g.userData.team = teamKey;
   return g;
 }

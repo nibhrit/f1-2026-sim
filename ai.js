@@ -356,7 +356,9 @@ class AIDriver {
         vAllow = Math.min(vAllow, maxApproach);
       }
       // attacker: faster and close → make a move
-      if (v > ahead.speed - 3 && aheadGap < 24) {
+      // vs the title rival (the player) they go for the gap earlier and harder
+      const huntingRival = this.rivalTarget && ahead === this.rivalTarget;
+      if (v > ahead.speed - (huntingRival ? 4 : 3) && aheadGap < (huntingRival ? 34 : 24)) {
         const insideLat = insideSign * edge;
         const defenderCoversInside = Math.abs(otherLat - insideLat) < 2.6;
         if (defenderCoversInside) combatLane = -insideSign * edge * 0.85; // switchback for the exit
@@ -364,6 +366,13 @@ class AIDriver {
       }
     }
 
+    // Title rival defending: watches the player in the mirrors from further
+    // back and covers the inside before they're alongside (still one move,
+    // and never squeezes a car that's already >=50% alongside — FIA rule below).
+    if (this.rivalTarget && !behind) {
+      const rg = car.totalDist - this.rivalTarget.totalDist;
+      if (rg > 0 && rg < 30 && this.rivalTarget.speed > v - 1) combatLane = insideSign * edge * 0.6;
+    }
     if (behind) {
       const attLat = t.lateral(behind.x, behind.z, behind.trackIdx);
       const overlap = 1 - Math.min(1, behindGap / carLen); // 1 = fully alongside
@@ -372,8 +381,8 @@ class AIDriver {
         // FIA: a car >=50% alongside is entitled to room — do not squeeze it off
         if (combatLane == null) combatLane = baseLane;
         combatLane -= attSide * 0.7; // yield a little space on the attacker's side
-      } else if (overlap > 0.2) {
-        combatLane = insideSign * edge * 0.6; // one move: cover the inside
+      } else if (overlap > (this.rivalTarget && behind === this.rivalTarget ? 0.05 : 0.2)) {
+        combatLane = insideSign * edge * 0.6; // one move: cover the inside (earlier vs the rival)
       }
     }
 
@@ -409,6 +418,10 @@ class AIDriver {
         vAllow = Math.min(vAllow, Math.max(14, v * (1 - 0.30 * over)));
       }
     }
+
+    // Racing the title rival: a touch more commitment (~0.8% more speed) while
+    // within ~150m of the player on the road.
+    if (this.rivalTarget && Math.abs(this.rivalTarget.totalDist - car.totalDist) < 150) vAllow *= 1.008;
 
     // pit approach speed cap (set by main.js): arrive at the pit entry slowly
     if (this.speedCap != null) vAllow = Math.min(vAllow, this.speedCap);
