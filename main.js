@@ -792,10 +792,10 @@ function weatherHints(dt) {
       && sessionProgress() > w.arriveFrac - 0.14) {
     showBanner('RAIN IN ~2 LAPS — BOX FOR INTERS?', 3, '#6fa0ff');
     w._hintRain = true; w.hintCd = 8;
-  } else if (slick && wet > 0.4 && !w._hintWet) {
-    showBanner(wet > 0.7 ? 'CONDITIONS FOR WETS NOW' : 'INTERS NOW — SLICKS DONE', 3, '#6fa0ff');
+  } else if (slick && wet > WET_INTER + 0.03 && !w._hintWet) {
+    showBanner(wet > WET_FULL ? 'CONDITIONS FOR WETS NOW' : 'INTERS NOW — SLICKS DONE', 3, '#6fa0ff');
     w._hintWet = true; w.hintCd = 8;
-  } else if (!slick && wet < 0.3 && !w._hintDry) {
+  } else if (!slick && wet < WET_INTER - 0.03 && !w._hintDry) {
     showBanner('TRACK DRYING — SLICKS COMING ALIVE', 3, '#6fa0ff');
     w._hintDry = true; w.hintCd = 8;
   }
@@ -803,7 +803,13 @@ function weatherHints(dt) {
 
 // tyre "category": 0 slick, 1 intermediate, 2 full wet
 function tyreCategory(name) { return name === 'wet' ? 2 : name === 'inter' ? 1 : 0; }
-function idealCategory(wet) { return wet > 0.7 ? 2 : wet > 0.4 ? 1 : 0; }
+// Crossovers taken from the grip model itself (physics.js wetGrip): inters
+// out-grip slicks from ~15% wetness (0.79 each; at 35% it's 0.85 vs 0.57), and
+// full wets only overtake inters at ~74%. The old 40% / 70% thresholds had the
+// AI on slicks with ~35% less grip in drizzle — and never coming back.
+const WET_INTER = 0.17, WET_FULL = 0.74;
+function idealCategory(wet) { return wet > WET_FULL ? 2 : wet > WET_INTER ? 1 : 0; }
+function compoundForCategory(cat, slick) { return cat === 2 ? 'wet' : cat === 1 ? 'inter' : (slick || 'medium'); }
 
 // Where the wetness will actually be `lapsAhead` laps from now, using the same
 // scenario model updateWeather() runs. The old start-tyre logic read the
@@ -854,7 +860,7 @@ function weatherPitCheck(c) {
   // field over two laps like real pit walls gambling; clearly wrong tyres
   // (e.g. slicks in proper rain) come in straight away.
   if (c._wxAt == null) {
-    const thr = want > have ? (want === 2 ? 0.7 : 0.4) : (have === 2 ? 0.7 : 0.4);
+    const thr = want > have ? (want === 2 ? WET_FULL : WET_INTER) : (have === 2 ? WET_FULL : WET_INTER);
     const marginal = Math.abs(w.wetness - thr) < 0.12;
     c._wxAt = c.phys.lap + (marginal && Math.random() < 0.5 ? 1 : 0);
   }
@@ -1129,8 +1135,7 @@ function startSession() {
     } else {
       // practice runs on the current conditions; hand the player sensible tyres
       const wet = G.weather.wetness;
-      if (wet > 0.7) car.phys.setTyre('wet');
-      else if (wet > 0.35) car.phys.setTyre('inter');
+      if (idealCategory(wet) > 0) car.phys.setTyre(compoundForCategory(idealCategory(wet)));
       spawnPracticeTraffic(wet);
       G.raceStarted = true;
       G.state = 'driving';
@@ -1152,7 +1157,7 @@ const PRACTICE_TRAFFIC = 7;
 function spawnPracticeTraffic(wet) {
   const t = G.track, N = t.n;
   const pool = DRIVERS.filter(d => !d.player).sort(() => Math.random() - 0.5).slice(0, PRACTICE_TRAFFIC);
-  const comp = wet > 0.7 ? 'wet' : wet > 0.35 ? 'inter' : ['soft', 'medium', 'hard'];
+  const comp = idealCategory(wet) > 0 ? compoundForCategory(idealCategory(wet)) : ['soft', 'medium', 'hard'];
   pool.forEach((d, k) => {
     const car = makeCar(d, t);
     // spread from ~15% to ~88% of the lap so nobody starts on top of the player
@@ -1211,7 +1216,7 @@ function simulateQualiTimes() {
   }
   // everyone runs the quickest compound the conditions allow, as in real quali
   const wet = G.weather ? G.weather.wetness : 0;
-  const qTyre = wet > 0.7 ? 'wet' : wet > 0.35 ? 'inter' : 'soft';
+  const qTyre = compoundForCategory(idealCategory(wet), 'soft');
   return DRIVERS.filter(d=>!d.player).map(d => {
     // same performance model the race AI uses, so the grid you qualify against
     // matches the cars you then race — plus a little driver variability
@@ -1240,7 +1245,7 @@ function recommendedStops() {
 // change compound. In qualifying, practice and wet races you may refit the same.
 function mustDifferNow() {
   return tpMode === 'session' && G.mode === 'race' && G.raceLaps > 20
-    && !(G.weather && G.weather.wetness > 0.3);
+    && !(G.weather && G.weather.wetness > WET_INTER);
 }
 
 function refreshTyrePicker() {
@@ -1285,19 +1290,19 @@ document.querySelectorAll('#tp-pit-row .tyre-btn').forEach(b => {
 // mode 'session' = before qualifying/race; 'pit' = mid-session stop (practice)
 function showTyrePicker(mode) {
   tpMode = mode || 'session';
-  const wet = G.weather && G.weather.wetness > 0.3;
+  const wet = G.weather && G.weather.wetness > WET_INTER;
   // Inters/wets for the STOPS whenever rain is in play today (forecast
   // incoming, drying, drizzle, steady) — you used to only see them if the
   // track was already wet, so "rain expected ~lap 13" left no way to plan for
   // it. For the START they show only if the opening laps will be wet.
   const sc = G.weather ? G.weather.scenario : 'dry';
   const rainInPlay = wet || ['incoming', 'drying', 'drizzle', 'steady'].includes(sc);
-  const wetStart = wet || (typeof projectedWetness === 'function' && projectedWetness(2) > 0.3);
+  const wetStart = wet || (typeof projectedWetness === 'function' && projectedWetness(2) > WET_INTER);
   document.querySelectorAll('#tp-start-row .tyre-btn.wet-tyre').forEach(b => b.classList.toggle('hidden', !wetStart));
   document.querySelectorAll('#tp-pit-row .tyre-btn.wet-tyre, #tp-pit2-row .tyre-btn.wet-tyre')
     .forEach(b => b.classList.toggle('hidden', !rainInPlay));
   const isWetC = n => n === 'inter' || n === 'wet';
-  if (wet) tpStart = G.weather.wetness > 0.7 ? 'wet' : 'inter';
+  if (wet) tpStart = G.weather.wetness > WET_FULL ? 'wet' : 'inter';
   else if (isWetC(tpStart)) tpStart = 'medium';
   // never leave a selection pointing at a compound whose button is hidden —
   // that's how a wet session's choice leaked into the next dry one
@@ -2475,7 +2480,7 @@ function updateHUD() {
     if (wt) wt.textContent = w.forecast || 'DRY';
     if (wf) {
       wf.style.width = Math.round(w.wetness*100) + '%';
-      wf.style.background = w.wetness > 0.7 ? '#2f7fd0' : w.wetness > 0.35 ? '#3fbf4f' : '#6fb0ff';
+      wf.style.background = w.wetness > WET_FULL ? '#2f7fd0' : w.wetness > WET_INTER ? '#3fbf4f' : '#6fb0ff';
     }
     // 3D rain does the heavy lifting now; the screen streaks are just a light
     // windscreen effect on top
@@ -2615,7 +2620,7 @@ const STEW = {
 // at the first stop (wet tyres are exempt).
 function boxMustChange(c) {
   return G.mode === 'race' && G.raceLaps > 20 && !c.pitted
-    && !(G.weather && G.weather.wetness > 0.3) && tyreCategory(c.phys.compound) === 0;
+    && !(G.weather && G.weather.wetness > WET_INTER) && tyreCategory(c.phys.compound) === 0;
 }
 // What the box call is pre-set to when you press P: your planned tyre, unless
 // the conditions have moved to a different category (slick/inter/wet), in
@@ -3768,5 +3773,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 73';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 74';
 })();
