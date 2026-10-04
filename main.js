@@ -843,14 +843,22 @@ function weatherPitCheck(c) {
   if (!G.raceStarted || c.phys.lap < 1) return;
   const w = G.weather;
   const have = tyreCategory(c.phys.compound);
-  const want = wantedCategory(have, w.wetness);
+  // Decide on the conditions the car will actually meet on the NEW tyres —
+  // about a lap from now, once it's been round to the box. Reacting to the
+  // wetness right now left the field 1-3 laps behind fast-changing rain (on
+  // slicks at 30-46% wet, on inters at 80%: wrong tyre ~30% of car-laps).
+  let want = wantedCategory(have, projectedWetness(1.2));
+  // rain building fast: if wets will be needed within ~3 laps, skip the inters
+  if (want === 1 && have === 0 && wantedCategory(1, projectedWetness(3)) === 2) want = 2;
   if (want === have) { c._wxAt = null; return; }
   // never go UP a category on a drying track, or DOWN while rain is building —
   // the conditions are moving back toward what you're already on
   if (w.scenario === 'drying' && want > have) return;
   if (w.scenario === 'incoming' && want < have && w.target > w.wetness) return;
   // only stop if the change still holds two laps from now (worth the stop)
-  if (wantedCategory(have, projectedWetness(2)) !== want) return;
+  { const later = wantedCategory(have, projectedWetness(2.5));
+    // still worth changing 2.5 laps out (in the same direction)?
+    if (want > have ? later <= have : later >= have) return; }
   // Gate on the CATEGORY we last reacted to, not the direction. Gating on
   // direction blocked the second step of a drying track — wet → inter → slick
   // is two changes the same way, so cars got stranded on inters once the
@@ -873,7 +881,8 @@ function weatherPitCheck(c) {
 // What this car should be on right now, used at the moment of a stop so a
 // scheduled dry stop never refits the inters a shower called for ten laps ago.
 function compoundForConditions(c) {
-  const cat = idealCategory(G.weather.wetness);
+  // what suits the next lap or so (the car is about to go out on these)
+  const cat = idealCategory(typeof projectedWetness === 'function' ? projectedWetness(1) : G.weather.wetness);
   if (cat === 2) return 'wet';
   if (cat === 1) return 'inter';
   // dry: keep whatever slick was planned, but never a wet-weather tyre
@@ -2659,7 +2668,17 @@ function pitApproachTarget(c) {
   if (!c.pitArmed || c.pitState || (c.pitArmLap != null && c.phys.lap < c.pitArmLap)) return null;
   const toEntry = ((g.entryStart - ld) % L + L) % L;
   if (toEntry <= 0 || toEntry > PIT_APPROACH) return null;
-  return { lane: -g.edgeOff, vCap: Math.sqrt(PIT_ENTRY_V * PIT_ENTRY_V + 2 * 16 * toEntry) };
+  // Move across only once the track is straight: on short pit straights the
+  // approach used to drag cars to the pit side THROUGH the last corner, and in
+  // the wet they slid into the wall. Braking assumes the grip there is.
+  const t = G.track, k = c.phys.trackIdx;
+  // straight from here to the entry? (no corner left to take on the way in)
+  let straight = true;
+  const segM = t.length / t.n, steps = Math.ceil(toEntry / segM);
+  for (let j = 0; j <= steps; j += 2) if (Math.abs(t.curv[(k + j) % t.n]) > 0.006) { straight = false; break; }
+  const wg = typeof wetGrip === 'function' ? wetGrip(c.phys.compound, TRACK_WETNESS) : 1;
+  const dec = Math.max(8, 16 * (0.35 + 0.65 * wg));
+  return { lane: straight ? -(g.edgeOff - 0.6) : null, vCap: Math.sqrt(PIT_ENTRY_V * PIT_ENTRY_V + 2 * dec * toEntry) };
 }
 function updatePitApproach(c) {
   if (!c.ai) return;
@@ -2706,6 +2725,8 @@ function checkTrackLimits(dt) {
   if (!G.raceStarted) return;
   for (const c of G.cars) {
     if (c.finished || c.pitState) continue;
+    // lining up for the pit entry: the car is meant to be on the pit-side edge
+    if (pitApproachTarget(c)) { c.limitTimer = 0; c._limitFlagged = false; continue; }
     const p = c.phys;
     const t = G.track;
     const lat = t.lateral(p.x, p.z, p.trackIdx);
@@ -3773,5 +3794,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 74';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 75';
 })();

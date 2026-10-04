@@ -1349,7 +1349,11 @@ function pitLaneGeom(track) {
   for (let k = 1; k < N; k++) { const i = (N - k) % N; if (Math.abs(track.curv[i]) > THR) break; back = L - track.dist[i]; }
   for (let i = 1; i < N; i++) { if (Math.abs(track.curv[i]) > THR) break; fwd = track.dist[i]; }
   // corridor [a, b] in metres relative to the line (negative = before it)
-  let a = -Math.max(0, back - 12), b = Math.max(0, fwd - 12);
+  // leave some straight between the last corner's exit and the pit entry, so
+  // a car can move across to the pit side on the straight rather than at the
+  // exit of the corner (Hungary's entry used to begin 12m after T14)
+  const lead = Math.min(60, back * 0.35);
+  let a = -Math.max(0, back - lead), b = Math.max(0, fwd - 12);
   if (a < -300) a = -300;                       // long straights: don't start miles back
   if (b - a > 430) b = a + 430;                 // real pit lanes run ~350-450m
   if (b - a < 200) { b = a + 200; }             // floor (no track is this short; safety)
