@@ -335,10 +335,21 @@ class CarPhysics {
     // shove the car back onto the track).
     const wall = this.inPit ? Math.max(t.wallOff || (hw + 8.2), hw + 9)
                             : (t.wallOff || (hw + 8.2));
+    // The pit wall is a real barrier. Along the walled stretch of the pit lane
+    // a car that is NOT in the pits is held on the track side of it (it used
+    // to be drawn only, so you could drive down the lane at full speed).
+    // Only the entry and exit are open; crossing into the entry = boxing
+    // (main.js commits the car to the stop).
+    let limNeg = wall, limPos = wall;      // barrier distance on each side
+    if (!this.inPit && typeof pitLaneGeom === 'function' && this.lapDist != null) {
+      const g = pitLaneGeom(t), s = pitS(t, this.lapDist);
+      if (s >= g.sEntryEnd - 6 && s <= g.sExitStart + 6) limNeg = Math.min(limNeg, g.wallOff - 0.45);
+    }
+    const lim = lat2 < 0 ? limNeg : limPos;
     this.wallHit = 0;
-    if (Math.abs(lat2) <= wall) this._wallTouch = false;
-    if (Math.abs(lat2) > wall) {
-      const p = t.posAt(this.trackIdx, Math.sign(lat2) * (wall - 0.2));
+    if (Math.abs(lat2) <= lim) this._wallTouch = false;
+    if (Math.abs(lat2) > lim) {
+      const p = t.posAt(this.trackIdx, Math.sign(lat2) * (lim - 0.2));
       this.x = p.x; this.z = p.z;
       // align to wall and scrub speed based on impact angle (wall-ride)
       const ta = Math.atan2(t.tx[this.trackIdx], t.tz[this.trackIdx]);

@@ -3645,6 +3645,24 @@ function stepSim(dt) {
       // the pit-lane machine takes over AT the pit entry (it used to start 40m
       // past it, so cars had already missed the entry when it kicked in)
       const pg = pitLaneGeom(G.track);
+      // Crossing the pit entry line commits you to a stop, like the real
+      // thing: once the player is over on the pit side inside the entry,
+      // the stop is on (box call = suggested tyre). A pit wall in physics.js
+      // keeps everyone else out of the lane further down.
+      if (!c.ai && !c.pitState) {
+        const sP = pitS(G.track, c.phys.lapDist);
+        const latP = G.track.lateral(c.phys.x, c.phys.z, c.phys.trackIdx);
+        if (sP < pg.sEntryEnd && latP < -(G.track.width / 2 + 1.0)) {
+          c.pitArmed = true; c.pitArmLap = null;
+          c.pitState = 'entering'; c.pitLaneStart = G.simTime;
+          if (c.driveThrough) showBanner('PIT ENTRY — DRIVE-THROUGH', 2.0, '#ff8a85');
+          else {
+            if (!c.boxCall) c.boxCall = suggestBoxTyre(c);
+            showBanner('PIT ENTRY — BOXING  ' + c.boxCall.toUpperCase(), 2.0, '#ffd12e');
+          }
+          continue;
+        }
+      }
       if (c.pitArmed && !c.pitState && (c.pitArmLap == null || c.phys.lap >= c.pitArmLap)
           && pitS(G.track, c.phys.lapDist) < pg.sEntryEnd * 0.6) {
         if (c.ai) { c.ai.laneOverride = null; c.ai.speedCap = null; }
