@@ -23,6 +23,9 @@ let WET_BONUS_FADE = 0.6;
 // puddle is always in the same spot and can be learned, mainly on straights
 // where water pools, strength 0..1. Replaces the old per-frame random kicks
 // (3-4 unpredictable twitches a second at 270 km/h in heavy rain).
+// drivetrain: top speed (km/h) of each gear at the limiter
+const RPM_MAX = 12400, RPM_IDLE = 4200;
+const GEAR_TOP_KMH = [0, 92, 132, 168, 203, 238, 272, 307, 348];
 function puddleAt(track, lapDist, idx) {
   const s = track.length * 0.0137;
   const a = Math.sin(lapDist * 0.019 + s) * Math.sin(lapDist * 0.0067 + s * 1.7);
@@ -414,6 +417,27 @@ class CarPhysics {
     else this.crossedLine = false;
     if (Math.abs(delta) < t.length * 0.5) this.totalDist += delta;
     this.lapDist = newDist;
+    this._drivetrain();
+  }
+
+  // 8-speed seamless box with F1-like ratios: the engine lives between
+  // ~10,500 and 12,400 rpm at racing speed (each upshift drops only
+  // ~1,200-1,800 rpm), and it downshifts early under braking so the revs stay
+  // high — which is also how the 2026 cars harvest energy in the braking zones.
+  // Used by the HUD (gear, rev bar) and the engine sound.
+  _drivetrain() {
+    const v = Math.abs(this.speed) * 3.6, T = GEAR_TOP_KMH;
+    let g = this.gearN || 1;
+    this.shiftUp = 0; this.shiftDown = 0;
+    if (g < 8 && v > T[g] * 0.985 && this.throttle > 0.05) { g++; this.shiftUp = 1; }
+    while (g < 8 && v > T[g]) { g++; this.shiftUp = 1; }
+    const keep = this.throttle > 0.5 ? 0.80 : 0.92;
+    while (g > 1 && v < T[g - 1] * keep) { g--; this.shiftDown = 1; }
+    this.gearN = g;
+    let rpm = RPM_MAX * v / T[g];
+    if (g === 1) rpm = Math.max(rpm, RPM_IDLE + this.throttle * 4200 * Math.max(0, 1 - v / 60));
+    rpm += (this.wheelSpin || 0) * 1200;
+    this.rpm = Math.max(RPM_IDLE, Math.min(RPM_MAX + 60, rpm));
   }
 
   get progress() { // total race progress for ordering
@@ -424,19 +448,12 @@ class CarPhysics {
 
   get gear() {
     if (this.speed < -0.5) return 'R';
-    const v = this.kmh;
-    if (v < 3) return 'N';
-    const gears = [0, 45, 85, 125, 165, 205, 250, 300];
-    for (let g = gears.length-1; g >= 1; g--) if (v >= gears[g-1]) return g;
-    return 1;
+    if (this.kmh < 3 && this.throttle < 0.05) return 'N';
+    return this.gearN || 1;
   }
 
+  // rev bar: the useful band, 6,000 rpm → limiter
   get rpmFrac() {
-    const v = this.kmh;
-    const gears = [0, 45, 85, 125, 165, 205, 250, 300, 360];
-    let g = 1;
-    for (let i = gears.length-2; i >= 1; i--) if (v >= gears[i-1]) { g = i; break; }
-    const lo = gears[g-1], hi = gears[g];
-    return Math.min(1, 0.35 + 0.65 * (v - lo) / (hi - lo));
+    return Math.max(0, Math.min(1, ((this.rpm || RPM_IDLE) - 6000) / (RPM_MAX - 6000)));
   }
 }

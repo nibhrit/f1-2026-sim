@@ -4,14 +4,34 @@
 // ============================================================
 
 const AUDIO = (() => {
+  // ------------------------------------------------------------------
+  // F1 power unit, 2026 spec: 1.6 V6 turbo, ~10.5-12.4k rpm at racing
+  // speed, no MGU-H (a freer, slightly louder turbo), big MGU-K.
+  // How the sound is built:
+  //  * one oscillator per car at the HALF-ORDER of the crank (rpm/120);
+  //    its custom waveform holds the engine orders — the 3rd order
+  //    (6 cylinders firing every 2 revs: rpm/20, ~600 Hz at 12k) is the
+  //    dominant note, its multiples give the scream, the 1.5 order and odd
+  //    half-orders give the rasp/burble an even sine stack lacks
+  //  * combustion noise: noise amplitude-modulated at the firing rate
+  //  * exhaust resonances (parallel band-passes) + a load-dependent low-pass:
+  //    bright and hard on throttle, dark on the overrun
+  //  * turbo whistle that spools with load and lags; wastegate chuff on lift
+  //  * MGU-K whine tied to road speed, loudest when harvesting under braking
+  //  * 30ms ignition-cut "crack" on upshifts, blip + pops on downshifts,
+  //    limiter bounce, overrun crackle
+  //  * the 3 nearest rivals get their own voices: distance, air absorption,
+  //    doppler and stereo pan so you HEAR which side a car is on
+  // ------------------------------------------------------------------
   let ctx = null;
-  let master, engGain, engFilter, osc1, osc2, subOsc, whine, whineGain, vibrato, vibGain;
-  let screechGain, windGain, oppGain, oppOsc;
-  let noiseBuf = null;
+  let master, noiseBuf = null, engWave = null;
   let muted = false;
   let volume = 0.55;
-  let lastGear = null;
-  let gearBlip = 0, barkTimer = 0;
+  let player = null;               // player voice
+  const opp = [];                  // rival voices
+  let screechGain, windGain, kWhine, kGain;
+  let lastGearN = null, cutT = 0, blipT = 0, lastThr = 0, boost = 0;
+  const RPMX = 12400;
 
   function makeNoise() {
     const len = ctx.sampleRate * 2;
@@ -21,199 +41,238 @@ const AUDIO = (() => {
     return buf;
   }
 
+  // engine-order spectrum, harmonic n of the half-order fundamental
+  // = engine order n/2. Order 3 (n=6) is the firing note.
+  function makeEngineWave() {
+    const N = 64, re = new Float32Array(N), im = new Float32Array(N);
+    let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let n = 1; n < N; n++) {
+      let a = 0.05 / Math.pow(n, 0.35);                    // broadband rasp floor
+      if (n % 6 === 0) a = 1.0 / Math.pow(n / 6, 0.78);     // firing order + multiples
+      else if (n % 3 === 0) a = 0.32 / Math.pow(n / 3, 0.7);// 1.5-order family (V-bank pulses)
+      else if (n % 2 === 0) a = 0.09 / Math.pow(n, 0.25);   // whole crank orders
+      if (n === 2) a = 0.16;                                 // crank rotation burble
+      const ph = rnd() * Math.PI * 2;                        // random phases: less buzzy
+      re[n] = a * Math.cos(ph); im[n] = a * Math.sin(ph);
+    }
+    return ctx.createPeriodicWave(re, im, { disableNormalization: false });
+  }
+
+  function shaperCurve(k) {
+    const c = new Float32Array(1024);
+    for (let i = 0; i < 1024; i++) { const x = i / 512 - 1; c[i] = Math.tanh(k * x) / Math.tanh(k); }
+    return c;
+  }
+
+  // one engine voice: [osc + detuned osc] → drive → (resonances + body) → lowpass → gain → pan
+  function makeVoice(isPlayer) {
+    const v = {};
+    v.osc = ctx.createOscillator(); v.osc.setPeriodicWave(engWave);
+    v.osc2 = ctx.createOscillator(); v.osc2.setPeriodicWave(engWave); v.osc2.detune.value = 7;
+    const g1 = ctx.createGain(); g1.gain.value = 0.55;
+    const g2 = ctx.createGain(); g2.gain.value = 0.28;
+    v.drive = ctx.createGain(); v.drive.gain.value = 1;
+    const sh = ctx.createWaveShaper(); sh.curve = shaperCurve(2.2); sh.oversample = '2x';
+    v.osc.connect(g1); v.osc2.connect(g2); g1.connect(v.drive); g2.connect(v.drive); v.drive.connect(sh);
+    // exhaust resonances
+    const sum = ctx.createGain(); sum.gain.value = 1;
+    const body = ctx.createGain(); body.gain.value = 0.55; sh.connect(body); body.connect(sum);
+    for (const [f, q, gn] of [[620, 1.3, 0.5], [1450, 2.2, 0.55], [3300, 3.0, 0.35]]) {
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = q;
+      const g = ctx.createGain(); g.gain.value = gn; sh.connect(bp); bp.connect(g); g.connect(sum);
+    }
+    // combustion noise, pulsed at the firing rate
+    if (isPlayer) {
+      const ns = ctx.createBufferSource(); ns.buffer = noiseBuf; ns.loop = true;
+      const nbp = ctx.createBiquadFilter(); nbp.type = 'bandpass'; nbp.frequency.value = 2400; nbp.Q.value = 0.8;
+      v.am = ctx.createGain(); v.am.gain.value = 0;
+      v.fire = ctx.createOscillator(); v.fire.type = 'sawtooth';
+      v.fireDepth = ctx.createGain(); v.fireDepth.gain.value = 0;
+      v.fire.connect(v.fireDepth); v.fireDepth.connect(v.am.gain);
+      ns.connect(nbp); nbp.connect(v.am); v.am.connect(sum);
+      ns.start(); v.fire.start();
+    }
+    v.lp = ctx.createBiquadFilter(); v.lp.type = 'lowpass'; v.lp.frequency.value = 3000; v.lp.Q.value = 0.6;
+    v.gain = ctx.createGain(); v.gain.gain.value = 0;
+    sum.connect(v.lp); v.lp.connect(v.gain);
+    if (ctx.createStereoPanner) { v.pan = ctx.createStereoPanner(); v.gain.connect(v.pan); v.pan.connect(master); }
+    else v.gain.connect(master);
+    v.osc.start(); v.osc2.start();
+    // turbo whistle (player only)
+    if (isPlayer) {
+      v.turbo = ctx.createOscillator(); v.turbo.type = 'sine';
+      v.turboG = ctx.createGain(); v.turboG.gain.value = 0;
+      v.turbo.connect(v.turboG); v.turboG.connect(master); v.turbo.start();
+    }
+    v.car = null; v.lastD = null;
+    return v;
+  }
+
   function init() {
     if (ctx) return;
-    try {
-      ctx = new (window.AudioContext || window.webkitAudioContext)();
-    } catch(e) { return; }
+    try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) { return; }
     noiseBuf = makeNoise();
-
     master = ctx.createGain();
     master.gain.value = muted ? 0 : volume;
     master.connect(ctx.destination);
+    engWave = makeEngineWave();
+    player = makeVoice(true);
+    for (let i = 0; i < 3; i++) opp.push(makeVoice(false));
 
-    // ---- engine: harmonic-rich periodic wave, gently saturated ----
-    // spectrum approximating a screaming V6 exhaust
-    const H = [0, 1.0, 0.62, 0.78, 0.40, 0.26, 0.32, 0.16, 0.10, 0.07, 0.05, 0.035, 0.025];
-    const real = new Float32Array(H.length);
-    const imag = new Float32Array(H);
-    const wave = ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+    // MGU-K whine
+    kWhine = ctx.createOscillator(); kWhine.type = 'triangle';
+    kGain = ctx.createGain(); kGain.gain.value = 0;
+    kWhine.connect(kGain); kGain.connect(master); kWhine.start();
 
-    const shaper = ctx.createWaveShaper();
-    {
-      const curve = new Float32Array(1024);
-      for (let i=0;i<1024;i++) {
-        const x = i/512 - 1;
-        curve[i] = Math.tanh(1.9 * x);
-      }
-      shaper.curve = curve;
-      shaper.oversample = '2x';
-    }
-    engFilter = ctx.createBiquadFilter();
-    engFilter.type = 'lowpass';
-    engFilter.frequency.value = 1500;
-    engFilter.Q.value = 0.7;
-    engGain = ctx.createGain();
-    engGain.gain.value = 0;
-    shaper.connect(engFilter); engFilter.connect(engGain); engGain.connect(master);
-
-    const mix = ctx.createGain(); mix.gain.value = 0.6;
-    mix.connect(shaper);
-
-    osc1 = ctx.createOscillator(); osc1.setPeriodicWave(wave);
-    osc2 = ctx.createOscillator(); osc2.setPeriodicWave(wave); osc2.detune.value = 9;
-    subOsc = ctx.createOscillator(); subOsc.type = 'square';
-    const g1 = ctx.createGain(); g1.gain.value = 0.5;
-    const g2 = ctx.createGain(); g2.gain.value = 0.34;
-    const g3 = ctx.createGain(); g3.gain.value = 0.15;
-    osc1.connect(g1); g1.connect(mix);
-    osc2.connect(g2); g2.connect(mix);
-    subOsc.connect(g3); g3.connect(mix);
-    osc1.start(); osc2.start(); subOsc.start();
-
-    // organic vibrato on fundamental
-    vibrato = ctx.createOscillator(); vibrato.frequency.value = 31;
-    vibGain = ctx.createGain(); vibGain.gain.value = 1.2;
-    vibrato.connect(vibGain);
-    vibGain.connect(osc1.frequency);
-    vibGain.connect(osc2.frequency);
-    vibrato.start();
-
-    // high gearbox/turbo whine
-    whine = ctx.createOscillator(); whine.type = 'sine';
-    whineGain = ctx.createGain(); whineGain.gain.value = 0;
-    whine.connect(whineGain); whineGain.connect(master);
-    whine.start();
-
-    // ---- tire screech ----
-    const scrSrc = ctx.createBufferSource();
-    scrSrc.buffer = noiseBuf; scrSrc.loop = true;
-    const scrBP = ctx.createBiquadFilter();
-    scrBP.type = 'bandpass'; scrBP.frequency.value = 950; scrBP.Q.value = 3.5;
+    // tyre screech
+    const scrSrc = ctx.createBufferSource(); scrSrc.buffer = noiseBuf; scrSrc.loop = true;
+    const scrBP = ctx.createBiquadFilter(); scrBP.type = 'bandpass'; scrBP.frequency.value = 950; scrBP.Q.value = 3.5;
     screechGain = ctx.createGain(); screechGain.gain.value = 0;
-    scrSrc.connect(scrBP); scrBP.connect(screechGain); screechGain.connect(master);
-    scrSrc.start();
+    scrSrc.connect(scrBP); scrBP.connect(screechGain); screechGain.connect(master); scrSrc.start();
 
-    // ---- wind ----
-    const windSrc = ctx.createBufferSource();
-    windSrc.buffer = noiseBuf; windSrc.loop = true;
-    const windLP = ctx.createBiquadFilter();
-    windLP.type = 'lowpass'; windLP.frequency.value = 400;
+    // wind
+    const windSrc = ctx.createBufferSource(); windSrc.buffer = noiseBuf; windSrc.loop = true;
+    const windLP = ctx.createBiquadFilter(); windLP.type = 'lowpass'; windLP.frequency.value = 400;
     windGain = ctx.createGain(); windGain.gain.value = 0;
-    windSrc.connect(windLP); windLP.connect(windGain); windGain.connect(master);
-    windSrc.start();
-
-    // ---- nearest opponent ----
-    oppOsc = ctx.createOscillator(); oppOsc.setPeriodicWave(wave);
-    const oppLP = ctx.createBiquadFilter();
-    oppLP.type = 'lowpass'; oppLP.frequency.value = 1600;
-    oppGain = ctx.createGain(); oppGain.gain.value = 0;
-    oppOsc.connect(oppLP); oppLP.connect(oppGain); oppGain.connect(master);
-    oppOsc.start();
+    windSrc.connect(windLP); windLP.connect(windGain); windGain.connect(master); windSrc.start();
   }
 
-  function ensureRunning() {
-    if (ctx && ctx.state === 'suspended') ctx.resume();
+  function ensureRunning() { if (ctx && ctx.state === 'suspended') ctx.resume(); }
+
+  // short filtered noise burst (pops, cracks, chuffs)
+  function burst(t, gain, type, freq, q, dur, rate) {
+    const src = ctx.createBufferSource(); src.buffer = noiseBuf;
+    if (rate) src.playbackRate.value = rate;
+    const f = ctx.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q || 0.8;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+    src.connect(f); f.connect(g); g.connect(master);
+    const off = Math.random() * 1.5;
+    src.start(t, off); src.stop(t + dur + 0.02);
   }
 
-  // V6 firing frequency: ~195Hz at low revs → ~590Hz at the limiter
-  function engineFreq(rpmFrac) {
-    const rn = Math.max(0, (rpmFrac - 0.35) / 0.65);
-    return 190 + Math.pow(rn, 1.1) * 395;
+  function rpmOf(p) {
+    if (p.rpm) return p.rpm;
+    return 4200 + (p.rpmFrac || 0) * (RPMX - 4200);
   }
 
-  function update(player, dt, cars, driving) {
+  function silence(t) {
+    for (const v of [player, ...opp]) { v.gain.gain.setTargetAtTime(0, t, 0.1); if (v.turboG) v.turboG.gain.setTargetAtTime(0, t, 0.1); }
+    screechGain.gain.setTargetAtTime(0, t, 0.1);
+    windGain.gain.setTargetAtTime(0, t, 0.1);
+    kGain.gain.setTargetAtTime(0, t, 0.1);
+  }
+
+  function update(p, dt, cars, driving) {
     if (!ctx) return;
     ensureRunning();
     const t = ctx.currentTime;
+    if (!p || !driving) { silence(t); return; }
+    dt = Math.min(0.1, dt || 0.016);
 
-    if (!player || !driving) {
-      engGain.gain.setTargetAtTime(0, t, 0.1);
-      screechGain.gain.setTargetAtTime(0, t, 0.1);
-      windGain.gain.setTargetAtTime(0, t, 0.1);
-      whineGain.gain.setTargetAtTime(0, t, 0.1);
-      if (oppGain) oppGain.gain.setTargetAtTime(0, t, 0.1);
-      return;
-    }
+    const rpm = rpmOf(p);
+    const rn = Math.max(0, Math.min(1, (rpm - 4200) / (RPMX - 4200)));
+    const thr = p.throttle || 0, brk = p.brake || 0;
+    const gN = p.gearN || (typeof p.gear === 'number' ? p.gear : 1);
 
-    const rpm = player.rpmFrac;
-    const rn = Math.max(0, (rpm - 0.35) / 0.65);
-
-    // gear changes
-    const gear = player.gear;
-    if (lastGear !== null && gear !== lastGear) {
-      if (typeof gear === 'number' && typeof lastGear === 'number' && gear < lastGear) {
-        // downshift bark: rev-match blip
-        barkTimer = 0.12;
-        const src = ctx.createBufferSource();
-        src.buffer = noiseBuf;
-        const bp = ctx.createBiquadFilter();
-        bp.type = 'bandpass'; bp.frequency.value = 900; bp.Q.value = 0.9;
-        const gg = ctx.createGain();
-        gg.gain.setValueAtTime(0.14, t);
-        gg.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
-        src.connect(bp); bp.connect(gg); gg.connect(master);
-        src.start(t); src.stop(t + 0.15);
-      } else {
-        // upshift: 40ms ignition cut
-        gearBlip = 0.04;
+    // shifts
+    if (lastGearN !== null && gN !== lastGearN) {
+      if (gN > lastGearN) {                       // upshift: ignition cut + crack
+        cutT = 0.032;
+        burst(t, 0.05 + rn * 0.05, 'bandpass', 1800, 1.1, 0.05);
+      } else {                                    // downshift: blip + pops
+        blipT = 0.09;
+        burst(t, 0.07, 'bandpass', 900, 0.9, 0.09);
+        if (Math.random() < 0.7) burst(t + 0.05 + Math.random() * 0.05, 0.05, 'lowpass', 1400, 0.7, 0.05, 0.7);
       }
     }
-    lastGear = gear;
-    gearBlip = Math.max(0, gearBlip - dt);
-    barkTimer = Math.max(0, barkTimer - dt);
+    lastGearN = gN;
+    cutT = Math.max(0, cutT - dt); blipT = Math.max(0, blipT - dt);
 
-    let f = engineFreq(rpm);
-    if (barkTimer > 0) f *= 1.16;             // downshift blip
-    const cutMul = gearBlip > 0 ? 0.25 : 1;   // upshift cut
+    // limiter bounce
+    const limiter = rpm >= RPMX - 30 && thr > 0.8;
+    const bounce = limiter ? (Math.sin(t * 2 * Math.PI * 17) > 0 ? 1 : 0.45) : 1;
 
-    osc1.frequency.setTargetAtTime(f, t, 0.02);
-    osc2.frequency.setTargetAtTime(f, t, 0.02);
-    subOsc.frequency.setTargetAtTime(f * 0.5, t, 0.02);
-    whine.frequency.setTargetAtTime(f * 6.04, t, 0.03);
-    engFilter.frequency.setTargetAtTime(900 + rn * rn * 7800, t, 0.04);
+    // pitch: half-order fundamental (rpm/120); firing note = 6x that
+    let f0 = rpm / 120;
+    if (blipT > 0) f0 *= 1.06;
+    const v = player;
+    v.osc.frequency.setTargetAtTime(f0, t, 0.012);
+    v.osc2.frequency.setTargetAtTime(f0, t, 0.012);
+    v.fire.frequency.setTargetAtTime(f0 * 6, t, 0.012);
 
-    const idle = 0.12;
-    const load = 0.12 + player.throttle * 0.18 + rn * 0.14 + (barkTimer > 0 ? 0.08 : 0);
-    engGain.gain.setTargetAtTime(Math.max(idle, load) * cutMul, t, 0.035);
-    whineGain.gain.setTargetAtTime((0.012 + rn * 0.022) * (player.throttle > 0.2 ? 1 : 0.4), t, 0.06);
+    // load: on throttle = hard and bright; overrun = darker
+    const load = Math.max(thr, blipT > 0 ? 0.6 : 0);
+    v.drive.gain.setTargetAtTime(0.7 + load * 1.4, t, 0.03);
+    v.lp.frequency.setTargetAtTime(1500 + load * 2600 + rn * rn * 5200, t, 0.04);
+    v.fireDepth.gain.setTargetAtTime(0.05 + load * 0.18, t, 0.04);
+    const cut = cutT > 0 ? 0.12 : 1;
+    const lvl = (0.09 + load * 0.11 + rn * 0.10) * cut * bounce;
+    v.gain.gain.setTargetAtTime(lvl, t, cutT > 0 ? 0.004 : 0.025);
+    if (v.pan) v.pan.pan.value = 0;
 
-    // off-throttle crackle at high revs
-    if (player.throttle < 0.1 && rn > 0.4 && Math.random() < dt * 8) {
-      const src = ctx.createBufferSource();
-      src.buffer = noiseBuf;
-      src.playbackRate.value = 0.6 + Math.random()*0.8;
-      const lp = ctx.createBiquadFilter();
-      lp.type = 'lowpass'; lp.frequency.value = 1600;
-      const gg = ctx.createGain();
-      gg.gain.setValueAtTime(0.04 + Math.random()*0.05, t);
-      gg.gain.exponentialRampToValueAtTime(0.001, t + 0.04 + Math.random()*0.05);
-      src.connect(lp); lp.connect(gg); gg.connect(master);
-      src.start(t); src.stop(t + 0.12);
+    // turbo: spools with load (lag), whistle 2.4-6 kHz
+    const want = thr * (0.25 + 0.75 * rn);
+    boost += (want - boost) * Math.min(1, dt * (want > boost ? 2.2 : 5));
+    v.turbo.frequency.setTargetAtTime(2400 + boost * 3600, t, 0.08);
+    v.turboG.gain.setTargetAtTime(boost * 0.012, t, 0.08);
+    // wastegate / blow-off chuff on a sharp lift at high boost
+    if (lastThr > 0.75 && thr < 0.25 && boost > 0.55) burst(t, 0.06, 'highpass', 3000, 0.6, 0.22);
+    lastThr = thr;
+
+    // MGU-K: motor speed follows road speed; harvest (braking) is the loud part
+    const spd = Math.abs(p.speed || 0);
+    kWhine.frequency.setTargetAtTime(180 + spd * 24, t, 0.05);
+    kGain.gain.setTargetAtTime(spd > 5 ? (0.004 + brk * 0.016 + thr * 0.004) : 0, t, 0.08);
+
+    // overrun crackle at high revs off throttle
+    if (thr < 0.1 && rn > 0.45 && Math.random() < dt * 9) {
+      burst(t, 0.03 + Math.random() * 0.05, 'lowpass', 1500, 0.7, 0.03 + Math.random() * 0.05, 0.6 + Math.random() * 0.8);
     }
 
-    // screech
-    const scr = (player.wheelSpin > 0.25 ? Math.min(0.15, player.wheelSpin * 0.15) : 0)
-      + (player.offTrack && player.speed > 8 ? 0.05 : 0);
+    // screech + wind
+    const scr = (p.wheelSpin > 0.25 ? Math.min(0.15, p.wheelSpin * 0.15) : 0)
+      + (p.offTrack && spd > 8 ? 0.05 : 0);
     screechGain.gain.setTargetAtTime(Math.min(0.18, scr), t, 0.08);
+    windGain.gain.setTargetAtTime((spd / 95) * 0.11, t, 0.15);
 
-    // wind
-    windGain.gain.setTargetAtTime((player.speed / 95) * 0.13, t, 0.15);
+    updateRivals(p, cars, t, dt);
+  }
 
-    // nearest opponent
-    let best = null, bd = 1e9;
+  // the 3 nearest rivals within 140m, each on a sticky voice
+  function updateRivals(p, cars, t, dt) {
+    const near = [];
     if (cars) for (const c of cars) {
-      if (!c.phys || c.phys === player) continue;
-      const dx = c.phys.x - player.x, dz = c.phys.z - player.z;
-      const dd = dx*dx + dz*dz;
-      if (dd < bd) { bd = dd; best = c.phys; }
+      const q = c.phys; if (!q || q === p || c.retired) continue;
+      const dx = q.x - p.x, dz = q.z - p.z, d2 = dx*dx + dz*dz;
+      if (d2 < 140*140) near.push({ c, q, dx, dz, d: Math.sqrt(d2) });
     }
-    if (best && bd < 3600) {
-      const d = Math.sqrt(bd);
-      oppOsc.frequency.setTargetAtTime(engineFreq(best.rpmFrac) * 1.02, t, 0.05);
-      oppGain.gain.setTargetAtTime(Math.min(0.12, 3/(d+8)), t, 0.1);
-    } else if (oppGain) {
-      oppGain.gain.setTargetAtTime(0, t, 0.15);
+    near.sort((a, b) => a.d - b.d); near.length = Math.min(near.length, opp.length);
+    // keep voices on the same car while it stays near
+    for (const v of opp) if (v.car && !near.find(n => n.c === v.car)) { v.car = null; v.lastD = null; }
+    for (const n of near) if (!opp.find(v => v.car === n.c)) { const free = opp.find(v => !v.car); if (free) { free.car = n.c; free.lastD = null; } }
+    // listener frame: forward (sin h, cos h); screen-right (-cos h, sin h)
+    const h = p.heading || 0, fx = Math.sin(h), fz = Math.cos(h), rx = -Math.cos(h), rz = Math.sin(h);
+    for (const v of opp) {
+      const n = v.car && near.find(k => k.c === v.car);
+      if (!n) { v.gain.gain.setTargetAtTime(0, t, 0.15); continue; }
+      // doppler from the closing rate
+      const closing = v.lastD == null ? 0 : (v.lastD - n.d) / Math.max(0.005, dt);
+      v.lastD = n.d;
+      const dop = 343 / (343 - Math.max(-60, Math.min(60, closing)));
+      const f0 = rpmOf(n.q) / 120 * dop;
+      v.osc.frequency.setTargetAtTime(f0, t, 0.03);
+      v.osc2.frequency.setTargetAtTime(f0, t, 0.03);
+      const ld = n.q.throttle || 0.5;
+      v.drive.gain.setTargetAtTime(0.7 + ld * 1.2, t, 0.05);
+      // air absorption: farther = duller; behind = exhaust pointing at you = brighter
+      const ahead = (n.dx * fx + n.dz * fz) / (n.d + 0.01);
+      v.lp.frequency.setTargetAtTime(Math.max(700, 5200 - n.d * 30) * (ahead > 0 ? 1.15 : 0.85), t, 0.06);
+      v.gain.gain.setTargetAtTime(Math.min(0.13, 2.2 / (n.d + 9)), t, 0.06);
+      if (v.pan) {
+        const side = (n.dx * rx + n.dz * rz) / (n.d + 0.01);
+        v.pan.pan.setTargetAtTime(Math.max(-0.95, Math.min(0.95, side * 1.1)), t, 0.05);
+      }
     }
   }
 

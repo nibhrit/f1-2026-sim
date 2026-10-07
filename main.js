@@ -2325,6 +2325,54 @@ function updateCloseGaps() {
   box.classList.toggle('hidden', !(a || b));
 }
 
+// ---------- spotter ----------
+// Edge arrows light up for the direction a nearby car is in (ahead, left,
+// right, behind-left, behind, behind-right), brighter the closer it is; red
+// when it's very close or closing fast. A red bar on the screen edge = a car
+// overlapping alongside on that side. Range ~1s at the current speed.
+function updateSpotter() {
+  const box = $('spotter'); if (!box) return;
+  const me = G.player;
+  if (!(G.state === 'driving' && me && !me.finished && !me.retired && !me.pitState)) {
+    box.classList.add('hidden'); return;
+  }
+  box.classList.remove('hidden');
+  if (!G._sp) G._sp = { arrows: {}, prev: {}, t: G.simTime };
+  const S = G._sp;
+  if (!S.arrows.a) box.querySelectorAll('.sp-arrow').forEach(el => S.arrows[el.dataset.s] = el);
+  const dtS = Math.max(1e-3, G.simTime - S.t); S.t = G.simTime;
+  const p = me.phys, h = p.heading;
+  const fx = Math.sin(h), fz = Math.cos(h), rx = -Math.cos(h), rz = Math.sin(h); // forward / screen-right
+  const range = Math.max(30, Math.abs(p.speed) * 1.0);
+  const lvl = { a:0, l:0, r:0, bl:0, b:0, br:0 }, hot = {};
+  let barL = 0, barR = 0;
+  for (const o of G.cars) {
+    if (o === me || o.retired || o.pitState || o.phys.inPit) continue;
+    const dx = o.phys.x - p.x, dz = o.phys.z - p.z, d = Math.hypot(dx, dz);
+    const id = o.driver.id, prev = S.prev[id]; S.prev[id] = d;
+    if (d > range) continue;
+    const along = dx * fx + dz * fz, side = dx * rx + dz * rz;
+    if (Math.abs(along) < 5.8 && Math.abs(side) < 4.8) {      // overlapping, wheel to wheel
+      if (side >= 0) barR = 1; else barL = 1;
+      continue;
+    }
+    const closing = prev != null ? (prev - d) / dtS : 0;
+    const k = 0.25 + 0.75 * (1 - d / range);
+    const ang = Math.atan2(side, along) * 180 / Math.PI;
+    const a = Math.abs(ang);
+    const s = a <= 25 ? 'a' : a <= 115 ? (ang > 0 ? 'r' : 'l') : a <= 170 ? (ang > 0 ? 'br' : 'bl') : 'b';
+    lvl[s] = Math.max(lvl[s], k);
+    if (d < 12 || closing > 4) hot[s] = 1;
+  }
+  for (const s in lvl) {
+    const el = S.arrows[s]; if (!el) continue;
+    el.style.opacity = lvl[s] ? lvl[s].toFixed(2) : '0';
+    el.classList.toggle('hot', !!hot[s]);
+  }
+  $('sp-bar-l').style.opacity = barL ? '1' : '0';
+  $('sp-bar-r').style.opacity = barR ? '1' : '0';
+}
+
 function updateBoxCall() {
   const el = $('box-call'); if (!el) return;
   const c = G.player;
@@ -2348,6 +2396,7 @@ function updateBoxCall() {
 function updateHUD() {
   updateBoxCall();
   updateCloseGaps();
+  updateSpotter();
   updateRivalry();
   // key help fades once you're under way — it sat over the speedo all race
   { const ch = $('controls-hint'); if (ch) ch.classList.toggle('faded', G.simTime > 12); }
@@ -3812,5 +3861,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 75';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 76';
 })();
