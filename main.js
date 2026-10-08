@@ -427,7 +427,7 @@ function syncAssistButtons() {
   syncAssistButtons();
 })();
 
-// BUILD 79: the whole difficulty scale moved up (the player was ~1s+/lap
+// BUILD 80: the whole difficulty scale moved up (the player was ~1s+/lap
 // faster than 'Alien 82%'). Added to the normalised difficulty for the AI's
 // GRIP (not its planning): ~1.1-2.3 s a lap faster at 82%. Clean to 2.5.
 const AI_PACE_SHIFT = 0.6;
@@ -696,6 +696,18 @@ function makeCar(driver, track) {
     car.ai = new AIDriver(phys, track, driver);
     // difficulty drives cornering pace, braking depth and top speed
     car.ai.diff = G.difficulty;
+    const perf = aiPerf(driver);
+    car.ai.paceMul = perf.paceMul;
+    car.ai.buildCornerSpeeds();
+    phys.gripBonus = perf.gripBonus;
+  }
+  return car;
+}
+
+// AI car performance for this track, weather and difficulty: the fraction of
+// its limit the driver plans to (paceMul) and the car's grip (gripBonus).
+// Shared by the race cars and the driven qualifying laps.
+function aiPerf(driver) {
     // Car performance: team ranking × this circuit's character × wet ability.
     const cp = carPace(driver, G.trackDef.id, (G.weather && G.weather.wetness) || 0);
     // Difficulty must NOT multiply pace on top of grip. gripBonus already
@@ -709,12 +721,11 @@ function makeCar(driver, track) {
     // clamp is lifted — at the 1.20 top end dt2 reaches ~1.85, the level the AI
     // was validated to run clean. Floored slightly below 0 for the easy end.
     const dt2 = Math.max(-0.25, Math.min(1.85, (G.difficulty - 0.98) / 0.12));
-    // the BUILD 79 shift goes into GRIP only: more car, same planning margin.
+    // the BUILD 80 shift goes into GRIP only: more car, same planning margin.
     // (Shifting the planner's pace fraction too ran the Alien field wide at
     // Austria and Britain — 12 track-limit penalties a race.)
     const dt2g = Math.max(-0.25, Math.min(2.5, dt2 + AI_PACE_SHIFT));
-    car.ai.paceMul = cp * (0.900 + 0.130 * dt2) * (0.990 + driver.skill * 0.010);
-    car.ai.buildCornerSpeeds();
+    const paceMul = cp * (0.900 + 0.130 * dt2) * (0.990 + driver.skill * 0.010);
     // Pace alone barely separates the field, because the quick cars end up
     // pegged at the grip limit either way. Feeding the same figure into grip
     // is what turns the constructors' table into a real lap-time spread.
@@ -732,9 +743,8 @@ function makeCar(driver, track) {
     // The whole ladder moved up a step: what used to be Elite is now Pro.
     // The grip curve is re-anchored to match, otherwise 1.06 and 1.10 would
     // both clamp to full grip and Pro/Elite would be identical.
-    phys.gripBonus = (0.98 + dt2g * 0.24) * (1 - (1 - cp / CAR_PACE_TOP) * 4);
-  }
-  return car;
+    const gripBonus = (0.98 + dt2g * 0.24) * (1 - (1 - cp / CAR_PACE_TOP) * 4);
+  return { cp, paceMul, gripBonus };
 }
 
 // ---------- weather ----------
@@ -1173,7 +1183,7 @@ function startSession() {
     G.cars.push(car);
     G.player = car;
     if (G.mode === 'qualify') {
-      G.qualiAITimes = simulateQualiTimes();
+      startQualiSim();
       G.qualiTime = QUALI_TIME;
       G.qualiFlag = false;
       G.qualiLapsDone = 0;
@@ -1221,6 +1231,68 @@ function spawnPracticeTraffic(wet) {
     if (car.ai) { car.ai.laneBlend = 1; car.ai.launchT = 0; car.ai.gridLane = null; }
     G.cars.push(car);
   });
+}
+
+// Qualifying times are DRIVEN, not estimated. The old point-mass estimate
+// ignored the weather (Madring pole 1:36 dry AND wet) and didn't match the
+// AI's real pace. Each AI car now does a real flying lap with the race physics
+// and AI, in the current conditions, a slice per frame while you drive your
+// own session. The estimate only fills in until a car's lap is done.
+function startQualiSim() {
+  const wet = G.weather ? G.weather.wetness : 0;
+  const tyre = compoundForCategory(idealCategory(wet), 'soft');
+  G.qualiAITimes = simulateQualiTimes();
+  G.qualiAITimes.forEach(q => { q.tyre = tyre; });
+  G.qualiSim = { i: 0, cur: null, done: false, tyre };
+}
+function stepQualiSim(budget) {
+  const S = G.qualiSim;
+  if (!S || S.done || !G.qualiAITimes) return;
+  const t = G.track, rows = G.qualiAITimes;
+  let n = 0;
+  while (n < budget) {
+    if (!S.cur) {
+      if (S.i >= rows.length) { S.done = true; return; }
+      const q = rows[S.i];
+      const c = new CarPhysics(t);
+      // flying lap: run up from 600 m before the line
+      const k0 = t.idxAtDist((t.length - 600) % t.length);
+      const p = t.posAt(k0, 0);
+      c.placeAt(p.x, p.z, Math.atan2(t.tx[k0], t.tz[k0]));
+      c.setTyre(S.tyre); c.tyreTemp = 0.72; c.speed = 45;
+      const perf = aiPerf(q.driver);
+      c.gripBonus = perf.gripBonus;
+      const ai = new AIDriver(c, t, q.driver);
+      ai.diff = G.difficulty; ai.paceMul = perf.paceMul; ai.buildCornerSpeeds();
+      S.cur = { q, c, ai, T: 0, t0: null };
+    }
+    const cur = S.cur;
+    cur.c.step(FIXED, cur.ai.compute(FIXED, [cur.c]));
+    cur.T += FIXED; n++;
+    if (cur.c.crossedLine) {
+      if (cur.t0 == null) cur.t0 = cur.T;
+      else {
+        // a little lap-to-lap variability, more for the less consistent drivers
+        cur.q.time = (cur.T - cur.t0) * (1 + Math.random() * (0.006 - cur.q.driver.skill * 0.004));
+        S.cur = null; S.i++;
+      }
+    }
+    if (cur.T > 400) { S.cur = null; S.i++; }   // never hang: keep the estimate
+  }
+}
+// Finish the AI laps now. fast: drive just enough cars (3) to calibrate, then
+// scale the rest of the estimates by the same driven/estimated ratio — so
+// skipping qualifying doesn't freeze the page for several seconds.
+function finishQualiSim(fast) {
+  const S = G.qualiSim;
+  if (!S || S.done) return;
+  if (!fast) { stepQualiSim(Infinity); return; }
+  const rows = G.qualiAITimes, est = rows.map(q => q.time);
+  while (!S.done && S.i < Math.min(rows.length, 3)) stepQualiSim(2000);
+  let ratio = 0, k = 0;
+  for (let i = 0; i < S.i; i++) { ratio += rows[i].time / est[i]; k++; }
+  if (k) { ratio /= k; for (let i = S.i; i < rows.length; i++) rows[i].time = est[i] * ratio; }
+  S.done = true; S.cur = null;
 }
 
 // simulate AI qualifying lap times via point-mass over corner speeds
@@ -1594,6 +1666,7 @@ function tyreTag(compound) {
 }
 
 function endQualify() {
+  finishQualiSim();
   const p = G.player;
   const rows = G.qualiAITimes.map(q => ({ id:q.driver.id, name:q.driver.name, team:q.driver.team, time:q.time, tyre:q.tyre, me:false }));
   rows.push({ id:'VER', name:'Max Verstappen', team:'redbull', time:p.bestLap || 9999,
@@ -1617,6 +1690,7 @@ function endQualify() {
 
 // skip qualifying: AI grid from simulated times, player slotted in at random
 function skipQualify() {
+  finishQualiSim(true);
   const rows = G.qualiAITimes.map(q => ({ id:q.driver.id, name:q.driver.name, team:q.driver.team, time:q.time, tyre:q.tyre, me:false }));
   rows.sort((a,b) => a.time - b.time);
   const slot = Math.floor(Math.random()*22); // random P1..P22
@@ -1643,6 +1717,7 @@ $('btn-skipq').addEventListener('click', () => {
 // they improve (weighted by driver skill).
 function endQualifyEarly() {
   if (G.mode !== 'qualify') return;
+  finishQualiSim(true);
   const fRemain = Math.max(0, Math.min(1, G.qualiTime / QUALI_TIME));
   G.qualiAITimes.forEach(q => {
     // top drivers extract more from extra track time; up to ~2% at a full session
@@ -3082,6 +3157,8 @@ function frame(now) {
     stepSim(FIXED);
     acc -= FIXED;
   }
+  // the AI's qualifying laps are driven in the background, a slice per frame
+  if (G.mode === 'qualify' && G.qualiSim && !G.qualiSim.done) stepQualiSim(240);
 
   // visuals
   const trk = G.track;
@@ -3919,5 +3996,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 79';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 80';
 })();
