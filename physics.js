@@ -336,7 +336,7 @@ class CarPhysics {
     // In the pit lane the car sits beyond the normal track barrier, so push the
     // clamp out to hold the lane (and don't let a street circuit's tight wall
     // shove the car back onto the track).
-    const wall = this.inPit ? Math.max(t.wallOff || (hw + 8.2), hw + 9)
+    const wall = this.inPit ? Math.max(t.wallOff || (hw + 8.2), hw + 13.6)   // working lane edge
                             : (t.wallOff || (hw + 8.2));
     // The pit wall is a real barrier. Along the walled stretch of the pit lane
     // a car that is NOT in the pits is held on the track side of it (it used

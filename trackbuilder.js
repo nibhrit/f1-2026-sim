@@ -953,19 +953,22 @@ function buildTrackScene(track, scene, themeName) {
 
   // --- barriers (striped) + catch fencing, following elevation ---
   const bTex = barrierTex(theme.night);
-  function wallStrip(off, y1, y2, mat, uvScale) {
+  function wallStrip(off, y1, y2, mat, uvScale, offFn) {
     const v = new Float32Array((N+1)*2*3);
     const uv2 = new Float32Array((N+1)*2*2);
     const ia=[];
+    const offs = [];
+    for (let i2=0;i2<=N;i2++) offs.push(offFn ? offFn(i2%N) : off);
     for (let i2=0;i2<=N;i2++){
       const k=i2%N;
-      const bx=track.px[k]+track.nx[k]*off, bz=track.pz[k]+track.nz[k]*off;
+      const o = offs[i2] == null ? off : offs[i2];
+      const bx=track.px[k]+track.nx[k]*o, bz=track.pz[k]+track.nz[k]*o;
       const by=track.py[k];
       v[i2*6+0]=bx; v[i2*6+1]=by+y1; v[i2*6+2]=bz;
       v[i2*6+3]=bx; v[i2*6+4]=by+y2; v[i2*6+5]=bz;
       uv2[i2*4+0]=i2*uvScale; uv2[i2*4+1]=0;
       uv2[i2*4+2]=i2*uvScale; uv2[i2*4+3]=1;
-      if(i2<N){const a=i2*2;ia.push(a,a+1,a+2, a+1,a+3,a+2);}
+      if(i2<N && offs[i2] != null && offs[i2+1] != null){const a=i2*2;ia.push(a,a+1,a+2, a+1,a+3,a+2);}
     }
     const gg=new THREE.BufferGeometry();
     gg.setAttribute('position', new THREE.BufferAttribute(v,3));
@@ -977,7 +980,10 @@ function buildTrackScene(track, scene, themeName) {
   // the barrier walls are the one piece of scenery whose shadow lands on the
   // racing line, so they're the only tagged casters
   const wallA = wallStrip(boff, 0, 1.1, barrierMat, 0.35);
-  const wallB = wallStrip(-boff, 0, 1.1, barrierMat, 0.35);
+  // pit side: the barrier steps out around the pit lane, and the garages
+  // themselves form the wall along the boxes
+  const pitBar = k => pitSideBarrierOff(track, k, boff);
+  const wallB = wallStrip(-boff, 0, 1.1, barrierMat, 0.35, pitBar);
   wallA.userData.caster = true; wallB.userData.caster = true;
   grp.add(wallA); grp.add(wallB);
   const fenceTex = canvasTex(64, 64, (ctx,w,h) => {
@@ -989,7 +995,7 @@ function buildTrackScene(track, scene, themeName) {
   });
   const fenceMat = new THREE.MeshBasicMaterial({ map: fenceTex, transparent: true, side: THREE.DoubleSide, depthWrite: false });
   grp.add(wallStrip(boff, 1.1, 3.4, fenceMat, 0.5));
-  grp.add(wallStrip(-boff, 1.1, 3.4, fenceMat, 0.5));
+  grp.add(wallStrip(-boff, 1.1, 3.4, fenceMat, 0.5, pitBar));
 
   // --- sky dome ---
   {
@@ -1024,6 +1030,7 @@ function buildTrackScene(track, scene, themeName) {
       if (Math.abs(track.curv[k]) > 0.004) continue;
       const side = (bi%2===0) ? 1 : -1;
       const off = side*(boff - 0.6);
+      if (inPitComplex(track, k, off)) { bi++; continue; }
       const p = track.posAt(k, off);
       const board = new THREE.Mesh(new THREE.BoxGeometry(13, 1.3, 0.25),
         new THREE.MeshBasicMaterial({ map: texts[bi % texts.length] }));
@@ -1047,7 +1054,7 @@ function buildTrackScene(track, scene, themeName) {
     spots.forEach(({k, side}) => {
       const off = side*(boff + 26);
       const p = track.posAt(k, off);
-      if (!clearOfTrack(p.x, p.z, boff+14)) return;
+      if (!clearOfTrack(p.x, p.z, boff+14) || inPitComplex(track, k, off)) return;
       const y0 = terrainY(p.x, p.z);
       const stand = new THREE.Group();
       const base = new THREE.Mesh(new THREE.BoxGeometry(58, 1.8, 11), frameM);
@@ -1066,91 +1073,8 @@ function buildTrackScene(track, scene, themeName) {
     });
   }
 
-  // --- pit building ---
-  {
-    const k = Math.floor(N*0.985);
-    const p = track.posAt(k, -(boff + 24));
-    if (clearOfTrack(p.x, p.z, boff+13)) {
-      const y0 = terrainY(p.x, p.z);
-      const pit = new THREE.Group();
-      // tall enough to shade the pit straight
-      const body = new THREE.Mesh(new THREE.BoxGeometry(110, 9, 16),
-        new THREE.MeshStandardMaterial({ color: theme.night ? 0x2c3348 : 0xc8ccd4, roughness: 0.62, metalness: 0.08 }));
-      body.position.y = 4.5; body.userData.caster = true; pit.add(body);
-      const sign = new THREE.Mesh(new THREE.BoxGeometry(30, 2.4, 0.3),
-        new THREE.MeshBasicMaterial({ map: boardTex('PIT LANE', '#111', '#ffd12e') }));
-      sign.position.set(0, 10.4, 8);
-      pit.add(sign);
-      pit.position.set(p.x, y0, p.z);
-      // pit building runs parallel to the start straight (was crossing the track!)
-      pit.rotation.y = Math.atan2(track.tx[k], track.tz[k]) - Math.PI/2;
-      grp.add(pit);
-    }
-  }
-
-  // --- pit lane (surface + wall + box) ---
-  {
-    const g = pitLaneGeom(track);
-    const i0 = track.idxAtDist(g.entryStart), i1 = track.idxAtDist(g.exitEnd);
-    const idxs = [];
-    for (let k = i0; ; k = (k+1)%N) { idxs.push(k); if (k === i1 || idxs.length > N) break; }
-
-    // paved lane surface, tapering at entry/exit
-    // was 0x33353d (~3% reflectance, read black like the old road); pit lanes
-    // are paved a touch lighter than the circuit
-    const laneMat = new THREE.MeshStandardMaterial({ color: 0x6c6e75, roughness: 0.92, metalness: 0.0, side: THREE.DoubleSide });
-    const v=[], uv=[], ia=[];
-    idxs.forEach((k, s) => {
-      const off = pitLaneOffset(track, track.dist[k]);
-      const mag = off == null ? g.edgeOff : -off;
-      const inner = -(mag - g.laneHalf), outer = -(mag + g.laneHalf);
-      const a = track.posAt(k, inner), b = track.posAt(k, outer);
-      v.push(a.x, H(k,inner)+0.045, a.z, b.x, H(k,outer)+0.045, b.z);
-      uv.push(0, s*0.1, 1, s*0.1);
-      if (s < idxs.length-1) { const q=s*2; ia.push(q,q+1,q+2, q+1,q+3,q+2); }
-    });
-    const gg = new THREE.BufferGeometry();
-    gg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(v),3));
-    gg.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uv),2));
-    gg.setIndex(ia); gg.computeVertexNormals();
-    const lane = new THREE.Mesh(gg, laneMat); lane.userData.ground = true; grp.add(lane);
-
-    // white line along the lane's outer edge, and the pit wall on the inner
-    const lineMat = new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.6, side: THREE.DoubleSide });
-    const wallMat = new THREE.MeshStandardMaterial({ color: theme.night ? 0x33384a : 0xb8bcc6, roughness: 0.6, metalness: 0.15 });
-    const lv=[], lia=[], wv=[], wia=[];
-    let li=0, wi=0;
-    idxs.forEach((k, s) => {
-      const d = track.dist[k];
-      // pit wall only along the straight part of the lane
-      const sd = pitS(track, d);
-      if (sd >= g.sEntryEnd - 8 && sd <= g.sExitStart + 8) {
-        const p = track.posAt(k, -g.wallOff);
-        const y0 = track.heightAt(k, -g.wallOff);
-        wv.push(p.x, y0, p.z, p.x, y0+0.85, p.z);
-        if (wi>0){const a=(wi-1)*2; wia.push(a,a+1,a+2, a+1,a+3,a+2);} wi++;
-      }
-    });
-    if (wia.length) {
-      const wg = new THREE.BufferGeometry();
-      wg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(wv),3));
-      wg.setIndex(wia); wg.computeVertexNormals();
-      const wall = new THREE.Mesh(wg, wallMat); wall.userData.caster = true; grp.add(wall);
-    }
-
-    // the pit box — a bright bay marking where the car stops
-    {
-      const k = track.idxAtDist(g.boxDist);
-      const boxMat = new THREE.MeshStandardMaterial({ color: 0xffd12e, roughness: 0.5, side: THREE.DoubleSide });
-      const bx = new THREE.Mesh(new THREE.PlaneGeometry(g.laneHalf*1.6, 5.5), boxMat);
-      const bp = track.posAt(k, -g.laneOff);
-      bx.position.set(bp.x, track.heightAt(k, -g.laneOff)+0.05, bp.z);
-      bx.rotation.order = 'YXZ';
-      bx.rotation.y = Math.atan2(track.tx[k], track.tz[k]);
-      bx.rotation.x = -Math.PI/2;
-      grp.add(bx);
-    }
-  }
+  // --- pit complex: lanes, wall, lines, team boxes and garages (pitlane.js) ---
+  buildPitComplex(track, grp, theme, terrainY);
 
   // --- city buildings for street circuits ---
   if (theme.buildings) {
@@ -1163,6 +1087,7 @@ function buildTrackScene(track, scene, themeName) {
       const w = 16 + rand()*22, dpt = 14 + rand()*16;
       const off = side*(boff + 10 + w/2 + rand()*8); // w is the cross-track dimension
       const x = track.px[k]+track.nx[k]*off, z = track.pz[k]+track.nz[k]*off;
+      if (inPitComplex(track, k, off - Math.sign(off)*w/2)) continue;
       const rad = Math.hypot(w, dpt)/2 + hw + 3;
       if (!clearOfTrack(x, z, rad)) continue;
       const h = heights[0] + rand()*(heights[1]-heights[0]);
@@ -1209,7 +1134,7 @@ function buildTrackScene(track, scene, themeName) {
       const side = rand()>0.5?1:-1;
       const off = side*(boff + 10 + rand()*140);
       const x = track.px[k]+track.nx[k]*off, z = track.pz[k]+track.nz[k]*off;
-      if (!clearOfTrack(x, z, boff+5)) continue;
+      if (!clearOfTrack(x, z, boff+5) || inPitComplex(track, k, off)) continue;
       positions.push([x, z, 0.7+rand()*0.7, terrainY(x,z)]);
     }
     const m4 = new THREE.Matrix4();
@@ -1375,8 +1300,31 @@ function pitLaneGeom(track) {
     total, sEntryEnd: entryLen, sBox, sExitStart, sExitEnd: total,
     // absolute lap distances, for drawing and markers
     entryStart, entryEnd: at(entryLen), boxDist: at(sBox), exitStart: at(sExitStart), exitEnd: at(total),
+    // working lane (where the boxes are) between the fast lane and the garages
+    workOff:  hw + 10.8, workHalf: 2.7, garageOff: hw + 14.2,
   };
+  // one box per team along the straight part of the lane, in front of its
+  // garage (order ~ last year's constructors' standings, leader nearest the exit)
+  const G_ = track._pitG, straight = sExitStart - entryLen, nT = PIT_TEAM_ORDER.length;
+  G_.boxSpacing = Math.min(14, (straight - 16) / nT);
+  const s0 = entryLen + (straight - G_.boxSpacing * nT) / 2;
+  G_.boxS = {};
+  PIT_TEAM_ORDER.forEach((tm, i) => { G_.boxS[tm] = s0 + (nT - 1 - i + 0.5) * G_.boxSpacing; });
+  G_.garageS0 = s0; G_.garageS1 = s0 + G_.boxSpacing * nT;
   return track._pitG;
+}
+
+const PIT_TEAM_ORDER = ['mclaren','mercedes','redbull','ferrari','williams','racingbulls','aston','haas','audi','alpine','cadillac'];
+
+// Lateral target for a car using the pit lane with its own box at corridor
+// position boxS: the fast lane, swinging into the working lane for the box and
+// back out after it. boxS == null (drive-through) = fast lane only.
+function pitCarOffset(track, lapDist, boxS) {
+  const base = pitLaneOffset(track, lapDist);
+  if (base == null || boxS == null) return base;
+  const g = pitLaneGeom(track), s = pitS(track, lapDist);
+  const w = s <= boxS ? _ss(boxS - 26, boxS - 5, s) : 1 - _ss(boxS + 3, boxS + 24, s);
+  return base + (-g.workOff - base) * w;
 }
 
 // distance along the pit corridor from its entry (wraps across the line).

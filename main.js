@@ -3188,7 +3188,9 @@ function pitInput(c, dt) {
   // pit-side edge, and aim at a point a little further along the same corridor.
   const lookM = Math.max(6, p.speed * 0.45);
   const aheadDist = (p.lapDist + lookM) % t.length;
-  let aheadTgt = pitLaneOffset(t, aheadDist);
+  // each team stops at its own box in the working lane
+  const boxS = (g.boxS && g.boxS[c.driver.team] != null) ? g.boxS[c.driver.team] : g.sBox;
+  let aheadTgt = pitCarOffset(t, aheadDist, c.driveThrough ? null : boxS);
   if (aheadTgt == null) aheadTgt = -g.edgeOff;
   const kAhead = (p.trackIdx + Math.ceil(lookM / (t.length / t.n))) % t.n;
   const target = t.posAt(kAhead, aheadTgt);
@@ -3218,13 +3220,19 @@ function pitInput(c, dt) {
   let vTarget = 22; // pit speed limit (auto-enforced)
   if (c.pitState === 'entering') {
     const sNow = pitS(t, p.lapDist);
-    const dBox = Math.max(0, g.sBox - sNow);      // distance to the pit box
+    // double-stack: if the team-mate is still in the box, queue just behind it
+    const mate = (G.cars || []).find(o => o !== c && o.driver.team === c.driver.team && o.pitState === 'stopped');
+    const stopAt = mate ? boxS - 7.5 : boxS;
+    const dBox = Math.max(0, stopAt - sNow);      // distance to the stop point
     vTarget = Math.min(22, Math.sqrt(2 * 7 * dBox));
     // a drive-through never stops: stay at pit speed and rejoin
     if (c.driveThrough) {
       vTarget = 22;
       if (sNow > g.sExitStart && sNow <= g.total) c.pitState = 'exiting';
-    } else if (sNow >= g.sBox - 1.5 && sNow <= g.total && p.speed < 3) {
+    } else if (mate && sNow >= stopAt - 1.5 && sNow <= g.total) {
+      p.speed = Math.max(0, p.speed - 9 * dt);  // waiting for the team-mate
+      if (p.speed < 1) { p.speed = 0; return { throttle: 0, brake: 0, steer: 0 }; }
+    } else if (sNow >= boxS - 1.5 && sNow <= g.total && p.speed < 3) {
       c.pitState = 'stopped';
       c.pitStopStart = G.simTime;
       if (c.driver.player) {
@@ -3861,5 +3869,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 76';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 77';
 })();

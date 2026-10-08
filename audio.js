@@ -201,14 +201,20 @@ const AUDIO = (() => {
     v.osc2.frequency.setTargetAtTime(f0, t, 0.012);
     v.fire.frequency.setTargetAtTime(f0 * 6, t, 0.012);
 
-    // load: on throttle = hard and bright; overrun = darker
-    const load = Math.max(thr, blipT > 0 ? 0.6 : 0);
-    v.drive.gain.setTargetAtTime(0.7 + load * 1.4, t, 0.03);
-    v.lp.frequency.setTargetAtTime(1500 + load * 2600 + rn * rn * 5200, t, 0.04);
-    v.fireDepth.gain.setTargetAtTime(0.05 + load * 0.18, t, 0.04);
+    // Load. Off the throttle a real F1 engine does NOT go quiet: revs stay
+    // high through the downshifts, the overrun burbles, and a 2026 car keeps
+    // the engine loaded under braking to charge the battery. So lifting only
+    // darkens the tone a little; volume is carried mostly by the revs.
+    const harvest = brk > 0.1 ? 0.5 : 0;
+    const load = Math.max(thr, harvest, 0.3, blipT > 0 ? 0.65 : 0);
+    v.drive.gain.setTargetAtTime(0.8 + load * 1.3, t, 0.05);
+    v.lp.frequency.setTargetAtTime(2200 + load * 2200 + rn * rn * 5000, t, 0.06);
+    v.fireDepth.gain.setTargetAtTime(0.06 + load * 0.16, t, 0.05);
     const cut = cutT > 0 ? 0.12 : 1;
-    const lvl = (0.09 + load * 0.11 + rn * 0.10) * cut * bounce;
-    v.gain.gain.setTargetAtTime(lvl, t, cutT > 0 ? 0.004 : 0.025);
+    const lvl = (0.13 + rn * 0.13 + thr * 0.06) * cut * bounce;
+    const prevLvl = v._lvl || 0; v._lvl = lvl;
+    // fast up, gentle down (except the 30ms upshift cut, which is sharp)
+    v.gain.gain.setTargetAtTime(lvl, t, cutT > 0 ? 0.004 : (lvl < prevLvl ? 0.12 : 0.025));
     if (v.pan) v.pan.pan.value = 0;
 
     // turbo: spools with load (lag), whistle 2.4-6 kHz
@@ -226,7 +232,7 @@ const AUDIO = (() => {
     kGain.gain.setTargetAtTime(spd > 5 ? (0.004 + brk * 0.016 + thr * 0.004) : 0, t, 0.08);
 
     // overrun crackle at high revs off throttle
-    if (thr < 0.1 && rn > 0.45 && Math.random() < dt * 9) {
+    if (thr < 0.1 && rn > 0.35 && Math.random() < dt * (brk > 0.1 ? 14 : 9)) {
       burst(t, 0.03 + Math.random() * 0.05, 'lowpass', 1500, 0.7, 0.03 + Math.random() * 0.05, 0.6 + Math.random() * 0.8);
     }
 
