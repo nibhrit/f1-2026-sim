@@ -24,7 +24,7 @@ let WET_BONUS_FADE = 0.6;
 // circle 0.6: the AI's planner brakes into turn-in a little; at full circle
 // strength it ran wide (Japan/Monaco/Qatar off-track, +2-8 s/lap). 0.6 costs
 // it ~0.1-0.3 s and keeps every difficulty clean.
-const AI_ASSISTS = { abs: true, tc: 'full', steer: true, absEff: 1, circle: 0.6 };
+const AI_ASSISTS = { abs: true, steer: true, absEff: 1, circle: 0.6 };
 const BRAKE_SYS = 60;        // m/s^2 the brake system asks for at 100% pedal
 const LOCK_AT = 1.6;         // pedal demand / tyre grip ratio that locks a wheel
 const UNLOCK_AT = 1.25;      // ...and the ratio you must ease back under to free it
@@ -119,7 +119,7 @@ class CarPhysics {
 
   placeAt(x, z, angle) {
     this.x = x; this.z = z; this.heading = angle;
-    this.speed = 0; this.vLatDrift = 0; this.slip = 0; this.spinning = false; this.locked = false;
+    this.speed = 0; this.vLatDrift = 0; this.locked = false;
     const t = this.track;
     this.trackIdx = t.nearest(x, z, null);
     // if the pick looks like a parallel section (implausible lateral), rescan strictly
@@ -140,7 +140,7 @@ class CarPhysics {
     this.x = t.px[i]; this.z = t.pz[i];
     this.heading = Math.atan2(t.tx[i], t.tz[i]);
     this.speed = Math.min(this.speed, 15);
-    this.vLatDrift = 0; this.slip = 0; this.spinning = false; this.locked = false;
+    this.vLatDrift = 0; this.locked = false;
   }
 
   // inputs: {throttle:0..1, brake:0..1, steer:-1..1}
@@ -240,9 +240,8 @@ class CarPhysics {
 
     // --- longitudinal ---
     const REVERSE_MAX = 8; // m/s reverse cap (~29 km/h)
-    let accel = 0, slipRate = 0;
+    let accel = 0;
     this.tcActive = false;
-    const yawSign = Math.sign(this._lastYaw || 0);
     if (this.throttle > 0) {
       if (this.speed < -0.2) {
         // throttle brakes the car out of reverse
@@ -261,20 +260,10 @@ class CarPhysics {
           const demand = tractionCap * this.throttle;
           const over = demand / Math.max(0.1, avail) - 1;      // >0 = asking for more than the tyres have
           if (over > 0) {
-            // Traction control: FULL cuts power cleanly (no slides), MEDIUM lets
-            // a little slip through, OFF is all yours — a touch more drive when
-            // you feed the throttle in, wheelspin and a snappy rear when you don't.
-            if (A.tc === 'full') { engine = avail * 0.97; this.tcActive = over > 0.05; }
-            else if (A.tc === 'medium') {
-              engine = avail * (over > 0.2 ? 0.90 : 1.0);
-              this.tcActive = over > 0.2;
-              if (over > 0.30 && uLat > 0.5) slipRate += yawSign * (over - 0.30) * 1.6;
-            } else {
-              engine = avail * (over > 0.1 ? 0.80 : 1.02);
-              if (over > 0.1) this.wheelSpin = Math.min(1, this.wheelSpin + dt * 4);
-              if (over > 0.08 && uLat > 0.4) slipRate += yawSign * (over - 0.08) * 2.6;
-            }
-          } else engine = demand * (A.tc === 'off' ? 1.02 : 1);
+            // traction control (always on): cuts power cleanly instead of
+            // letting the rear spin — no slides on a keyboard
+            engine = avail * 0.97; this.tcActive = over > 0.05;
+          } else engine = demand;
         } else {
           engine = Math.min(power, tractionCap) * this.throttle;
         }
@@ -310,7 +299,7 @@ class CarPhysics {
     } else this.locked = false;
     // locking up flat-spots the tyre (vibration, wear, a little grip)
     if (this.locked) {
-      this.flatSpot = Math.min(1, (this.flatSpot || 0) + dt * 0.45 * Math.min(1, v / 40));
+      this.flatSpot = Math.min(1, (this.flatSpot || 0) + dt * 0.3 * Math.min(1, v / 40));
       this.tyreWearKm += Math.abs(v) * dt / 1000 * 3;
     }
     // Drag + rolling resistance always oppose the direction of travel.
@@ -366,11 +355,6 @@ class CarPhysics {
           this.wheelSpin = Math.max(0, this.wheelSpin - dt*4);
           this.understeer = 0;
         }
-        // lift-off / trail-brake oversteer: snatch the throttle off, or brake
-        // hard while loaded up in a fast corner, and the rear goes light
-        this._thrAvg = (this._thrAvg == null ? this.throttle : this._thrAvg + (this.throttle - this._thrAvg) * Math.min(1, dt * 5));
-        if (uLat > 0.8 && v > 25 && this.throttle < 0.15 && this._thrAvg > 0.6) slipRate += yawSign * 0.9;
-        if (uLat > 0.6 && uLong > 0.5) slipRate += yawSign * (uLat * uLong - 0.3) * 1.4;
       }
       if (this.locked) this.wheelSpin = Math.min(1, this.wheelSpin + dt * 6);
     } else if (this.speed < -0.2) {
@@ -389,28 +373,6 @@ class CarPhysics {
     // fraction of the BASE lateral grip in use — feeds next step's circle
     this._latUse = latMax > 0 ? Math.abs(yawRate) * Math.max(0, this.speed) / latMax : 0;
 
-    // ---- rear slides (slip = heading minus direction of travel) ----
-    // The rear stepping out rotates the car faster than its path. It gathers
-    // itself back up on its own; counter-steer (or the steering assist) gets
-    // it back quicker. Too far round and it's a spin.
-    if (this.spinning) {
-      this.heading += Math.sign(this.slip || 1) * 2.6 * dt;
-      this.slip += Math.sign(this.slip || 1) * 2.6 * dt;
-      this.speed = Math.max(0, this.speed - 13 * dt);
-      if (this.speed < 5) { this.spinning = false; this.slip = 0; }   // it stops where it points
-    } else {
-      if (slipRate) { this.heading += slipRate * dt; this.slip = (this.slip || 0) + slipRate * dt; }
-      if (this.slip) {
-        const counter = this.steer * this.slip < 0 ? Math.abs(this.steer) : 0;
-        const rec = (2.4 + 5 * counter + (A.steer ? 2 : 0)) * dt;
-        const back = this.slip * Math.min(1, rec);
-        this.heading -= back; this.slip -= back;
-        this.speed = Math.max(0, this.speed - Math.min(8, Math.abs(this.slip) * 12) * dt);
-        if (Math.abs(this.slip) < 1e-4) this.slip = 0;
-        if (Math.abs(this.slip) > 0.7 && this.speed > 8) this.spinning = true;
-      }
-    }
-
     // aquaplaning: standing water at high speed → occasional twitch / grip loss
     // in a puddle the car floats a little toward the water's pull (the same
     // side for the same puddle, so it's learnable) and the water drags it back
@@ -421,9 +383,7 @@ class CarPhysics {
     }
 
     // --- integrate position ---
-    // the car travels along its path (heading minus any rear slide)
-    const pathH = this.heading - (this.slip || 0);
-    const sx = Math.sin(pathH), cz = Math.cos(pathH);
+    const sx = Math.sin(this.heading), cz = Math.cos(this.heading);
     this.x += sx * this.speed * dt + Math.cos(this.heading) * this.vLatDrift * dt;
     this.z += cz * this.speed * dt - Math.sin(this.heading) * this.vLatDrift * dt;
     this.vLatDrift *= Math.max(0, 1 - 6*dt);

@@ -335,12 +335,9 @@ window.addEventListener('pointerdown', () => { AUDIO.init(); AUDIO.musicStart();
 window.addEventListener('keydown', () => { AUDIO.musicStart(); }, { once: true });
 
 function playerInput() {
-  // SHIFT held = half pedal (feather the throttle, ease off the brake) — the
-  // keyboard's stand-in for pedal pressure when ABS / TC are off
-  const half = (keys['ShiftLeft'] || keys['ShiftRight']) ? 0.5 : 1;
   return {
-    throttle: (keys['KeyW']||keys['ArrowUp']) ? half : 0,
-    brake: (keys['KeyS']||keys['ArrowDown']||keys['Space']) ? half : 0,
+    throttle: (keys['KeyW']||keys['ArrowUp']) ? 1 : 0,
+    brake: (keys['KeyS']||keys['ArrowDown']||keys['Space']) ? 1 : 0,
     steer: ((keys['KeyA']||keys['ArrowLeft']) ? 1 : 0) + ((keys['KeyD']||keys['ArrowRight']) ? -1 : 0),
   };
 }
@@ -402,10 +399,11 @@ document.querySelectorAll('#screen-main .btn[data-mode]').forEach(b => {
   });
 });
 // ---------- driving aids (player only; AI always runs AI_ASSISTS) ----------
-// ABS on: no lockups, ~3% longer stops. TC full/medium/off. Steering assist on:
+// ABS on: no lockups, ~6% longer stops (ABS off + quick release on LOCK ≈ 3% shorter than that). Traction control is always on (no
+// slides on a keyboard). Steering assist on:
 // the steer key asks for a share of the grip that's left, so you can't over-
 // drive the fronts (braking still eats into it). Saved between sessions.
-const G_ASSIST_DEFAULT = { abs: true, tc: 'medium', steer: true };
+const G_ASSIST_DEFAULT = { abs: true, steer: true };
 function loadAssists() {
   try { return Object.assign({}, G_ASSIST_DEFAULT, JSON.parse(localStorage.getItem('f1sim_assists') || '{}')); }
   catch (e) { return Object.assign({}, G_ASSIST_DEFAULT); }
@@ -413,25 +411,23 @@ function loadAssists() {
 function saveAssists() { try { localStorage.setItem('f1sim_assists', JSON.stringify(G.assists)); } catch (e) {} }
 function playerAssists() {
   const a = G.assists || G_ASSIST_DEFAULT;
-  return { abs: !!a.abs, tc: a.tc, steer: !!a.steer, absEff: 0.97, circle: 1 };
+  return { abs: !!a.abs, steer: !!a.steer, absEff: 0.94, circle: 1 };
 }
 function syncAssistButtons() {
   const a = G.assists;
   const set = (id, txt, on) => { const b = $(id); if (b) { b.textContent = txt; b.classList.toggle('selected', on); } };
   set('as-abs', 'ABS ' + (a.abs ? 'ON' : 'OFF'), a.abs);
-  set('as-tc', 'TC ' + ({ full: 'FULL', medium: 'MED', off: 'OFF' })[a.tc], a.tc !== 'off');
   set('as-steer', 'STEER ' + (a.steer ? 'ON' : 'OFF'), a.steer);
 }
 (function initAssists() {
   G.assists = loadAssists();
   const click = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener('click', () => { fn(); saveAssists(); syncAssistButtons(); }); };
   click('as-abs', () => { G.assists.abs = !G.assists.abs; });
-  click('as-tc', () => { G.assists.tc = ({ full: 'medium', medium: 'off', off: 'full' })[G.assists.tc] || 'medium'; });
   click('as-steer', () => { G.assists.steer = !G.assists.steer; });
   syncAssistButtons();
 })();
 
-// BUILD 78: the whole difficulty scale moved up (the player was ~1s+/lap
+// BUILD 79: the whole difficulty scale moved up (the player was ~1s+/lap
 // faster than 'Alien 82%'). Added to the normalised difficulty for the AI's
 // GRIP (not its planning): ~1.1-2.3 s a lap faster at 82%. Clean to 2.5.
 const AI_PACE_SHIFT = 0.6;
@@ -713,7 +709,7 @@ function makeCar(driver, track) {
     // clamp is lifted — at the 1.20 top end dt2 reaches ~1.85, the level the AI
     // was validated to run clean. Floored slightly below 0 for the easy end.
     const dt2 = Math.max(-0.25, Math.min(1.85, (G.difficulty - 0.98) / 0.12));
-    // the BUILD 78 shift goes into GRIP only: more car, same planning margin.
+    // the BUILD 79 shift goes into GRIP only: more car, same planning margin.
     // (Shifting the planner's pace fraction too ran the Alien field wide at
     // Austria and Britain — 12 track-limit penalties a race.)
     const dt2g = Math.max(-0.25, Math.min(2.5, dt2 + AI_PACE_SHIFT));
@@ -2466,14 +2462,13 @@ function updateHUD() {
     te.textContent = tempC + '°';
     te.style.color = T < 0.45 ? '#6fb0ff' : T < 0.92 ? '#2ecc71' : '#ff5c5c';
     // DRS badge + detection readout
-    // aids / grip lights: ABS working, TC cutting, a locked wheel, the rear going
+    // aids / grip lights: ABS working, TC cutting, a locked wheel
     {
       const ph = p.phys, now = G.simTime;
       const lit = (id, on, cls) => { const e = $(id); if (e) e.className = on ? cls : ''; };
       lit('aid-abs', ph.absActive, 'on');
       lit('aid-tc', ph.tcActive, 'on');
       lit('aid-lock', ph.locked, 'bad');
-      lit('aid-slide', ph.spinning || Math.abs(ph.slip || 0) > 0.12, 'bad');
       const fs = $('aid-flat');
       if (fs) { const f = ph.flatSpot || 0; fs.style.display = f > 0.1 ? '' : 'none'; fs.textContent = 'FLAT SPOT ' + Math.round(f * 100) + '%'; }
     }
@@ -3924,5 +3919,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 78';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 79';
 })();
