@@ -19,6 +19,16 @@ function effGripBonus(b) {
 }
 let WET_BONUS_FADE = 0.6;
 
+// Driving aids. AI cars always run these (their controller drives inside the
+// limit anyway); the player's come from the assists menu.
+// circle 0.6: the AI's planner brakes into turn-in a little; at full circle
+// strength it ran wide (Japan/Monaco/Qatar off-track, +2-8 s/lap). 0.6 costs
+// it ~0.1-0.3 s and keeps every difficulty clean.
+const AI_ASSISTS = { abs: true, tc: 'full', steer: true, absEff: 1, circle: 0.6 };
+const BRAKE_SYS = 60;        // m/s^2 the brake system asks for at 100% pedal
+const LOCK_AT = 1.6;         // pedal demand / tyre grip ratio that locks a wheel
+const UNLOCK_AT = 1.25;      // ...and the ratio you must ease back under to free it
+
 // Standing water. Fixed places on the lap (seeded by track length) so a
 // puddle is always in the same spot and can be learned, mainly on straights
 // where water pools, strength 0..1. Replaces the old per-frame random kicks
@@ -98,7 +108,7 @@ class CarPhysics {
     this.gripBonus = 1;       // AI car performance handicap (difficulty)
   }
 
-  setTyre(name) { this.compound = name; this.tyreWearKm = 0; this.tyreTemp = 0.35; }
+  setTyre(name) { this.compound = name; this.tyreWearKm = 0; this.tyreTemp = 0.35; this.flatSpot = 0; }
 
   // 0..1 remaining tyre performance (drives the HUD wear bar)
   get tyreLife() {
@@ -109,7 +119,7 @@ class CarPhysics {
 
   placeAt(x, z, angle) {
     this.x = x; this.z = z; this.heading = angle;
-    this.speed = 0; this.vLatDrift = 0;
+    this.speed = 0; this.vLatDrift = 0; this.slip = 0; this.spinning = false; this.locked = false;
     const t = this.track;
     this.trackIdx = t.nearest(x, z, null);
     // if the pick looks like a parallel section (implausible lateral), rescan strictly
@@ -130,7 +140,7 @@ class CarPhysics {
     this.x = t.px[i]; this.z = t.pz[i];
     this.heading = Math.atan2(t.tx[i], t.tz[i]);
     this.speed = Math.min(this.speed, 15);
-    this.vLatDrift = 0;
+    this.vLatDrift = 0; this.slip = 0; this.spinning = false; this.locked = false;
   }
 
   // inputs: {throttle:0..1, brake:0..1, steer:-1..1}
@@ -200,10 +210,39 @@ class CarPhysics {
     const wg = wetGrip(this.compound, TRACK_WETNESS);
     this.wetGripMul = wg;
     const longMul = 0.35 + 0.65 * wg; // braking/traction suffer more in the wet
+    const A = this.assists || AI_ASSISTS;
+
+    // ---- the grip budget ----
+    // Lateral limit = mechanical grip + downforce (F ∝ v²), capped ~5.4g.
+    //   54 km/h 2.0g · 90 km/h 2.5g · 144 km/h 3.5g · 216+ km/h 5.4g
+    // Damage bites the aero term hardest (crippling in fast corners, barely felt
+    // in slow ones); a flat-spotted tyre costs a little everywhere.
+    const aeroLoss = 1 - Math.min(0.55, this.dmgWing * 0.30 + this.dmgFloor * 0.28);
+    const punctLoss = 1 - this.puncture * 0.45;
+    let aq = 0;
+    if (TRACK_WETNESS > 0.6 && v > 65) {
+      aq = ((TRACK_WETNESS - 0.6) / 0.4) * Math.min(1, (v - 65) / 25) * puddleAt(t, this.lapDist, this.trackIdx);
+    }
+    this.aquaplane = aq;
+    this.aquaplaning = aq > 0.2;
+    const latMax = (1 - 0.30 * aq) * Math.min(53 * aeroLoss, 17.6 + 0.0104 * v * v * aeroLoss) * punctLoss
+      * gripMul * this.tyreMul * this.tempMul * wg * effGripBonus(this.gripBonus) * (1 - 0.04 * (this.flatSpot || 0));
+    // Braking and cornering share ONE budget (friction circle). How much of the
+    // lateral grip the tyres used last step limits what is left for braking and
+    // traction this step, and vice versa. Floors keep it sim-cade: you can still
+    // trail a little brake into a corner, but full brake + full lock = run wide.
+    // how hard the circle bites. The AI's is softened, and fades further in the
+    // wet, where its planner's braking points have the least margin
+    const circ = A.circle != null ? A.circle * (A === AI_ASSISTS ? Math.max(0, 1 - 1.15 * TRACK_WETNESS) : 1) : 1;
+    const uLat = Math.min(1, this._latUse || 0) * circ;
+    const circleBrake = Math.sqrt(Math.max(0.2, 1 - uLat * uLat));
+    const circleDrive = Math.sqrt(Math.max(0.3, 1 - uLat * uLat));
 
     // --- longitudinal ---
     const REVERSE_MAX = 8; // m/s reverse cap (~29 km/h)
-    let accel = 0;
+    let accel = 0, slipRate = 0;
+    this.tcActive = false;
+    const yawSign = Math.sign(this._lastYaw || 0);
     if (this.throttle > 0) {
       if (this.speed < -0.2) {
         // throttle brakes the car out of reverse
@@ -212,39 +251,71 @@ class CarPhysics {
         // wet cuts mechanical traction (wheelspin off slow corners) but NOT the
         // aero-drag-limited top end — straights stay fast in the rain, like real F1
         const wetTraction = 0.55 + 0.45 * wg;
-        // Traction-limited at low speed (it cannot just dump 1.4g from rest —
-        // that is what makes a launch feel like it is fighting for grip), then
-        // power-limited. Raising the power term keeps it pulling at the top end
-        // instead of dying against drag, which is the "powerful machinery"
-        // sensation: slower initially, relentless afterwards.
-        const tractionCap = 8.6 + 0.22 * Math.min(v, 25);   // 0.88g at rest -> 1.43g by 90 km/h
-        let engine = Math.min(tractionCap * wetTraction, 470 / Math.max(v, 10)) * this.throttle;
+        // Traction-limited at low speed, then power-limited up top.
+        const tractionCap = (8.6 + 0.22 * Math.min(v, 25)) * wetTraction;   // 0.88g at rest -> 1.43g by 90 km/h
+        const power = 470 / Math.max(v, 10);
+        let engine;
+        if (tractionCap < power) {
+          // traction-limited: the rear tyres share their grip with cornering
+          const avail = tractionCap * circleDrive;
+          const demand = tractionCap * this.throttle;
+          const over = demand / Math.max(0.1, avail) - 1;      // >0 = asking for more than the tyres have
+          if (over > 0) {
+            // Traction control: FULL cuts power cleanly (no slides), MEDIUM lets
+            // a little slip through, OFF is all yours — a touch more drive when
+            // you feed the throttle in, wheelspin and a snappy rear when you don't.
+            if (A.tc === 'full') { engine = avail * 0.97; this.tcActive = over > 0.05; }
+            else if (A.tc === 'medium') {
+              engine = avail * (over > 0.2 ? 0.90 : 1.0);
+              this.tcActive = over > 0.2;
+              if (over > 0.30 && uLat > 0.5) slipRate += yawSign * (over - 0.30) * 1.6;
+            } else {
+              engine = avail * (over > 0.1 ? 0.80 : 1.02);
+              if (over > 0.1) this.wheelSpin = Math.min(1, this.wheelSpin + dt * 4);
+              if (over > 0.08 && uLat > 0.4) slipRate += yawSign * (over - 0.08) * 2.6;
+            }
+          } else engine = demand * (A.tc === 'off' ? 1.02 : 1);
+        } else {
+          engine = Math.min(power, tractionCap) * this.throttle;
+        }
         // traction limit: only heavy steering at very low speed costs drive
         if (v < 16 && Math.abs(this.steer) > 0.5) engine *= 0.85;
         accel += engine * (onGrass ? 0.40 : 1) * (1 - this.puncture * 0.35);
       }
     }
+    // Brakes. Downforce-limited grip: savage at speed, much weaker once slow.
+    //   72 km/h 2.3g · 144 km/h 3.6g · 216 km/h 5.7g · 288 km/h 5.9g
+    // The pedal asks for a brake force; the tyres can only deliver what the
+    // circle leaves them. Without ABS, asking for far more than that locks the
+    // fronts — which is what happens if you stay on full brake as the car slows
+    // and the downforce bleeds away, or brake hard while still turning.
+    const brakeGrip = Math.min(58, 18 + 0.0105 * v * v) * gripMul * longMul;
+    let decel = 0;
     if (this.brake > 0) {
       if (this.speed > 0.5) {
-        // Braking is downforce-limited, so it is savage at speed and much
-        // weaker once slow — the old near-flat 30+0.12v gave 3.3g at 70 km/h
-        // and only 4.0g at 290, which is why every braking zone felt the same.
-        //   72 km/h 2.3g · 144 km/h 3.6g · 216 km/h 5.7g · 288 km/h 5.9g
-        accel -= Math.min(58, 18 + 0.0105 * v * v) * this.brake * gripMul * longMul;
+        const avail = brakeGrip * circleBrake;
+        const demand = this.brake * BRAKE_SYS;
+        this.absActive = false;
+        if (A.abs) { decel = Math.min(demand, avail * (A.absEff || 1)); this.locked = false; this.absActive = demand > avail * LOCK_AT; }
+        else {
+          if (!this.locked && demand > avail * LOCK_AT && v > 7) this.locked = true;
+          else if (this.locked && (demand < avail * UNLOCK_AT || v < 4)) this.locked = false;
+          decel = this.locked ? avail * 0.85 : Math.min(demand, avail);
+        }
+        accel -= decel;
       } else if (this.throttle === 0 && this.speed > -REVERSE_MAX) {
         accel -= 9 * this.brake; // reverse gear: back up slowly
+        this.locked = false;
       }
+    } else this.locked = false;
+    // locking up flat-spots the tyre (vibration, wear, a little grip)
+    if (this.locked) {
+      this.flatSpot = Math.min(1, (this.flatSpot || 0) + dt * 0.45 * Math.min(1, v / 40));
+      this.tyreWearKm += Math.abs(v) * dt / 1000 * 3;
     }
     // Drag + rolling resistance always oppose the direction of travel.
-    // Two things cut drag on a straight:
     //   DRS open  — sheds ~25% of drag when the wing is stalled
     //   tow (0..1)— running in another car's wake sheds up to a further 16%
-    // Measured over a 900 m straight from 250 km/h: DRS is worth +18.8 km/h
-    // at the end of it (build 38 was +16.1), a full tow +11.7, and the two
-    // together +28.6. Real F1 DRS is around +10-15 km/h, so this is already
-    // generous — worth remembering before turning it up again.
-    // They stack, which is what makes a DRS-plus-slipstream run down the
-    // straight decisive, exactly as it is in the real thing.
     if (Math.abs(v) > 0.3) {
       const dir = Math.sign(v);
       let cd = this.drsOpen ? 0.00045 : 0.0006;
@@ -258,49 +329,50 @@ class CarPhysics {
     if (Math.abs(this.speed) < 0.06 && this.throttle === 0 && this.brake === 0) this.speed = 0;
 
     // --- lateral / steering ---
-    // mechanical grip + quadratic aero downforce (F ∝ v²), capped ~5.5g
-    // trail-braking load transfer gives a little extra front bite
-    // Lateral limit = mechanical grip + downforce. The old floor of 28 m/s²
-    // was 2.85g of MECHANICAL grip — about a GT3 car's outright peak — which
-    // is why right-angle corners never needed slowing: at 60 km/h it allowed a
-    // 9.3 m radius where a real F1 car needs 15 m. 17.6 is 1.8g on slicks,
-    // and the v² term carries it to the same ~5.4g at racing speed.
-    //   54 km/h 2.0g · 90 km/h 2.5g · 144 km/h 3.5g · 216+ km/h 5.4g
-    // Damage bites the aero term hardest, so a broken car is survivable in
-    // slow corners and horrible in fast ones — exactly like the real thing.
-    const aeroLoss = 1 - Math.min(0.55, this.dmgWing * 0.30 + this.dmgFloor * 0.28);
-    const punctLoss = 1 - this.puncture * 0.45;
-    // Scale the CAP as well as the v² term. Without that, a car at 250 km/h
-    // sat on the 53 ceiling whether its wing was there or not, so damage did
-    // nothing exactly when it should hurt most. Scaling both keeps the right
-    // character: crippling in fast corners, barely felt in slow ones.
-    // aquaplaning: heavy standing water at speed → smooth, repeatable grip loss
-    let aq = 0;
-    if (TRACK_WETNESS > 0.6 && v > 65) {
-      aq = ((TRACK_WETNESS - 0.6) / 0.4) * Math.min(1, (v - 65) / 25) * puddleAt(t, this.lapDist, this.trackIdx);
-    }
-    this.aquaplane = aq;
-    this.aquaplaning = aq > 0.2;
-    const latMax = (1 - 0.30 * aq) * Math.min(53 * aeroLoss, 17.6 + 0.0104 * v * v * aeroLoss) * punctLoss * gripMul * this.tyreMul * this.tempMul * wg * effGripBonus(this.gripBonus) * (1 + this.brake * 0.10);
-    // grip-aware steering (modern racing-game keyboard assist):
-    // steer input commands a FRACTION of available grip, capped by the
-    // physical wheel angle. Partial steering can never exceed the limit,
-    // so flat-out curved corners cost nothing — like reality.
+    // What's left of the lateral budget after braking. A light brake actually
+    // helps the turn-in (weight on the nose: "trail braking"); heavy braking
+    // eats the grip you need to turn. A locked front can't steer at all.
+    const uLong = (brakeGrip > 0 ? Math.min(1, decel / brakeGrip) : 0) * circ;
+    let latAvail = latMax * Math.sqrt(Math.max(0.2, 1 - uLong * uLong)) * (1 + 0.12 * Math.sin(Math.PI * uLong));
+    if (this.locked) latAvail *= 0.22;
     let yawRate = 0;
     if (this.speed > 0.3) {
-      const maxYawGrip = latMax / Math.max(this.speed, 1);
+      const maxYawGrip = latAvail / Math.max(this.speed, 1);
       const maxYawGeom = this.speed * Math.tan(0.28 / (1 + v * 0.012)) / 3.2; // full-lock geometry, wheelbase 3.2
-      const yawCap = Math.min(maxYawGrip * 1.1, maxYawGeom);
-      yawRate = this.steer * yawCap;
-      const use = Math.abs(yawRate) / maxYawGrip; // fraction of grip in use
-      if (use > 1) {
-        // only reachable near full lock: clamp + mild scrub
-        yawRate = Math.sign(yawRate) * maxYawGrip;
-        this.speed = Math.max(0, this.speed - Math.min(3, (use - 1) * 12) * dt);
+      if (A.steer) {
+        // steering assist: the key asks for a FRACTION of the grip available,
+        // so you can't over-drive the fronts — but braking still shrinks it
+        const yawCap = Math.min(maxYawGrip * 1.1, maxYawGeom);
+        yawRate = this.steer * yawCap;
+        const use = Math.abs(yawRate) / maxYawGrip;
+        if (use > 1) {
+          yawRate = Math.sign(yawRate) * maxYawGrip;
+          this.speed = Math.max(0, this.speed - Math.min(3, (use - 1) * 12) * dt);
+        }
+        if (use > 0.92) this.wheelSpin = Math.min(1, this.wheelSpin + dt*2.5);
+        else this.wheelSpin = Math.max(0, this.wheelSpin - dt*4);
+      } else {
+        // raw steering: the key turns the wheels. Ask for more than the fronts
+        // can give and they slide — the car pushes wide and scrubs speed.
+        const want = this.steer * maxYawGeom;
+        const over = Math.abs(want) / Math.max(1e-3, maxYawGrip);
+        if (over > 1) {
+          yawRate = Math.sign(want) * maxYawGrip * Math.max(0.82, 1 - (over - 1) * 0.15);
+          this.speed = Math.max(0, this.speed - Math.min(6, (over - 1) * 14) * dt);
+          this.wheelSpin = Math.min(1, this.wheelSpin + dt * 4);
+          this.understeer = Math.min(1, over - 1);
+        } else {
+          yawRate = want;
+          this.wheelSpin = Math.max(0, this.wheelSpin - dt*4);
+          this.understeer = 0;
+        }
+        // lift-off / trail-brake oversteer: snatch the throttle off, or brake
+        // hard while loaded up in a fast corner, and the rear goes light
+        this._thrAvg = (this._thrAvg == null ? this.throttle : this._thrAvg + (this.throttle - this._thrAvg) * Math.min(1, dt * 5));
+        if (uLat > 0.8 && v > 25 && this.throttle < 0.15 && this._thrAvg > 0.6) slipRate += yawSign * 0.9;
+        if (uLat > 0.6 && uLong > 0.5) slipRate += yawSign * (uLat * uLong - 0.3) * 1.4;
       }
-      // tyres sing when leaning on >92% of grip
-      if (use > 0.92) this.wheelSpin = Math.min(1, this.wheelSpin + dt*2.5);
-      else this.wheelSpin = Math.max(0, this.wheelSpin - dt*4);
+      if (this.locked) this.wheelSpin = Math.min(1, this.wheelSpin + dt * 6);
     } else if (this.speed < -0.2) {
       // reversing: gentle geometry-based yaw (steer turns the car the natural way)
       yawRate = this.speed * Math.tan(this.steer * 0.28) / 3.2;
@@ -314,6 +386,30 @@ class CarPhysics {
     }
     this.heading += yawRate * dt;
     this._lastYaw = yawRate; // used by the tyre-temperature model next step
+    // fraction of the BASE lateral grip in use — feeds next step's circle
+    this._latUse = latMax > 0 ? Math.abs(yawRate) * Math.max(0, this.speed) / latMax : 0;
+
+    // ---- rear slides (slip = heading minus direction of travel) ----
+    // The rear stepping out rotates the car faster than its path. It gathers
+    // itself back up on its own; counter-steer (or the steering assist) gets
+    // it back quicker. Too far round and it's a spin.
+    if (this.spinning) {
+      this.heading += Math.sign(this.slip || 1) * 2.6 * dt;
+      this.slip += Math.sign(this.slip || 1) * 2.6 * dt;
+      this.speed = Math.max(0, this.speed - 13 * dt);
+      if (this.speed < 5) { this.spinning = false; this.slip = 0; }   // it stops where it points
+    } else {
+      if (slipRate) { this.heading += slipRate * dt; this.slip = (this.slip || 0) + slipRate * dt; }
+      if (this.slip) {
+        const counter = this.steer * this.slip < 0 ? Math.abs(this.steer) : 0;
+        const rec = (2.4 + 5 * counter + (A.steer ? 2 : 0)) * dt;
+        const back = this.slip * Math.min(1, rec);
+        this.heading -= back; this.slip -= back;
+        this.speed = Math.max(0, this.speed - Math.min(8, Math.abs(this.slip) * 12) * dt);
+        if (Math.abs(this.slip) < 1e-4) this.slip = 0;
+        if (Math.abs(this.slip) > 0.7 && this.speed > 8) this.spinning = true;
+      }
+    }
 
     // aquaplaning: standing water at high speed → occasional twitch / grip loss
     // in a puddle the car floats a little toward the water's pull (the same
@@ -325,7 +421,9 @@ class CarPhysics {
     }
 
     // --- integrate position ---
-    const sx = Math.sin(this.heading), cz = Math.cos(this.heading);
+    // the car travels along its path (heading minus any rear slide)
+    const pathH = this.heading - (this.slip || 0);
+    const sx = Math.sin(pathH), cz = Math.cos(pathH);
     this.x += sx * this.speed * dt + Math.cos(this.heading) * this.vLatDrift * dt;
     this.z += cz * this.speed * dt - Math.sin(this.heading) * this.vLatDrift * dt;
     this.vLatDrift *= Math.max(0, 1 - 6*dt);
