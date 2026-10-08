@@ -331,14 +331,21 @@ class CarPhysics {
       if (A.steer) {
         // steering assist: the key asks for a FRACTION of the grip available,
         // so you can't over-drive the fronts — but braking still shrinks it
-        const yawCap = Math.min(maxYawGrip * 1.1, maxYawGeom);
+        // Full key = exactly the grip limit for the player, so a flat-out
+        // corner costs no speed: the car turns as hard as the tyres allow and
+        // that's it. (It used to ask for 110%, scrubbing speed and making the
+        // engine note dip every time you steered.) The AI's controller was
+        // tuned against the 110% ceiling, so it keeps it.
+        const ask = A === AI_ASSISTS ? 1.1 : 1.0;
+        const yawCap = Math.min(maxYawGrip * ask, maxYawGeom);
         yawRate = this.steer * yawCap;
         const use = Math.abs(yawRate) / maxYawGrip;
         if (use > 1) {
           yawRate = Math.sign(yawRate) * maxYawGrip;
           this.speed = Math.max(0, this.speed - Math.min(3, (use - 1) * 12) * dt);
         }
-        if (use > 0.92) this.wheelSpin = Math.min(1, this.wheelSpin + dt*2.5);
+        // tyres squeal only when actually over the limit
+        if (use > 1.02) this.wheelSpin = Math.min(1, this.wheelSpin + dt*2.5);
         else this.wheelSpin = Math.max(0, this.wheelSpin - dt*4);
       } else {
         // raw steering: the key turns the wheels. Ask for more than the fronts
@@ -494,7 +501,8 @@ class CarPhysics {
     this.gearN = g;
     let rpm = RPM_MAX * v / T[g];
     if (g === 1) rpm = Math.max(rpm, RPM_IDLE + this.throttle * 4200 * Math.max(0, 1 - v / 60));
-    rpm += (this.wheelSpin || 0) * 1200;
+    // (no rpm flare from cornering squeal: through a flat-out corner the note
+    // holds steady, like the real car)
     this.rpm = Math.max(RPM_IDLE, Math.min(RPM_MAX + 60, rpm));
   }
 

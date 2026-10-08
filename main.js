@@ -427,7 +427,7 @@ function syncAssistButtons() {
   syncAssistButtons();
 })();
 
-// BUILD 80: the whole difficulty scale moved up (the player was ~1s+/lap
+// BUILD 81: the whole difficulty scale moved up (the player was ~1s+/lap
 // faster than 'Alien 82%'). Added to the normalised difficulty for the AI's
 // GRIP (not its planning): ~1.1-2.3 s a lap faster at 82%. Clean to 2.5.
 const AI_PACE_SHIFT = 0.6;
@@ -721,7 +721,7 @@ function aiPerf(driver) {
     // clamp is lifted — at the 1.20 top end dt2 reaches ~1.85, the level the AI
     // was validated to run clean. Floored slightly below 0 for the easy end.
     const dt2 = Math.max(-0.25, Math.min(1.85, (G.difficulty - 0.98) / 0.12));
-    // the BUILD 80 shift goes into GRIP only: more car, same planning margin.
+    // the BUILD 81 shift goes into GRIP only: more car, same planning margin.
     // (Shifting the planner's pace fraction too ran the Alien field wide at
     // Austria and Britain — 12 track-limit penalties a race.)
     const dt2g = Math.max(-0.25, Math.min(2.5, dt2 + AI_PACE_SHIFT));
@@ -1274,6 +1274,7 @@ function stepQualiSim(budget) {
       else {
         // a little lap-to-lap variability, more for the less consistent drivers
         cur.q.time = (cur.T - cur.t0) * (1 + Math.random() * (0.006 - cur.q.driver.skill * 0.004));
+        cur.q.driven = true;
         S.cur = null; S.i++;
       }
     }
@@ -1286,12 +1287,13 @@ function stepQualiSim(budget) {
 function finishQualiSim(fast) {
   const S = G.qualiSim;
   if (!S || S.done) return;
-  if (!fast) { stepQualiSim(Infinity); return; }
+  if (!fast) { stepQualiSim(Infinity); G.qualiAITimes.forEach(q => { q.driven = true; }); return; }
   const rows = G.qualiAITimes, est = rows.map(q => q.time);
   while (!S.done && S.i < Math.min(rows.length, 3)) stepQualiSim(2000);
   let ratio = 0, k = 0;
   for (let i = 0; i < S.i; i++) { ratio += rows[i].time / est[i]; k++; }
   if (k) { ratio /= k; for (let i = S.i; i < rows.length; i++) rows[i].time = est[i] * ratio; }
+  rows.forEach(q => { q.driven = true; });
   S.done = true; S.cur = null;
 }
 
@@ -2486,6 +2488,23 @@ function updateSpotter() {
   $('sp-bar-r').style.opacity = barR ? '1' : '0';
 }
 
+// Timing tower scrolls (mouse wheel), and on its own keeps your row in view —
+// so in P15 you still see your time and the cars around you. A manual scroll
+// is respected for 4 s before it follows you again.
+function keepMeInView(panel) {
+  if (!panel || panel.style.display === 'none') return;
+  if (!panel._wheelHooked) {
+    panel._wheelHooked = true;
+    panel.addEventListener('wheel', () => { panel._userScrollT = performance.now(); }, { passive: true });
+  }
+  if (panel._userScrollT && performance.now() - panel._userScrollT < 4000) return;
+  const me = panel.querySelector('.pos-row.me');
+  if (!me || panel.scrollHeight <= panel.clientHeight + 2) { panel.scrollTop = 0; return; }
+  // centre my row, but never scroll past the leader when I'm near the top
+  const want = me.offsetTop - panel.clientHeight / 2 + me.offsetHeight / 2;
+  panel.scrollTop = Math.max(0, Math.min(panel.scrollHeight - panel.clientHeight, want));
+}
+
 function updateBoxCall() {
   const el = $('box-call'); if (!el) return;
   const c = G.player;
@@ -2634,12 +2653,13 @@ function updateHUD() {
     panel.style.display = 'block';
     panel.innerHTML = html;
   } else if (G.mode === 'qualify' && G.qualiAITimes) {
-    const rows = G.qualiAITimes.map(q => ({ name:q.driver.id, time:q.time, me:false, team:q.driver.team, tyre:q.tyre }));
+    // AI times appear as each car actually completes its lap
+    const rows = G.qualiAITimes.map(q => ({ name:q.driver.id, time:q.driven ? q.time : 99998, me:false, team:q.driver.team, tyre:q.tyre }));
     // the player's badge tracks the tyre they're on right now
     rows.push({ name:'VER', time:p.bestLap || 99999, me:true, team:'redbull', tyre:p.phys.compound });
     rows.sort((a,b)=>a.time-b.time);
     let html = '';
-    rows.slice(0,12).forEach((r,i) => {
+    rows.forEach((r,i) => {
       const sw = '#' + TEAMS[r.team].color.toString(16).padStart(6,'0');
       html += '<div class="pos-row'+(r.me?' me':'')+'">'
         + '<span class="p-num">'+(i+1)+'</span>'
@@ -2653,6 +2673,7 @@ function updateHUD() {
   } else {
     panel.style.display = 'none';
   }
+  keepMeInView(panel);
 
   // weather indicator + rain overlay
   {
@@ -3996,5 +4017,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 80';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 81';
 })();
