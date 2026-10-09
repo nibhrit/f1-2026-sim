@@ -318,12 +318,36 @@ class AIDriver {
     // 90 m/s needs ~35 m of buffer) so following can start easing early instead
     // of only waking up at 13 m and rear-ending the car in front.
     let ahead=null, aheadGap=1e9, behind=null, behindGap=1e9;
+    // ...and, separately, the nearest car ahead IN OUR LANE. Following used to
+    // key off the nearest car ahead by distance only — off the grid that is the
+    // car in the other column, 6 m to the side, so nobody followed the car
+    // actually in front of them and the whole field piled into turn 1 at full
+    // speed while the front rows braked.
+    let laneAhead=null, laneGap=1e9;
+    const myLatF = t.lateral(car.x, car.z, car.trackIdx);
     for (const other of allCars) {
       if (other === car || other.finished || other.dead) continue;  // finished/retired cars aren't racing
       const gap = other.totalDist - car.totalDist;
       const dd = Math.hypot(other.x-car.x, other.z-car.z);
       if (gap > 0 && gap < 55 && dd < 58 && gap < aheadGap) { aheadGap = gap; ahead = other; }
+      if (gap > 0 && gap < 70 && dd < 72 && gap < laneGap && !other.inPit
+          && Math.abs(t.lateral(other.x, other.z, other.trackIdx) - myLatF) < 3.0) { laneGap = gap; laneAhead = other; }
       if (gap < 0 && gap > -15 && dd < 22 && -gap < behindGap) { behindGap = -gap; behind = other; }
+    }
+    // car-following against the car in our lane (the obstacle we'd hit). The
+    // second rule is for braking zones: the car ahead may be braking far harder
+    // than 17 m/s^2 (5-6 g into turn 1), so plan to be able to stop in the room
+    // it leaves — our stopping distance <= its stopping distance + the gap.
+    if (laneAhead) {
+      const minGap = 7;
+      const eff = Math.max(0, laneGap - minGap);
+      vAllow = Math.min(vAllow, Math.sqrt(laneAhead.speed * laneAhead.speed + 2 * 17 * eff));
+      const aL = laneAhead.decelNow || 0;
+      if (aL > 8) {
+        const aF = 0.8 * Math.min(58, 18 + 0.0105 * v * v);
+        const room = laneAhead.speed * laneAhead.speed / (2 * aL) + eff;
+        vAllow = Math.min(vAllow, Math.sqrt(2 * aF * room));
+      }
     }
 
     if (ahead) {
@@ -354,11 +378,15 @@ class AIDriver {
         const DEC = 17;                          // firm, comfortably achievable
         const maxApproach = Math.sqrt(ahead.speed * ahead.speed + 2 * DEC * eff);
         vAllow = Math.min(vAllow, maxApproach);
+
       }
       // attacker: faster and close → make a move
       // vs the title rival (the player) they go for the gap earlier and harder
       const huntingRival = this.rivalTarget && ahead === this.rivalTarget;
-      if (v > ahead.speed - (huntingRival ? 4 : 3) && aheadGap < (huntingRival ? 34 : 24)) {
+      // ...but not in the opening seconds: off the line everyone was "faster
+      // than the car ahead" and all dived for the same inside line at once —
+      // the turn-1 pile-up. Attacks open once the field has strung out.
+      if (this.laneBlend >= 1 && v > ahead.speed - (huntingRival ? 4 : 3) && aheadGap < (huntingRival ? 34 : 24)) {
         const insideLat = insideSign * edge;
         const defenderCoversInside = Math.abs(otherLat - insideLat) < 2.6;
         if (defenderCoversInside) combatLane = -insideSign * edge * 0.85; // switchback for the exit
@@ -390,6 +418,31 @@ class AIDriver {
     // pit approach (set by main.js): hold the pit-lane side of the track
     if (this.laneOverride != null) targetLane = this.laneOverride;
     targetLane = Math.max(-edge, Math.min(edge, targetLane));
+    // Side guard. Whatever line it wants (racing line, a dive, the fan-out off
+    // the grid), a car must not move across into one that is alongside it —
+    // that is how a three-wide turn 1 became a train of contacts. Hold at least
+    // a car's width (+margin) from anything overlapping, and if there's no room
+    // on the road, back out of it instead of squeezing.
+    if (this.laneOverride == null) {
+      const myLat = t.lateral(car.x, car.z, car.trackIdx);
+      const SEP = 3.4;
+      for (const o of allCars) {
+        if (o === car || o.finished || o.dead || o.inPit) continue;
+        const g = o.totalDist - car.totalDist;
+        if (Math.abs(g) > 6.5) continue;
+        if (Math.hypot(o.x - car.x, o.z - car.z) > 12) continue;
+        const oLat = t.lateral(o.x, o.z, o.trackIdx);
+        if (Math.abs(targetLane - oLat) >= SEP) continue;
+        const side = Math.sign(myLat - oLat) || (myLat >= 0 ? 1 : -1);
+        const want = oLat + side * SEP;
+        if (Math.abs(want) <= edge + 0.4) targetLane = want;
+        else {
+          // boxed in: stay put and drop back rather than squeeze through
+          targetLane = myLat;
+          if (g > -1) vAllow = Math.min(vAllow, Math.max(10, o.speed - 1.5));
+        }
+      }
+    }
     this.laneOffsetNow = this.laneOffsetNow == null ? targetLane : this.laneOffsetNow;
     this.laneOffsetNow += (targetLane - this.laneOffsetNow) * Math.min(1, 3*dt);
     // Off-line penalty: the velocity profile's corner speeds assume the racing

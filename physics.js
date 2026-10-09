@@ -235,7 +235,8 @@ class CarPhysics {
     // wet, where its planner's braking points have the least margin
     const circ = A.circle != null ? A.circle * (A === AI_ASSISTS ? Math.max(0, 1 - 1.15 * TRACK_WETNESS) : 1) : 1;
     const uLat = Math.min(1, this._latUse || 0) * circ;
-    const circleBrake = Math.sqrt(Math.max(0.2, 1 - uLat * uLat));
+    const uLatB = uLat * 0.7;                       // BUILD 82: softened with the turn side (was 1.0)
+    const circleBrake = Math.sqrt(Math.max(0.2, 1 - uLatB * uLatB));
     const circleDrive = Math.sqrt(Math.max(0.3, 1 - uLat * uLat));
 
     // --- longitudinal ---
@@ -313,6 +314,8 @@ class CarPhysics {
       if (onGrass) accel -= dir * 0.030 * Math.abs(v);   // cutting must not pay
     }
     this.speed = v + accel * dt;
+    // how hard this car is slowing right now (the AI behind reads it)
+    this.decelNow = Math.max(0, -accel);
     if (this.speed < -REVERSE_MAX) this.speed = -REVERSE_MAX;
     // settle to a clean stop when coasting near zero
     if (Math.abs(this.speed) < 0.06 && this.throttle === 0 && this.brake === 0) this.speed = 0;
@@ -322,7 +325,11 @@ class CarPhysics {
     // helps the turn-in (weight on the nose: "trail braking"); heavy braking
     // eats the grip you need to turn. A locked front can't steer at all.
     const uLong = (brakeGrip > 0 ? Math.min(1, decel / brakeGrip) : 0) * circ;
-    let latAvail = latMax * Math.sqrt(Math.max(0.2, 1 - uLong * uLong)) * (1 + 0.12 * Math.sin(Math.PI * uLong));
+    // BUILD 82: softened — full braking used to leave ~45% of the turning grip
+    // and the car felt like it wouldn't turn; now ~85% (and turning costs the
+    // brakes less too), so trail-braking into a corner works again.
+    const uTurn = uLong * 0.55;
+    let latAvail = latMax * Math.sqrt(Math.max(0.2, 1 - uTurn * uTurn)) * (1 + 0.12 * Math.sin(Math.PI * uLong));
     if (this.locked) latAvail *= 0.22;
     let yawRate = 0;
     if (this.speed > 0.3) {

@@ -427,7 +427,7 @@ function syncAssistButtons() {
   syncAssistButtons();
 })();
 
-// BUILD 81: the whole difficulty scale moved up (the player was ~1s+/lap
+// BUILD 82: the whole difficulty scale moved up (the player was ~1s+/lap
 // faster than 'Alien 82%'). Added to the normalised difficulty for the AI's
 // GRIP (not its planning): ~1.1-2.3 s a lap faster at 82%. Clean to 2.5.
 const AI_PACE_SHIFT = 0.6;
@@ -721,7 +721,7 @@ function aiPerf(driver) {
     // clamp is lifted — at the 1.20 top end dt2 reaches ~1.85, the level the AI
     // was validated to run clean. Floored slightly below 0 for the easy end.
     const dt2 = Math.max(-0.25, Math.min(1.85, (G.difficulty - 0.98) / 0.12));
-    // the BUILD 81 shift goes into GRIP only: more car, same planning margin.
+    // the BUILD 82 shift goes into GRIP only: more car, same planning margin.
     // (Shifting the planner's pace fraction too ran the Alien field wide at
     // Austria and Britain — 12 track-limit penalties a race.)
     const dt2g = Math.max(-0.25, Math.min(2.5, dt2 + AI_PACE_SHIFT));
@@ -1083,6 +1083,7 @@ function startSession() {
   G.msgTimer = 0;
   // reset sector benchmarks for a fresh session
   G.sectorSB = [null,null,null];
+  G.sectorPB = [null,null,null];
   G.pbLapSectors = [null,null,null];
   G.curSectors = [null,null,null];
   G.curSec = 0;
@@ -1269,9 +1270,18 @@ function stepQualiSim(budget) {
     const cur = S.cur;
     cur.c.step(FIXED, cur.ai.compute(FIXED, [cur.c]));
     cur.T += FIXED; n++;
+    if (cur.t0 != null) {                       // sector splits on the flying lap
+      const f = cur.c.lapDist / t.length, sec = f < 1/3 ? 0 : f < 2/3 ? 1 : 2;
+      if (cur.sec == null) cur.sec = 0;
+      if (sec === cur.sec + 1) { (cur.splits = cur.splits || []).push(cur.T); cur.sec = sec; }
+    }
     if (cur.c.crossedLine) {
       if (cur.t0 == null) cur.t0 = cur.T;
       else {
+        if (cur.splits && cur.splits.length === 2) {
+          const sp = [cur.splits[0] - cur.t0, cur.splits[1] - cur.splits[0], cur.T - cur.splits[1]];
+          sp.forEach((x, i) => addAISector(i, x));
+        }
         // a little lap-to-lap variability, more for the less consistent drivers
         cur.q.time = (cur.T - cur.t0) * (1 + Math.random() * (0.006 - cur.q.driver.skill * 0.004));
         cur.q.driven = true;
@@ -1592,12 +1602,37 @@ function finishSector(i, ts) {
   if (!(ts > 3)) return; // ignore bogus splits
   G.curSectors[i] = ts;
   let cls;
+  // purple = fastest of ANYONE this session (G.sectorSB holds the overall
+  // best, fed by every AI car too); green = your own personal best; yellow =
+  // slower than both. (It used to compare only against your own times, so
+  // your first decent sector always went purple.)
+  if (!G.sectorPB) G.sectorPB = [null,null,null];
+  const pbBefore = G.sectorPB[i];
+  if (pbBefore == null || ts < pbBefore) G.sectorPB[i] = ts;
   if (G.sectorSB[i] == null || ts < G.sectorSB[i]) { G.sectorSB[i] = ts; cls = 'sb'; }
-  else if (G.pbLapSectors[i] != null && ts <= G.pbLapSectors[i] + 0.001) cls = 'pb';
+  else if (pbBefore == null || ts < pbBefore) cls = 'pb';
   else cls = 'slow';
   const el = $('sec'+i);
   el.textContent = 'S'+(i+1)+' '+ts.toFixed(1);
   el.className = 'sec ' + cls;
+}
+
+// AI cars' sector splits feed the session-best (purple) benchmark. Splits
+// that touch the pit lane or the standing start don't count.
+function trackAISectors(c) {
+  const p = c.phys, frac = p.lapDist / G.track.length;
+  const sec = frac < 1/3 ? 0 : frac < 2/3 ? 1 : 2;
+  if (c._sec == null) { c._sec = sec; c._secT = null; c._secDirty = true; return; }
+  if (c.pitState || p.inPit) c._secDirty = true;
+  if (sec !== c._sec) {
+    const done = c._sec, wrapped = done === 2 && sec === 0, fwd = sec === done + 1 || wrapped;
+    if (fwd && c._secT != null && !c._secDirty) addAISector(done, G.simTime - c._secT);
+    c._sec = sec; c._secT = G.simTime; c._secDirty = !fwd || !!c.pitState;
+  }
+}
+function addAISector(i, ts) {
+  if (!(ts > 3)) return;
+  if (G.sectorSB[i] == null || ts < G.sectorSB[i]) G.sectorSB[i] = ts;
 }
 
 // called each frame while driving: detect sector boundary crossings
@@ -2076,6 +2111,7 @@ function restoreRace(snap) {
   }
   G.sectorSB = pl.sectorSB || [null,null,null];
   G.pbLapSectors = pl.pbLapSectors || [null,null,null];
+  G.sectorPB = pl.sectorPB || [null,null,null];
   G.bestCheckpoints = pl.bestCheckpoints || null;
   G.refCheckpoints = pl.refCheckpoints || null;
   G.refTime = pl.refTime || null;
@@ -2132,7 +2168,7 @@ function saveRaceSnapshot() {
       raceFL: G.raceFL ? { time: G.raceFL.time, id: G.raceFL.id } : null,
       player: {
         lapTimes: G.player.lapTimes, bestLap: G.player.bestLap, bestLapTyre: G.player.bestLapTyre,
-        sectorSB: G.sectorSB, pbLapSectors: G.pbLapSectors,
+        sectorSB: G.sectorSB, pbLapSectors: G.pbLapSectors, sectorPB: G.sectorPB,
         bestCheckpoints: G.bestCheckpoints, refCheckpoints: G.refCheckpoints, refTime: G.refTime,
       },
     };
@@ -2996,7 +3032,16 @@ function resolveCollisions() {
                      + (a.speed * Math.cos(a.heading) - b.speed * Math.cos(b.heading)) * uz);
         const rear = a.totalDist > b.totalDist ? b : a;
         const front = rear === a ? b : a;
-        rear.speed = Math.min(rear.speed, front.speed * 0.92 + 0.6);
+        // Contact response. It used to set the rear car to 92% of the front
+        // car's speed on EVERY touch — side-by-side rubs included — and the
+        // cars behind then hit that car and lost 8% more, a chain that turned
+        // one touch into a train of cars bumping into each other. Now only a
+        // nose-to-tail hit (cars more than half a length apart) costs the car
+        // behind its closing speed; wheel-to-wheel contact just pushes apart.
+        const along = Math.abs(a.totalDist - b.totalDist);
+        if (along > 2.5 && rear.speed > front.speed) {
+          rear.speed = front.speed + (rear.speed - front.speed) * 0.25;
+        }
         // Damage lands ONCE per contact, not every frame the two cars overlap.
         // Without this gate, two cars running nose-to-tail (drafting, or bunched
         // in wet-race traffic) racked up wing and floor damage at 120 Hz and the
@@ -3905,6 +3950,7 @@ function stepSim(dt) {
     }
     else inp = c.ai.compute(dt, physList);
     c.phys.step(dt, inp);
+    if (c.ai && !c.finished) trackAISectors(c);
 
     // pit exit: crossing the line rejoins the race on fresh tyres. The compound
     // just removed becomes the default for a further stop (multi-stop allowed);
@@ -4017,5 +4063,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 81';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 82';
 })();
