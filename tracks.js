@@ -140,9 +140,9 @@ const TRACKS = [
 // ---- merge real circuit data + assign visual themes ----
 const TRACK_THEMES = {
   bahrain:'desertNight', qatar:'desertNight', abudhabi:'desertNight',
-  saudi:'streetNight', singapore:'streetNight', vegas:'streetNight',
-  miami:'streetDay', monaco:'streetDay', madrid:'streetDay', azerbaijan:'streetDay',
-  belgium:'forest', italy:'forest', japan:'forest', austria:'forest',
+  saudi:'streetNight', singapore:'singapore', vegas:'streetNight',
+  miami:'streetDay', monaco:'monaco', madrid:'streetDay', azerbaijan:'streetDay',
+  belgium:'spa', italy:'monza', japan:'suzuka', austria:'forest', britain:'silverstone',
   netherlands:'dunes',
 };
 // characteristic elevation amplitude (m) — real circuits' vertical identity

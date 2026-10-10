@@ -258,6 +258,19 @@ const THEMES = {
   desertNight: { sky:0x0b1026, fog:[450,2000], sun:0.20, amb:0.42, ambC:0x8899cc, ground:'sand', g1:'#77653f', g2:'#6b5a38', turf:0x5e5136, tree:'palm', treeCount:80, stands:true, buildings:false, night:true },
   streetDay:   { sky:0x9fc3e0, fog:[500,2100], sun:0.85, amb:0.50, ambC:0x8899bb, ground:'urban', g1:'#4a4a50', g2:'#404046', turf:0x44444c, tree:'palm', treeCount:50, stands:false, buildings:true, night:false },
   streetNight: { sky:0x080c1d, fog:[400,1800], sun:0.18, amb:0.40, ambC:0x8090cc, ground:'urban', g1:'#26262c', g2:'#1f1f25', turf:0x2a2a32, tree:'none', treeCount:0, stands:false, buildings:true, night:true },
+  // ---- per-circuit looks (BUILD 84): real surroundings, real race time of day ----
+  // Monaco: Riviera afternoon — hard Mediterranean light, harbour, pastel town
+  monaco:      { sky:0x8cc3ef, fog:[700,2600], sun:1.0, amb:0.50, ambC:0x99a6bb, sunC:0xfff2dc, ground:'urban', g1:'#7c7466', g2:'#706a5d', turf:0x5d6a43, tree:'palm', treeCount:70, stands:false, buildings:true, buildStyle:'riviera', night:false },
+  // Spa: Ardennes — low grey cloud, mist, tall dark conifers to the kerbs
+  spa:         { sky:0xa7b1ba, fog:[320,1600], sun:0.50, amb:0.46, ambC:0xa9b2bf, sunC:0xe6ebf2, skyStyle:'overcast', ground:'stripes', g1:'#2a5524', g2:'#244c1f', turf:0x22461f, tree:'pine', treeCount:2800, treeNear:2, treeFar:130, treeScale:[1.5,2.6], treeColor:0x0c2410, stands:true, buildings:false, night:false },
+  // Silverstone: flat old airfield — big skies, broken cloud, open grass
+  silverstone: { sky:0x9fbfdc, fog:[800,2900], sun:0.82, amb:0.52, ambC:0x99a8c0, skyStyle:'broken', ground:'stripes', g1:'#4f8a3a', g2:'#477f34', turf:0x3f7a30, tree:'broadleaf', treeCount:110, treeNear:60, treeFar:260, treeScale:[0.9,1.4], stands:true, buildings:false, night:false },
+  // Monza: the royal park — sunny late summer, dense old trees close to the track
+  monza:       { sky:0x8dbbe8, fog:[600,2300], sun:0.95, amb:0.48, ambC:0x99a6bb, sunC:0xfff1d6, ground:'stripes', g1:'#3c6e2e', g2:'#356428', turf:0x2f5a26, tree:'broadleaf', treeCount:3600, treeNear:4, treeFar:95, treeScale:[1.2,2.1], stands:true, buildings:false, night:false },
+  // Suzuka: spring afternoon in Mie — wooded hills, the funfair by the straight
+  suzuka:      { sky:0x93c0ea, fog:[650,2500], sun:0.92, amb:0.48, ambC:0x99a6bb, sunC:0xfff3e0, ground:'stripes', g1:'#40752f', g2:'#3a6a2a', turf:0x33612a, tree:'mixed', treeCount:520, treeNear:14, treeFar:220, treeScale:[0.9,1.6], stands:true, buildings:false, night:false },
+  // Singapore: night race under the floodlights, Marina Bay skyline
+  singapore:   { sky:0x0a1024, fog:[600,2600], sun:0.18, amb:0.42, ambC:0x8090cc, ground:'urban', g1:'#24262e', g2:'#1e2027', turf:0x283228, tree:'palm', treeCount:60, stands:false, buildings:true, buildStyle:'tower', night:true },
 };
 
 // ------------------------------------------------------------
@@ -279,10 +292,15 @@ function skyTex(theme) {
   // sky dome, so at 64px wide every 1px star was stretched into a long grey
   // smear across the sky (and the moon into a streak). Day skies are pure
   // vertical gradients and stay cheap.
-  return canvasTex(theme.night ? 2048 : 64, 512, (ctx,w,h) => {
+  const clouds = theme.skyStyle === 'overcast' || theme.skyStyle === 'broken';
+  return canvasTex(theme.night ? 2048 : clouds ? 1024 : 64, 512, (ctx,w,h) => {
     const c = '#' + theme.sky.toString(16).padStart(6,'0');
     const grd = ctx.createLinearGradient(0,0,0,h);
-    if (theme.night) {
+    if (theme.skyStyle === 'overcast') {
+      // a low grey lid: brighter where the sun is behind it, darker overhead
+      grd.addColorStop(0, '#7d8792'); grd.addColorStop(0.45, '#9aa4ae');
+      grd.addColorStop(0.72, '#c3cad0'); grd.addColorStop(0.82, '#d0d5d9'); grd.addColorStop(1, c);
+    } else if (theme.night) {
       grd.addColorStop(0, '#03040c');
       grd.addColorStop(0.55, c);
       grd.addColorStop(0.75, '#232c52');
@@ -299,7 +317,27 @@ function skyTex(theme) {
       grd.addColorStop(1, c);
     }
     ctx.fillStyle = grd; ctx.fillRect(0,0,w,h);
-    if (!theme.night) {
+    if (clouds) {
+      // soft cloud banks. Drawn 2x wide (the dome stretches x by 2) and
+      // denser toward the horizon, where perspective packs cloud together.
+      let sd = 4242; const r = () => (sd = (sd * 16807) % 2147483647) / 2147483647;
+      const n = theme.skyStyle === 'overcast' ? 260 : 110;
+      for (let i = 0; i < n; i++) {
+        const y = h * (0.12 + Math.pow(r(), 0.6) * 0.62);
+        const x = r() * w, rad = (theme.skyStyle === 'overcast' ? 30 : 18) + r() * 40 * (y / h);
+        const shade = theme.skyStyle === 'overcast' ? 150 + r() * 60 : 225 + r() * 30;
+        const a = theme.skyStyle === 'overcast' ? 0.18 + r() * 0.2 : 0.35 + r() * 0.4;
+        ctx.save(); ctx.translate(x, y); ctx.scale(2.2, 0.8);
+        const g = ctx.createRadialGradient(0, 0, 1, 0, 0, rad);
+        g.addColorStop(0, 'rgba(' + shade + ',' + shade + ',' + (shade + 6) + ',' + a.toFixed(2) + ')');
+        g.addColorStop(1, 'rgba(' + shade + ',' + shade + ',' + (shade + 6) + ',0)');
+        ctx.fillStyle = g; ctx.fillRect(-rad, -rad, rad * 2, rad * 2);
+        ctx.restore();
+        // wrap the seam so the dome has no visible join
+        if (x < rad * 2.2) { ctx.save(); ctx.translate(x + w, y); ctx.scale(2.2, 0.8); ctx.fillStyle = g; ctx.fillRect(-rad, -rad, rad*2, rad*2); ctx.restore(); }
+      }
+    }
+    if (!theme.night && theme.skyStyle !== 'overcast') {
       // soft haze thickening toward the horizon line
       const haze = ctx.createLinearGradient(0, h*0.6, 0, h*0.82);
       haze.addColorStop(0, 'rgba(255,255,255,0)');
@@ -848,6 +886,9 @@ function buildTrackScene(track, scene, themeName) {
   const cx=(minX+maxX)/2, cz=(minZ+maxZ)/2;
   const span=Math.max(maxX-minX,maxZ-minZ)+1200;
 
+  // --- per-circuit scenery (scenery.js): water mask first — the terrain needs it ---
+  if (typeof prepareScenery === 'function') prepareScenery(track, theme);
+
   // --- terrain height query (blends toward track elevation near the circuit) ---
   function terrainY(x, z) {
     // Take the LOWEST nearby road elevation, not just the nearest sample's.
@@ -872,6 +913,9 @@ function buildTrackScene(track, scene, themeName) {
     // start punching through again. Keeping it tight matters because the car
     // has to sit on this when it runs wide.
     const CLEAR = 0.55;
+    // water (Monaco harbour, Marina Bay): drop the ground under the sea level
+    // plane, keeping a margin of land along the road
+    if (track._water && d > hw + 14 && track._water(x, z)) return track._seaY - 6;
     if (d < 55) return base - CLEAR;
     let t01 = Math.min(1, (d-55)/180);
     t01 = t01*t01*(3-2*t01); // smoothstep
@@ -1077,28 +1121,65 @@ function buildTrackScene(track, scene, themeName) {
   buildPitComplex(track, grp, theme, terrainY);
 
   // --- city buildings for street circuits ---
+  // buildStyle 'riviera' (Monaco): pastel stucco blocks with terracotta roofs,
+  // stacked up the hillside in rows; 'tower' (Singapore): a dense skyline of
+  // lit glass towers. Default: the generic street-circuit blocks.
   if (theme.buildings) {
     const wtex = windowTex(theme.night);
-    const heights = theme.night ? [18, 90] : [12, 45];
-    const bStep = Math.max(6, Math.floor(N/140));
-    for (let k=0;k<N;k+=bStep) {
-      if (rand() < 0.25) continue;
-      const side = (Math.floor(k/bStep)%2===0) ? 1 : -1;
+    const style = theme.buildStyle;
+    const heights = style === 'tower' ? [30, 160] : style === 'riviera' ? [14, 42] : theme.night ? [18, 90] : [12, 45];
+    const rows = style ? 3 : 1;
+    const bStep = Math.max(6, Math.floor(N/(style ? 180 : 140)));
+    const PASTEL = [0xd9a866, 0xe0906a, 0xe8c45c, 0xc9805c, 0xdcbb92, 0xeadbbf, 0xbf9a62, 0xdca0a4];
+    const roofM = new THREE.MeshStandardMaterial({ color: 0xa2553a, roughness: 0.85 });
+    // Riviera façades: pastel stucco, rows of shuttered windows, balconies
+    const facade = c => canvasTex(128, 256, (ctx, w, h) => {
+      ctx.fillStyle = '#' + c.toString(16).padStart(6, '0'); ctx.fillRect(0, 0, w, h);
+      const shut = ['#4f6b45', '#6b4a32', '#3f5f6e'][c % 3];
+      for (let y = 10; y < h - 8; y += 22) {
+        ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(0, y + 15, w, 2);        // balcony ledge
+        for (let x = 8; x < w - 8; x += 20) {
+          ctx.fillStyle = '#2a2f36'; ctx.fillRect(x, y, 8, 12);                         // window
+          ctx.fillStyle = shut; ctx.fillRect(x - 3, y, 3, 12); ctx.fillRect(x + 8, y, 3, 12); // shutters
+        }
+      }
+    });
+    const rivMats = PASTEL.map(c => new THREE.MeshStandardMaterial({ map: facade(c), roughness: 0.8, metalness: 0.0 }));
+    const towerM = theme.night ? new THREE.MeshBasicMaterial({ map: wtex })
+      : new THREE.MeshStandardMaterial({ map: wtex, roughness: 0.22, metalness: 0.55 });
+    // styled towns are merged by material (Monaco was ~600 separate meshes)
+    const bgrp = style ? new THREE.Group() : grp;
+    for (let row = 0; row < rows; row++)
+    for (let k=row*3;k<N;k+=bStep) {
+      if (rand() < (style ? 0.15 : 0.25)) continue;
+      const side = style ? (rand() < 0.5 ? 1 : -1) : ((Math.floor(k/bStep)%2===0) ? 1 : -1);
       const w = 16 + rand()*22, dpt = 14 + rand()*16;
-      const off = side*(boff + 10 + w/2 + rand()*8); // w is the cross-track dimension
+      const off = side*(boff + (style === 'tower' ? 26 : 10) + w/2 + rand()*8 + row * 42); // w is the cross-track dimension
       const x = track.px[k]+track.nx[k]*off, z = track.pz[k]+track.nz[k]*off;
       if (inPitComplex(track, k, off - Math.sign(off)*w/2)) continue;
       const rad = Math.hypot(w, dpt)/2 + hw + 3;
       if (!clearOfTrack(x, z, rad)) continue;
-      const h = heights[0] + rand()*(heights[1]-heights[0]);
-      const mat = theme.night
+      if (track._sceneryClear && !track._sceneryClear(x, z, Math.hypot(w, dpt) / 2)) continue;
+      // further back = taller (the town climbs the hill / the skyline rises)
+      let h = heights[0] + rand()*(heights[1]-heights[0]) * (style ? 0.55 + row * 0.3 : 1);
+      const y0 = terrainY(x,z);
+      const rotY = Math.atan2(track.tx[k], track.tz[k]);
+      if (style === 'riviera') {
+        const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, dpt), rivMats[Math.floor(rand() * rivMats.length)]);
+        b.position.set(x, y0 + h/2, z); b.rotation.y = rotY; b.userData.caster = row === 0; bgrp.add(b);
+        const r = new THREE.Mesh(new THREE.BoxGeometry(w + 1.2, 1.4, dpt + 1.2), roofM);
+        r.position.set(x, y0 + h + 0.7, z); r.rotation.y = rotY; bgrp.add(r);
+        continue;
+      }
+      const mat = style ? towerM : theme.night
         ? new THREE.MeshBasicMaterial({ map: wtex })
         : new THREE.MeshStandardMaterial({ map: wtex, roughness: 0.22, metalness: 0.55 });
       const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, dpt), mat);
-      b.position.set(x, terrainY(x,z) + h/2, z);
-      b.rotation.y = Math.atan2(track.tx[k], track.tz[k]);
-      grp.add(b);
+      b.position.set(x, y0 + h/2, z);
+      b.rotation.y = rotY;
+      bgrp.add(b);
     }
+    if (style) { if (typeof _mergeStatic === 'function') _mergeStatic(bgrp, new Set()); grp.add(bgrp); }
   }
 
   // --- floodlights for night circuits ---
@@ -1132,20 +1213,49 @@ function buildTrackScene(track, scene, themeName) {
       attempts++;
       const k = Math.floor(rand()*N);
       const side = rand()>0.5?1:-1;
-      const off = side*(boff + 10 + rand()*140);
+      const near = theme.treeNear != null ? theme.treeNear : 10, far = theme.treeFar || 140;
+      const off = side*(boff + near + rand()*far);
       const x = track.px[k]+track.nx[k]*off, z = track.pz[k]+track.nz[k]*off;
-      if (!clearOfTrack(x, z, boff+5) || inPitComplex(track, k, off)) continue;
-      positions.push([x, z, 0.7+rand()*0.7, terrainY(x,z)]);
+      if (!clearOfTrack(x, z, boff + Math.min(5, near)) || inPitComplex(track, k, off)) continue;
+      if (track._sceneryClear && !track._sceneryClear(x, z, 4)) continue;   // landmarks, water
+      const sc = theme.treeScale ? theme.treeScale[0] + rand() * (theme.treeScale[1] - theme.treeScale[0]) : 0.7 + rand()*0.7;
+      positions.push([x, z, sc, terrainY(x,z), rand()]);
     }
     const m4 = new THREE.Matrix4();
-    if (theme.tree === 'pine') {
+    if (theme.tree === 'broadleaf' || theme.tree === 'mixed') {
+      // deciduous park trees (Monza, Silverstone) — round crowns in a few
+      // greens; 'mixed' adds conifers (Suzuka's wooded hills)
+      const conifer = theme.tree === 'mixed' ? positions.filter(p => p[4] < 0.4) : [];
+      const broad = theme.tree === 'mixed' ? positions.filter(p => p[4] >= 0.4) : positions;
+      const crownG = new THREE.IcosahedronGeometry(4.2, 0);
+      const trunkG = new THREE.CylinderGeometry(0.35, 0.55, 5, 5);
+      const greens = [0x1f4a1c, 0x29561f, 0x1b3f18, 0x335f26];
+      const trunks = new THREE.InstancedMesh(trunkG, new THREE.MeshStandardMaterial({ color: 0x4c3a28, roughness: 0.95 }), broad.length);
+      const crowns = new THREE.InstancedMesh(crownG, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, flatShading: true }), broad.length);
+      const col = new THREE.Color();
+      broad.forEach((p, ii) => {
+        m4.makeScale(p[2], p[2], p[2]); m4.setPosition(p[0], p[3] + 2.5 * p[2], p[1]); trunks.setMatrixAt(ii, m4);
+        const sq = 0.8 + p[4] * 0.4;
+        m4.makeScale(p[2] * sq, p[2] * (1.15 - p[4] * 0.2), p[2] * sq); m4.setPosition(p[0], p[3] + 7.2 * p[2], p[1]); crowns.setMatrixAt(ii, m4);
+        col.setHex(greens[Math.floor(p[4] * greens.length) % greens.length]); if (theme.night) col.multiplyScalar(0.45);
+        crowns.setColorAt(ii, col);
+      });
+      grp.add(trunks); grp.add(crowns);
+      if (conifer.length) {
+        const coneG = new THREE.ConeGeometry(2.6, 8, 6);
+        const cones = new THREE.InstancedMesh(coneG, new THREE.MeshStandardMaterial({ color: 0x1f4f22, roughness: 0.95 }), conifer.length);
+        conifer.forEach((p, ii) => { m4.makeScale(p[2], p[2] * 1.2, p[2]); m4.setPosition(p[0], p[3] + 6.5 * p[2], p[1]); cones.setMatrixAt(ii, m4); });
+        grp.add(cones);
+      }
+    } else if (theme.tree === 'pine') {
       const coneG = new THREE.ConeGeometry(2.6, 8, 6);
       const trunkG = new THREE.CylinderGeometry(0.4, 0.55, 2.6, 5);
-      const cones = new THREE.InstancedMesh(coneG, new THREE.MeshStandardMaterial({ color: theme.night?0x0e2413:0x1d4d1e, roughness: 0.95, metalness: 0.0 }), positions.length);
-      const trunks = new THREE.InstancedMesh(trunkG, new THREE.MeshStandardMaterial({ color: 0x4a3520, roughness: 0.95, metalness: 0.0 }), positions.length);
+      const cones = new THREE.InstancedMesh(coneG, new THREE.MeshStandardMaterial({ color: theme.night?0x0e2413:(theme.treeColor || 0x1d4d1e), roughness: 0.95, metalness: 0.0 }), positions.length);
+      const trunks = new THREE.InstancedMesh(trunkG, new THREE.MeshStandardMaterial({ color: 0x3b2a1c, roughness: 0.95, metalness: 0.0 }), positions.length);
       positions.forEach((p, ii) => {
-        m4.makeScale(p[2],p[2],p[2]);
-        m4.setPosition(p[0], p[3]+6*p[2], p[1]);
+        const tall = theme.treeScale ? 1.5 : 1;          // spruce: slimmer and taller
+        m4.makeScale(p[2] / Math.sqrt(tall), p[2] * tall, p[2] / Math.sqrt(tall));
+        m4.setPosition(p[0], p[3]+6*p[2]*tall, p[1]);
         cones.setMatrixAt(ii, m4);
         m4.makeScale(p[2],p[2],p[2]);
         m4.setPosition(p[0], p[3]+1.2*p[2], p[1]);
@@ -1168,6 +1278,9 @@ function buildTrackScene(track, scene, themeName) {
       grp.add(trunks); grp.add(crowns);
     }
   }
+
+  // --- landmarks (scenery.js) ---
+  if (typeof buildScenery === 'function') buildScenery(track, grp, theme, { terrainY, clearOfTrack, boff, rand });
 
   // --- start gantry ---
   {
