@@ -233,7 +233,7 @@ class CarPhysics {
     // trail a little brake into a corner, but full brake + full lock = run wide.
     // how hard the circle bites. The AI's is softened, and fades further in the
     // wet, where its planner's braking points have the least margin
-    const circ = A.circle != null ? A.circle * (A === AI_ASSISTS ? Math.max(0, 1 - 1.15 * TRACK_WETNESS) : 1) : 1;
+    const circ = A.circle != null ? A.circle * Math.max(0, 1 - 1.15 * TRACK_WETNESS) : 1;   // same for you and the AI
     const uLat = Math.min(1, this._latUse || 0) * circ;
     const uLatB = uLat * 0.7;                       // BUILD 82: softened with the turn side (was 1.0)
     const circleBrake = Math.sqrt(Math.max(0.2, 1 - uLatB * uLatB));
