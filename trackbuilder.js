@@ -64,6 +64,7 @@ class TrackData {
     // went. Measured over ten circuits with known pole times, relaxing this
     // as well made every lap ~10% too slow for no extra braking zones.
     const MIN_R = 9.0;
+    const limitCurv = () => {
     for (let pass = 0; pass < 120; pass++) {
       let worst = 0;
       const npx = new Float32Array(this.px), npz = new Float32Array(this.pz);
@@ -82,6 +83,10 @@ class TrackData {
       this.px=npx; this.pz=npz;
       if (worst <= 1/MIN_R) break;
     }
+    };
+    limitCurv();
+    this._separateSections();
+    limitCurv();   // the separation bumps can tighten a corner again
     // tangents, normals, distances
     let d = 0;
     for (let i = 0; i < SAMPLES; i++) {
@@ -134,6 +139,57 @@ class TrackData {
     for (let i = 0; i < SAMPLES; i++) {
       let b = this.curv[i] * 8;
       this.bank[i] = Math.max(-0.07, Math.min(0.07, b));
+    }
+  }
+
+  // Two parts of the lap that run side by side too closely (Monaco's
+  // Fairmont hairpin: the legs were ~10 m apart) put one section's barrier on
+  // the other's road — a wall across the track that cars ran into. Push such
+  // near-parallel sections apart until each barrier clears the other road,
+  // with a smooth bump so the line stays driveable. Real crossings (Suzuka's
+  // bridge) are left alone: they cross at an angle and sit at different heights.
+  _separateSections() {
+    const N = this.n, hw = this.width / 2;
+    const minSep = (this.wallOff + 0.8) + hw + 1.2;
+    let len = 0; for (let i = 0; i < N; i++) { const j = (i + 1) % N; len += Math.hypot(this.px[j] - this.px[i], this.pz[j] - this.pz[i]); }
+    const ds = len / N, minGapIdx = Math.ceil(minSep * 4 / ds), W = Math.ceil(45 / ds);
+    for (let iter = 0; iter < 12; iter++) {
+      // spatial hash
+      const C = minSep, grid = new Map();
+      for (let i = 0; i < N; i++) { const kx = Math.floor(this.px[i] / C), kz = Math.floor(this.pz[i] / C), k = kx + ',' + kz; let a = grid.get(k); if (!a) grid.set(k, a = []); a.push(i); }
+      const tang = i => { const a = (i - 1 + N) % N, b = (i + 1) % N; const dx = this.px[b] - this.px[a], dz = this.pz[b] - this.pz[a], l = Math.hypot(dx, dz) || 1; return [dx / l, dz / l]; };
+      const pushX = new Float32Array(N), pushZ = new Float32Array(N);
+      let found = 0;
+      for (let i = 0; i < N; i += 2) {
+        const kx = Math.floor(this.px[i] / C), kz = Math.floor(this.pz[i] / C);
+        let bj = -1, bd = minSep;
+        for (let ox = -1; ox <= 1; ox++) for (let oz = -1; oz <= 1; oz++) {
+          const a = grid.get((kx + ox) + ',' + (kz + oz)); if (!a) continue;
+          for (const j of a) {
+            let di = Math.abs(i - j); di = Math.min(di, N - di); if (di < minGapIdx) continue;
+            const d = Math.hypot(this.px[i] - this.px[j], this.pz[i] - this.pz[j]);
+            if (d < bd) { bd = d; bj = j; }
+          }
+        }
+        if (bj < 0) continue;
+        const ti = tang(i), tj = tang(bj);
+        if (Math.abs(ti[0] * tj[0] + ti[1] * tj[1]) < 0.6) continue;     // a crossing, not a pinch
+        let ux = this.px[i] - this.px[bj], uz = this.pz[i] - this.pz[bj]; const ul = Math.hypot(ux, uz) || 1; ux /= ul; uz /= ul;
+        const need = (minSep - bd) / 2 + 0.3;
+        if (need * ux > pushX[i] || need * ux < pushX[i]) { pushX[i] = need * ux; pushZ[i] = need * uz; }
+        found++;
+      }
+      if (!found) break;
+      // spread each push smoothly over the neighbouring samples
+      const sx = new Float32Array(N), sz = new Float32Array(N), sw = new Float32Array(N);
+      for (let i = 0; i < N; i++) {
+        if (!pushX[i] && !pushZ[i]) continue;
+        for (let o = -W; o <= W; o++) {
+          const k = (i + o + N) % N, w = Math.exp(-(o * o) / (2 * (W / 2.2) ** 2));
+          sx[k] += pushX[i] * w; sz[k] += pushZ[i] * w; sw[k] += w;
+        }
+      }
+      for (let i = 0; i < N; i++) if (sw[i] > 0) { const n = Math.max(1, sw[i]); this.px[i] += sx[i] / n; this.pz[i] += sz[i] / n; }
     }
   }
 
@@ -1008,7 +1064,10 @@ function buildTrackScene(track, scene, themeName) {
       const o = offs[i2] == null ? off : offs[i2];
       const bx=track.px[k]+track.nx[k]*o, bz=track.pz[k]+track.nz[k]*o;
       const by=track.py[k];
-      v[i2*6+0]=bx; v[i2*6+1]=by+y1; v[i2*6+2]=bz;
+      // never hang down into another road passing underneath (Suzuka's
+      // crossover): keep 4.5 m of headroom over it
+      const yb = (y1 < 0 && underClear) ? Math.max(y1, underClear(bx, bz, by)) : y1;
+      v[i2*6+0]=bx; v[i2*6+1]=by+yb; v[i2*6+2]=bz;
       v[i2*6+3]=bx; v[i2*6+4]=by+y2; v[i2*6+5]=bz;
       uv2[i2*4+0]=i2*uvScale; uv2[i2*4+1]=0;
       uv2[i2*4+2]=i2*uvScale; uv2[i2*4+3]=1;
@@ -1020,14 +1079,31 @@ function buildTrackScene(track, scene, themeName) {
     gg.setIndex(ia);
     return new THREE.Mesh(gg, mat);
   }
+  // headroom check for barrier faces over a lower section of track
+  const _uGrid = new Map(), _UC = 20;
+  for (let q = 0; q < N; q += 2) { const k2 = Math.floor(track.px[q] / _UC) + ',' + Math.floor(track.pz[q] / _UC); let a = _uGrid.get(k2); if (!a) _uGrid.set(k2, a = []); a.push(q); }
+  function underClear(x, z, by) {
+    let lim = -Infinity; const gx = Math.floor(x / _UC), gz = Math.floor(z / _UC);
+    for (let ox = -1; ox <= 1; ox++) for (let oz = -1; oz <= 1; oz++) {
+      const a = _uGrid.get((gx + ox) + ',' + (gz + oz)); if (!a) continue;
+      for (const q of a) {
+        if (track.py[q] > by - 2) continue;                       // only roads well below
+        if (Math.hypot(track.px[q] - x, track.pz[q] - z) > hw + 2) continue;
+        lim = Math.max(lim, track.py[q] + 4.5 - by);
+      }
+    }
+    return lim;
+  }
   const barrierMat = new THREE.MeshBasicMaterial({ map: bTex, side: THREE.DoubleSide });
   // the barrier walls are the one piece of scenery whose shadow lands on the
   // racing line, so they're the only tagged casters
-  const wallA = wallStrip(boff, 0, 1.1, barrierMat, 0.35);
+  // barrier faces run from 6 m below the road down into the ground, so there
+  // is never a gap beneath them to see other parts of the circuit through
+  const wallA = wallStrip(boff, -6, 1.1, barrierMat, 0.35);
   // pit side: the barrier steps out around the pit lane, and the garages
   // themselves form the wall along the boxes
   const pitBar = k => pitSideBarrierOff(track, k, boff);
-  const wallB = wallStrip(-boff, 0, 1.1, barrierMat, 0.35, pitBar);
+  const wallB = wallStrip(-boff, -6, 1.1, barrierMat, 0.35, pitBar);
   wallA.userData.caster = true; wallB.userData.caster = true;
   grp.add(wallA); grp.add(wallB);
   const fenceTex = canvasTex(64, 64, (ctx,w,h) => {
