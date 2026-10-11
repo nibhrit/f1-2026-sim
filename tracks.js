@@ -237,6 +237,11 @@ Object.keys(START_SHIFT).forEach(id => {
 // Covered sections, as a fraction of the lap. Monaco's tunnel runs from just
 // after Portier to the braking zone for the Nouvelle Chicane — roughly 45% to
 // 57% of the way round. Add entries here for any other circuit that needs one.
+// figure-of-eight crossings: the lap fraction of the section that goes OVER
+// the bridge (Suzuka: the back straight to 130R crosses above the run from
+// Degner to the hairpin)
+const TRACK_CROSS_OVER = { japan: 0.849 };
+
 const TRACK_TUNNEL = {
   monaco: [0.45, 0.575],
 };

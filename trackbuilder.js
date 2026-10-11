@@ -135,10 +135,56 @@ class TrackData {
         0.15 * Math.sin(5*u + seed*2.3)
       );
     }
+    this._fixCrossings();
     // --- camber: corners tilt inward (positive camber) ---
     for (let i = 0; i < SAMPLES; i++) {
       let b = this.curv[i] * 8;
       this.bank[i] = Math.max(-0.07, Math.min(0.07, b));
+    }
+  }
+
+  // Figure-of-eight crossings (Suzuka). The elevation is a smooth synthetic
+  // profile, so the two roads could meet at almost the same height — and with
+  // the wrong one on top: the run to 130R went UNDER the bridge, blind. Find
+  // each crossing, put the right section on top (TRACK_CROSS_OVER names the
+  // lap fraction that goes over; default: whichever is already higher) and
+  // lift/lower the two roads with smooth humps for a proper bridge clearance.
+  _fixCrossings() {
+    const N = this.n, L = this.length, hw = this.width / 2, CLEAR = 9.5;
+    const done = [];
+    for (let i = 0; i < N; i += 3) {
+      for (let j = 0; j < N; j += 3) {
+        let dd = Math.abs(this.dist[i] - this.dist[j]); dd = Math.min(dd, L - dd);
+        if (dd < 300) continue;
+        if (Math.hypot(this.px[i] - this.px[j], this.pz[i] - this.pz[j]) > hw) continue;
+        const dot = Math.abs(this.tx[i] * this.tx[j] + this.tz[i] * this.tz[j]);
+        if (dot > 0.85) continue;                                  // parallel, not a crossing
+        if (done.some(([a, b]) => (Math.abs(this.dist[a] - this.dist[i]) < 120 && Math.abs(this.dist[b] - this.dist[j]) < 120) ||
+                                  (Math.abs(this.dist[a] - this.dist[j]) < 120 && Math.abs(this.dist[b] - this.dist[i]) < 120))) continue;
+        done.push([i, j]);
+      }
+    }
+    const want = (typeof TRACK_CROSS_OVER !== 'undefined') ? TRACK_CROSS_OVER[this.def.id] : null;
+    for (const [a, b] of done) {
+      let over = this.py[a] >= this.py[b] ? a : b, under = over === a ? b : a;
+      if (want != null) {
+        const fa = this.dist[a] / L, fb = this.dist[b] / L;
+        const da = Math.min(Math.abs(fa - want), 1 - Math.abs(fa - want)), db = Math.min(Math.abs(fb - want), 1 - Math.abs(fb - want));
+        over = da < db ? a : b; under = over === a ? b : a;
+      }
+      const gap = this.py[over] - this.py[under];
+      if (gap >= CLEAR) continue;
+      const need = CLEAR - gap, SPAN = 260;                       // metres either side
+      const bump = (c, amt) => {
+        for (let k = 0; k < N; k++) {
+          let d = Math.abs(this.dist[k] - this.dist[c]); d = Math.min(d, L - d);
+          if (d > SPAN) continue;
+          const t = 0.5 + 0.5 * Math.cos(Math.PI * d / SPAN);         // smooth hump
+          this.py[k] += amt * t;
+        }
+      };
+      bump(over, need * 0.6); bump(under, -need * 0.4);
+      (this.crossings = this.crossings || []).push({ over, under });
     }
   }
 
@@ -1018,6 +1064,33 @@ function buildTrackScene(track, scene, themeName) {
   // the car needs this to sit on the ground when it runs off the road
   track.terrainY = terrainY;
 
+  // headroom check for barrier faces over a lower section of track
+  const _uGrid = new Map(), _UC = 20;
+  for (let q = 0; q < N; q += 2) { const k2 = Math.floor(track.px[q] / _UC) + ',' + Math.floor(track.pz[q] / _UC); let a = _uGrid.get(k2); if (!a) _uGrid.set(k2, a = []); a.push(q); }
+  function underClear(x, z, by) {
+    let lim = -Infinity; const gx = Math.floor(x / _UC), gz = Math.floor(z / _UC);
+    for (let ox = -1; ox <= 1; ox++) for (let oz = -1; oz <= 1; oz++) {
+      const a = _uGrid.get((gx + ox) + ',' + (gz + oz)); if (!a) continue;
+      for (const q of a) {
+        if (track.py[q] > by - 2) continue;                       // only roads well below
+        if (Math.hypot(track.px[q] - x, track.pz[q] - z) > hw + 2) continue;
+        lim = Math.max(lim, track.py[q] + 4.5 - by);
+      }
+    }
+    return lim;
+  }
+  // --- bridges: a concrete deck under the upper road where two sections cross ---
+  if (track.crossings) {
+    const deckM = new THREE.MeshStandardMaterial({ color: theme.night ? 0x3b3f4a : 0x9a9a94, roughness: 0.85 });
+    for (const c of track.crossings) {
+      const k = c.over, ang = Math.atan2(track.tx[k], track.tz[k]);
+      const deckW = (track.wallOff + 0.8) * 2 + 1, deckL = 34;
+      const d = new THREE.Mesh(new THREE.BoxGeometry(deckW, 1.6, deckL), deckM);
+      d.position.set(track.px[k], track.py[k] - 0.9, track.pz[k]); d.rotation.y = ang;
+      d.userData.caster = true; grp.add(d);
+    }
+  }
+
   // --- skirt under the road edge ---
   // The road is a ribbon floating above a separately generated ground mesh, so
   // wherever the two diverge there is an open gap you can see under. Rather
@@ -1035,7 +1108,8 @@ function buildTrackScene(track, scene, themeName) {
         const k = i2 % N;
         const p = track.posAt(k, off);
         const top = H(k, off) + 0.04;
-        const ground = terrainY(p.x, p.z) - 1.5;   // always finish below the dirt
+        let ground = terrainY(p.x, p.z) - 1.5;     // always finish below the dirt
+        if (underClear) { const uc = underClear(p.x, p.z, top); if (uc > ground - top) ground = top + uc; }
         v[i2*6+0]=p.x; v[i2*6+1]=top;    v[i2*6+2]=p.z;
         v[i2*6+3]=p.x; v[i2*6+4]=ground; v[i2*6+5]=p.z;
         uv[i2*4+0]=0; uv[i2*4+1]=i2*0.05; uv[i2*4+2]=1; uv[i2*4+3]=i2*0.05;
@@ -1078,21 +1152,6 @@ function buildTrackScene(track, scene, themeName) {
     gg.setAttribute('uv', new THREE.BufferAttribute(uv2,2));
     gg.setIndex(ia);
     return new THREE.Mesh(gg, mat);
-  }
-  // headroom check for barrier faces over a lower section of track
-  const _uGrid = new Map(), _UC = 20;
-  for (let q = 0; q < N; q += 2) { const k2 = Math.floor(track.px[q] / _UC) + ',' + Math.floor(track.pz[q] / _UC); let a = _uGrid.get(k2); if (!a) _uGrid.set(k2, a = []); a.push(q); }
-  function underClear(x, z, by) {
-    let lim = -Infinity; const gx = Math.floor(x / _UC), gz = Math.floor(z / _UC);
-    for (let ox = -1; ox <= 1; ox++) for (let oz = -1; oz <= 1; oz++) {
-      const a = _uGrid.get((gx + ox) + ',' + (gz + oz)); if (!a) continue;
-      for (const q of a) {
-        if (track.py[q] > by - 2) continue;                       // only roads well below
-        if (Math.hypot(track.px[q] - x, track.pz[q] - z) > hw + 2) continue;
-        lim = Math.max(lim, track.py[q] + 4.5 - by);
-      }
-    }
-    return lim;
   }
   const barrierMat = new THREE.MeshBasicMaterial({ map: bTex, side: THREE.DoubleSide });
   // the barrier walls are the one piece of scenery whose shadow lands on the
