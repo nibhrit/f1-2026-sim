@@ -190,7 +190,18 @@ const TRACK_RAIN = {
   bahrain:0.02, saudi:0.02, qatar:0.02, abudhabi:0.02, vegas:0.02, azerbaijan:0.02, miami:0.02,
 };
 
+// Aero package per circuit. Baku, Monza, Las Vegas and Jeddah are run in
+// low-downforce trim: less drag (340+ km/h on the straights) but less aero
+// grip in the corners and under braking — which is exactly what makes Baku's
+// right-angle corners heavy-braking, slow-apex corners.
+//   drag: multiplier on the drag coefficient   df: on the aero grip terms
+const TRACK_AERO = {
+  azerbaijan: { drag: 0.78, df: 0.84 }, italy: { drag: 0.78, df: 0.84 },
+  vegas: { drag: 0.80, df: 0.86 }, saudi: { drag: 0.86, df: 0.92 },
+};
+
 TRACKS.forEach(t => {
+  t.aero = TRACK_AERO[t.id] || { drag: 1, df: 1 };
   t.theme = TRACK_THEMES[t.id] || 'green';
   t.elev = TRACK_ELEV[t.id] != null ? TRACK_ELEV[t.id] : 6;
   t.drs = TRACK_DRS[t.id] || 2;

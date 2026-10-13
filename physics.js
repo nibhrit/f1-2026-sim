@@ -25,9 +25,15 @@ let WET_BONUS_FADE = 0.6;
 // strength it ran wide (Japan/Monaco/Qatar off-track, +2-8 s/lap). 0.6 costs
 // it ~0.1-0.3 s and keeps every difficulty clean.
 const AI_ASSISTS = { abs: true, steer: true, absEff: 1, circle: 0.6 };
+// Braking grip vs speed (m/s^2), fitted to real F1 data at Baku (Brembo):
+// Turn 1 334 -> 125 km/h in 1.85 s, Turn 3 315 -> 99 km/h in 2.0 s, ~110 m.
+// Downforce makes it ~5.9 g at 330 km/h, ~3.1 g at 200, ~1.9 g at 100. The old
+// curve (18 + 0.0105 v^2) stopped the car from 330 in 1.26 s and 79 m — about
+// 40% too short, which is why heavy-braking corners felt easy.
+function brakeGripAt(v, df) { return Math.min(58, 15 + 0.005 * (df || 1) * v * v); }
 const BRAKE_SYS = 60;        // m/s^2 the brake system asks for at 100% pedal
-const LOCK_AT = 1.6;         // pedal demand / tyre grip ratio that locks a wheel
-const UNLOCK_AT = 1.25;      // ...and the ratio you must ease back under to free it
+const LOCK_AT = 2.5;         // pedal demand / tyre grip ratio that locks a wheel (~150 km/h on full pedal)
+const UNLOCK_AT = 1.9;       // ...and the ratio you must ease back under to free it
 
 // Standing water. Fixed places on the lap (seeded by track length) so a
 // puddle is always in the same spot and can be learned, mainly on straights
@@ -225,7 +231,8 @@ class CarPhysics {
     }
     this.aquaplane = aq;
     this.aquaplaning = aq > 0.2;
-    const latMax = (1 - 0.30 * aq) * Math.min(53 * aeroLoss, 17.6 + 0.0104 * v * v * aeroLoss) * punctLoss
+    const adf = t.aeroDf || 1;
+    const latMax = (1 - 0.30 * aq) * Math.min(53 * aeroLoss * adf, 17.6 + 0.0104 * adf * v * v * aeroLoss) * punctLoss
       * gripMul * this.tyreMul * this.tempMul * wg * effGripBonus(this.gripBonus) * (1 - 0.04 * (this.flatSpot || 0));
     // Braking and cornering share ONE budget (friction circle). How much of the
     // lateral grip the tyres used last step limits what is left for braking and
@@ -279,7 +286,7 @@ class CarPhysics {
     // circle leaves them. Without ABS, asking for far more than that locks the
     // fronts — which is what happens if you stay on full brake as the car slows
     // and the downforce bleeds away, or brake hard while still turning.
-    const brakeGrip = Math.min(58, 18 + 0.0105 * v * v) * gripMul * longMul;
+    const brakeGrip = brakeGripAt(v, t.aeroDf) * gripMul * longMul;
     let decel = 0;
     if (this.brake > 0) {
       if (this.speed > 0.5) {
@@ -308,7 +315,7 @@ class CarPhysics {
     //   tow (0..1)— running in another car's wake sheds up to a further 16%
     if (Math.abs(v) > 0.3) {
       const dir = Math.sign(v);
-      let cd = this.drsOpen ? 0.00045 : 0.0006;
+      let cd = (this.drsOpen ? 0.00045 : 0.0006) * (t.aeroDrag || 1);
       cd *= (1 - 0.16 * (this.tow || 0));
       accel -= dir * (cd * v * v + 0.4);
       if (onGrass) accel -= dir * 0.030 * Math.abs(v);   // cutting must not pay

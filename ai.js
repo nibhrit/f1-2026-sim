@@ -103,7 +103,8 @@ class AIDriver {
     // precisely the grip available. Done by bisection because latMax itself
     // depends on v. If these constants drift from the physics the AI plans
     // corner speeds the car cannot actually hold, and scrubs all the way round.
-    const LAT_CAP = 53, LAT_MECH = 17.6, LAT_AERO = 0.0104;
+    const adf = track.aeroDf || 1;
+    const LAT_CAP = 53 * adf, LAT_MECH = 17.6, LAT_AERO = 0.0104 * adf;
     const cs = new Float32Array(N);
     for (let i = 0; i < N; i++) {
       const c = cSm[i];
@@ -155,7 +156,7 @@ class AIDriver {
     for (let s = 0; s < 2; s++)
       for (let i = N - 1; i >= 0; i--) {
         const j = (i + 1) % N;
-        const dec = Math.min(58, 18 + 0.0105 * v[i] * v[i]) * brakeFac;
+        const dec = brakeGripAt(v[i], this.track.aeroDf) * brakeFac;
         const cap = Math.sqrt(v[j] * v[j] + 2 * dec * seg);
         if (cap < v[i]) v[i] = cap;
       }
@@ -182,7 +183,7 @@ class AIDriver {
         // cars off at Austria's fast corners, at every difficulty.
         const circle = Math.sqrt(Math.max(0, 1 - latFrac * latFrac));
         const tractive = Math.min((8.6 + 0.22 * Math.min(u, 25)) * tractionMul, 470 / Math.max(u, 10));
-        const acc = tractive * circle - (0.0006 * u * u + 0.4);
+        const acc = tractive * circle - (0.0006 * (this.track.aeroDrag || 1) * u * u + 0.4);
         const cap = Math.sqrt(Math.max(1, u * u + 2 * Math.max(0.3, acc) * seg));
         if (cap < v[i]) v[i] = cap;
       }
@@ -284,7 +285,7 @@ class AIDriver {
     // Top speed. DRS and the tow both raise the ceiling, otherwise the AI
     // would sit in another car's wake at its own still-air top speed and
     // never complete a pass the physics is already handing it.
-    vAllow = Math.min(vAllow, (80 + this.driver.skill * 8 + (this.diff - 1) * 30)
+    vAllow = Math.min(vAllow, (80 + this.driver.skill * 8 + (this.diff - 1) * 30) * Math.cbrt(1 / (t.aeroDrag || 1))
       * (0.88 + 0.12 * gripFac) + (car.drsOpen ? 8 : 0) + (car.tow || 0) * 6);
 
     // ---- base lane = racing line (clean air) ----
@@ -344,7 +345,7 @@ class AIDriver {
       vAllow = Math.min(vAllow, Math.sqrt(laneAhead.speed * laneAhead.speed + 2 * 17 * eff));
       const aL = laneAhead.decelNow || 0;
       if (aL > 8) {
-        const aF = 0.8 * Math.min(58, 18 + 0.0105 * v * v);
+        const aF = 0.8 * brakeGripAt(v, t.aeroDf);
         const room = laneAhead.speed * laneAhead.speed / (2 * aL) + eff;
         vAllow = Math.min(vAllow, Math.sqrt(2 * aF * room));
       }

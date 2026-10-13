@@ -6,6 +6,8 @@ class TrackData {
   constructor(def) {
     this.def = def;
     this.width = def.width;
+    this.aeroDrag = (def.aero && def.aero.drag) || 1;   // low-downforce circuits (TRACK_AERO)
+    this.aeroDf = (def.aero && def.aero.df) || 1;
     // street circuits: walls hug the track; permanent circuits have run-off
     // Street circuits are lined with barriers, not run-off. At +5 m you could
     // straight-line a Monaco chicane across "grass" that costs almost nothing

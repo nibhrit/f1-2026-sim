@@ -412,7 +412,7 @@ function loadAssists() {
 function saveAssists() { try { localStorage.setItem('f1sim_assists', JSON.stringify(G.assists)); } catch (e) {} }
 function playerAssists() {
   const a = G.assists || G_ASSIST_DEFAULT;
-  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 87: you
+  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 88: you
   // were on the full 1.0 while the AI had 0.6, so it turned better under
   // braking than you could)
   return { abs: !!a.abs, steer: !!a.steer, absEff: 0.94, circle: AI_ASSISTS.circle };
@@ -431,7 +431,7 @@ function syncAssistButtons() {
   syncAssistButtons();
 })();
 
-// BUILD 87: the whole difficulty scale moved up (the player was ~1s+/lap
+// BUILD 88: the whole difficulty scale moved up (the player was ~1s+/lap
 // faster than 'Alien 82%'). Added to the normalised difficulty for the AI's
 // GRIP (not its planning): ~1.1-2.3 s a lap faster at 82%. Clean to 2.5.
 const AI_PACE_SHIFT = 0.6;
@@ -725,7 +725,7 @@ function aiPerf(driver) {
     // clamp is lifted — at the 1.20 top end dt2 reaches ~1.85, the level the AI
     // was validated to run clean. Floored slightly below 0 for the easy end.
     const dt2 = Math.max(-0.25, Math.min(1.85, (G.difficulty - 0.98) / 0.12));
-    // the BUILD 87 shift goes into GRIP only: more car, same planning margin.
+    // the BUILD 88 shift goes into GRIP only: more car, same planning margin.
     // (Shifting the planner's pace fraction too ran the Alien field wide at
     // Austria and Britain — 12 track-limit penalties a race.)
     const dt2g = Math.max(-0.25, Math.min(2.5, dt2 + AI_PACE_SHIFT));
@@ -2825,7 +2825,7 @@ function updateCamera(dt) {
     // camera only (every other view, and every other car, keeps the real one).
     if (G.player.mesh.userData.haloStrut) G.player.mesh.userData.haloStrut.scale.set(0.4, 1, 0.6);
     const tA = G.track, kA = (p.trackIdx + Math.floor(12 / (tA.length/tA.n))) % tA.n;
-    camera.position.set(p.x + sx*0.05, baseY + 1.02, p.z + cz*0.05);
+    camera.position.set(p.x + sx*0.05, baseY + 1.02 * CAR_SCALE, p.z + cz*0.05);
     // look ahead, biased into the upcoming corner like a driver's gaze
     camera.lookAt(
       p.x + sx*22 + tA.tx[kA]*4*back, baseY + 0.62, p.z + cz*22 + tA.tz[kA]*4*back);
@@ -2841,7 +2841,7 @@ function updateCamera(dt) {
     // mirrors, nose and front wheels are all in shot rather than just the top
     // of the helmet. Looks down more steeply, which also brings the top of the
     // wheel and the driver's hands into frame either side of the helmet.
-    camera.position.set(p.x - sx*1.05, baseY + 1.66, p.z - cz*1.05);
+    camera.position.set(p.x - sx*1.05 * CAR_SCALE, baseY + 1.66 * CAR_SCALE, p.z - cz*1.05 * CAR_SCALE);
     camera.lookAt(p.x + sx*17, baseY + 0.30, p.z + cz*17);
     camera.rotation.z += -p.steer * 0.022;
     if (p.speed > 55 && !REDUCED_MOTION) {
@@ -4109,5 +4109,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 87';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 88';
 })();
