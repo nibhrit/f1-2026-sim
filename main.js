@@ -412,7 +412,7 @@ function loadAssists() {
 function saveAssists() { try { localStorage.setItem('f1sim_assists', JSON.stringify(G.assists)); } catch (e) {} }
 function playerAssists() {
   const a = G.assists || G_ASSIST_DEFAULT;
-  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 86: you
+  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 87: you
   // were on the full 1.0 while the AI had 0.6, so it turned better under
   // braking than you could)
   return { abs: !!a.abs, steer: !!a.steer, absEff: 0.94, circle: AI_ASSISTS.circle };
@@ -431,7 +431,7 @@ function syncAssistButtons() {
   syncAssistButtons();
 })();
 
-// BUILD 86: the whole difficulty scale moved up (the player was ~1s+/lap
+// BUILD 87: the whole difficulty scale moved up (the player was ~1s+/lap
 // faster than 'Alien 82%'). Added to the normalised difficulty for the AI's
 // GRIP (not its planning): ~1.1-2.3 s a lap faster at 82%. Clean to 2.5.
 const AI_PACE_SHIFT = 0.6;
@@ -725,7 +725,7 @@ function aiPerf(driver) {
     // clamp is lifted — at the 1.20 top end dt2 reaches ~1.85, the level the AI
     // was validated to run clean. Floored slightly below 0 for the easy end.
     const dt2 = Math.max(-0.25, Math.min(1.85, (G.difficulty - 0.98) / 0.12));
-    // the BUILD 86 shift goes into GRIP only: more car, same planning margin.
+    // the BUILD 87 shift goes into GRIP only: more car, same planning margin.
     // (Shifting the planner's pace fraction too ran the Alien field wide at
     // Austria and Britain — 12 track-limit penalties a race.)
     const dt2g = Math.max(-0.25, Math.min(2.5, dt2 + AI_PACE_SHIFT));
@@ -1080,7 +1080,7 @@ function startSession() {
   G.playerDrsState = 0;
   G.drsInfo = '';
   G.countdown = null;
-  G.firstFinish = null;
+  G.firstFinish = null; G.winnerId = null;
   G.endedRace = false;
   G.bestCheckpoints = null;
   G.curCheckpoints = [];
@@ -1777,6 +1777,23 @@ $('btn-endq').addEventListener('click', endQualifyEarly);
 // crossing. Rather than guess their times, fast-forward the real simulation
 // (rendering paused) until they've all crossed — in small chunks so the page
 // never freezes — then classify from genuine finishing times.
+// Laps a car has really completed, from the distance it has covered — not the
+// lap counter. The counter can be knocked out by one in rare cases (a jolt
+// back across the line in a pit lane that straddles it, a reset, a resumed
+// race), and since classification goes "most laps first", a counter that is
+// one too high would put a P9 car on top of the results. Distance can't lie.
+function lapsByDist(c) {
+  const L = G.track.length;
+  return Math.max(0, Math.floor((c.phys.totalDist + 0.02 * L) / L));
+}
+
+// Mandatory-stop rule, as the FIA writes it: in a dry race (> 20 laps here) a
+// car must have pitted — but the requirement falls away if it ran
+// intermediates or wets at any point.
+function mandatoryStopMissed(c) {
+  return G.mode === 'race' && G.raceLaps > 20 && !c.pitted && !c.usedWet;
+}
+
 function finishAndClassify() {
   if (G.endedRace) return;
   const t0 = G.simTime, t1 = performance.now();
@@ -1800,9 +1817,13 @@ function endRace() {
   // Mandatory-stop rule (races > 20 laps) is a disqualification.
   const cls = classifyRace(G.cars.map(c => ({
     id: c.driver.id, retired: !!c.retired, dsq: !!c.dsq, finished: !!c.finished,
-    finishTime: c.finishTime, lapsDone: c.lapsDone, lap: c.phys.lap,
+    finishTime: c.finishTime,
+    // laps from distance (see lapsByDist), never more than the race distance
+    lapsDone: c.finished ? Math.min(G.raceLaps, c.finishDist != null
+      ? Math.floor((c.finishDist + 0.02 * G.track.length) / G.track.length) : (c.lapsDone != null ? c.lapsDone : G.raceLaps)) : null,
+    lap: Math.min(c.phys.lap, lapsByDist(c) + 1),
     lapDist: c.phys.lapDist, totalDist: c.phys.totalDist, bestLap: c.bestLap,
-    pitted: !!c.pitted, _car: c,
+    pitted: !!c.pitted || !!c.usedWet, _car: c,
   })), {
     raceLaps: G.raceLaps, trackLen: G.track.length, simTime: G.simTime,
     penalties: G.penalties || {}, mandatoryStop: G.raceLaps > 20,
@@ -1815,6 +1836,22 @@ function endRace() {
   });
   const rows = cls.map(r => r.src._car);
   const winner = rows[0];
+  // Sanity check: the car that took the chequered flag first must be the
+  // winner unless a time penalty, a disqualification or fewer laps put it
+  // behind. If not, something upstream went wrong — keep a record of every
+  // input so the cause can be traced (localStorage 'f1sim_lastrace').
+  try {
+    const flag = G.winnerId && G.cars.find(c => c.driver.id === G.winnerId);
+    const fr = flag && flag._cls;
+    const explained = !flag || flag === winner || (fr && (fr.status !== 'run' || fr.pen > 0 || fr.laps < cls[0].laps));
+    const dump = { when: Date.now(), track: G.trackDef.id, raceLaps: G.raceLaps, L: G.track.length, flagId: G.winnerId || null,
+      ok: !!explained, rows: cls.map(r => ({ id: r.id, pos: r.pos, st: r.status, laps: r.laps, t: r.time, pen: r.pen,
+        lapCtr: r.src._car.phys.lap, dist: +(r.src._car.phys.totalDist / G.track.length).toFixed(3),
+        finDist: r.src._car.finishDist != null ? +(r.src._car.finishDist / G.track.length).toFixed(3) : null,
+        pit: !!r.src._car.pitted, wet: !!r.src._car.usedWet })) };
+    localStorage.setItem('f1sim_lastrace', JSON.stringify(dump));
+    if (!explained) console.warn('[classification] flag winner', G.winnerId, 'not P1 without a reason', dump);
+  } catch (e) {}
   const myPos = rows.findIndex(r => r.driver && r.driver.player) + 1;
   // fastest race lap across the whole field (AI laps timed in stepSim)
   let flCar = null;
@@ -2065,7 +2102,7 @@ function restoreRace(snap) {
   G.raceLaps = snap.raceLaps;
   G.difficulty = snap.difficulty != null ? snap.difficulty : G.difficulty;
   G.simTime = snap.simTime || 0;
-  G.firstFinish = snap.firstFinish || null;
+  G.firstFinish = snap.firstFinish || null; G.winnerId = snap.winnerId || null;
   G.penalties = snap.penalties || {};
   G.raceFL = snap.raceFL ? { time: snap.raceFL.time, id: snap.raceFL.id } : null;
   if (snap.weather) { G.weather = snap.weather; setWetness(G.weather.wetness); applyWeatherVisuals(); }
@@ -2085,7 +2122,7 @@ function restoreRace(snap) {
     p.tyreWearKm = cs.wear; p.tyreTemp = cs.temp;
     car.finished = cs.finished; car.finishTime = cs.finishTime; car.bestLap = cs.bestLap;
     p.finished = !!cs.finished; car.lapsDone = cs.lapsDone;
-    car.pitted = cs.pitted; car.pitted2 = cs.pitted2;
+    car.pitted = cs.pitted; car.pitted2 = cs.pitted2; car.usedWet = !!cs.usedWet; car.finishDist = cs.finishDist;
     car.pitPlan = cs.pitPlan ? cs.pitPlan.slice() : null;
     car.pitCompound = cs.pitCompound; car.pitLap = cs.pitLap; car.pitLap2 = cs.pitLap2;
     car.limitStrikes = cs.limitStrikes; car.collCount = cs.collCount;
@@ -2147,7 +2184,7 @@ function saveRaceSnapshot() {
       raceDist: G.raceDist,
       difficulty: G.difficulty,
       simTime: G.simTime,
-      firstFinish: G.firstFinish,
+      firstFinish: G.firstFinish, winnerId: G.winnerId || null,
       weather: JSON.parse(JSON.stringify(G.weather)),
       penalties: G.penalties,
       cars: G.cars.map(c => ({
@@ -2156,7 +2193,7 @@ function saveRaceSnapshot() {
         lap: c.phys.lap, totalDist: c.phys.totalDist,
         compound: c.phys.compound, wear: c.phys.tyreWearKm, temp: c.phys.tyreTemp,
         finished: c.finished, finishTime: c.finishTime, bestLap: c.bestLap, lapsDone: c.lapsDone,
-        pitted: c.pitted, pitted2: c.pitted2, pitPlan: c.pitPlan || null,
+        pitted: c.pitted, pitted2: c.pitted2, pitPlan: c.pitPlan || null, usedWet: !!c.usedWet, finishDist: c.finishDist,
         pitCompound: c.pitCompound, pitLap: c.pitLap, pitLap2: c.pitLap2,
         limitStrikes: c.limitStrikes || 0, collCount: c.collCount || 0,
         dtServed: !!c.driveThroughServed,
@@ -2586,7 +2623,7 @@ function updateHUD() {
     $('tyre-fill').style.width = (life*100).toFixed(0) + '%';
     $('tyre-fill').style.background = life > 0.5 ? '#2ecc71' : life > 0.25 ? '#f5c518' : '#e74c3c';
     // pulse a pit reminder while the mandatory stop is outstanding
-    const needPit = G.mode === 'race' && G.raceLaps > 20 && !p.pitted && !p.pitState && p.phys.lap >= 2;
+    const needPit = G.mode === 'race' && G.raceLaps > 20 && !p.pitted && !p.usedWet && !p.pitState && p.phys.lap >= 2;
     $('tyre-letter').textContent = cw.label + (needPit ? '  ·  P—PIT' : '');
     $('tyre-letter').style.color = needPit && (G.simTime % 1 < 0.5) ? '#ffd12e' : '#fff';
     // tyre temperature: blue = cold, green = in the window, red = overheating
@@ -2861,7 +2898,7 @@ const STEW = {
 // FIA two-compound rule: a dry race over 20 laps must use a different slick
 // at the first stop (wet tyres are exempt).
 function boxMustChange(c) {
-  return G.mode === 'race' && G.raceLaps > 20 && !c.pitted
+  return G.mode === 'race' && G.raceLaps > 20 && !c.pitted && !c.usedWet
     && !(G.weather && G.weather.wetness > WET_INTER) && tyreCategory(c.phys.compound) === 0;
 }
 // What the box call is pre-set to when you press P: your planned tyre, unless
@@ -3796,6 +3833,7 @@ function checkRetirements() {
         if (!G.player.finished && !G.player.retired) {
           G.player.finished = true;
           G.player.finishTime = G.simTime;
+          G.player.finishDist = G.player.phys.totalDist;
         }
         endRace();
       }, 3000);
@@ -3887,7 +3925,11 @@ function stepSim(dt) {
       }
       if (c.finished || c.pitState) continue;
       if (G.mode !== 'race' && c.ai) continue; // no AI stops outside a race
-      if (pitsOpen && c.ai && !c.pitArmed && !c.pitted && c.pitLap && c.phys.lap === c.pitLap) armPit(c);
+      if (/^(inter|wet)$/.test(c.phys.compound)) c.usedWet = true;   // waives the mandatory stop
+      if (pitsOpen && c.ai && !c.pitArmed && !c.pitted && c.pitLap && c.phys.lap >= c.pitLap) armPit(c);
+      // a dry-race AI that somehow hasn't stopped by 3 laps from the end must
+      // still make its mandatory stop (it would otherwise be disqualified)
+      if (pitsOpen && c.ai && !c.pitArmed && !c.pitted && !c.usedWet && c.phys.lap >= G.raceLaps - 3) { c.pitCompound = c.pitCompound || 'medium'; armPit(c); }
       // planned second stop for AI two-stoppers in long races
       if (pitsOpen && c.ai && !c.pitArmed && c.pitted && !c.pitted2 && c.pitLap2 && c.phys.lap === c.pitLap2) {
         armPit(c); c.pitted2 = true;
@@ -4016,22 +4058,22 @@ function stepSim(dt) {
         onPlayerLapComplete();
         updateLapPanel();
         if (G.mode === 'race') {
-          if (c.phys.lap > G.raceLaps || G.firstFinish) {
+          if (lapsByDist(c) >= G.raceLaps || G.firstFinish) {
             // your race is over when you take the chequered flag — on the lead
             // lap, or on your next crossing once someone else has won
-            c.finished = true; c.finishTime = G.simTime; c.lapsDone = c.phys.lap - 1; c.phys.finished = true;
-            if (!G.firstFinish) G.firstFinish = G.simTime;
-            if (G.raceLaps > 20 && !c.pitted) showBanner('DISQUALIFIED — NO MANDATORY PIT STOP', 3, '#ff5c5c');
+            c.finished = true; c.finishTime = G.simTime; c.lapsDone = lapsByDist(c); c.finishDist = c.phys.totalDist; c.phys.finished = true;
+            if (!G.firstFinish) { G.firstFinish = G.simTime; G.winnerId = c.driver.id; }
+            if (mandatoryStopMissed(c)) showBanner('DISQUALIFIED — NO MANDATORY PIT STOP', 3, '#ff5c5c');
             else showBanner('CHEQUERED FLAG', 3, '#ffd12e');
             G.endTimer = setTimeout(finishAndClassify, 1800);
           } else if (c.phys.lap === G.raceLaps) {
             showBanner('FINAL LAP', 2, '#ffd12e');
           }
         }
-      } else if (G.mode === 'race' && (c.phys.lap > G.raceLaps || G.firstFinish)) {
-        c.finished = true; c.finishTime = G.simTime; c.lapsDone = c.phys.lap - 1; c.phys.finished = true;
+      } else if (G.mode === 'race' && (lapsByDist(c) >= G.raceLaps || G.firstFinish)) {
+        c.finished = true; c.finishTime = G.simTime; c.lapsDone = lapsByDist(c); c.finishDist = c.phys.totalDist; c.phys.finished = true;
         if (!G.firstFinish) {
-          G.firstFinish = G.simTime;
+          G.firstFinish = G.simTime; G.winnerId = c.driver.id;
           showBanner(c.driver.id + ' WINS THE RACE', 2.5, '#ff5c5c');
         }
       }
@@ -4067,5 +4109,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 86';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 87';
 })();
