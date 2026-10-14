@@ -412,7 +412,7 @@ function loadAssists() {
 function saveAssists() { try { localStorage.setItem('f1sim_assists', JSON.stringify(G.assists)); } catch (e) {} }
 function playerAssists() {
   const a = G.assists || G_ASSIST_DEFAULT;
-  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 88: you
+  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 89: you
   // were on the full 1.0 while the AI had 0.6, so it turned better under
   // braking than you could)
   return { abs: !!a.abs, steer: !!a.steer, absEff: 0.94, circle: AI_ASSISTS.circle };
@@ -431,7 +431,7 @@ function syncAssistButtons() {
   syncAssistButtons();
 })();
 
-// BUILD 88: the whole difficulty scale moved up (the player was ~1s+/lap
+// BUILD 89: the whole difficulty scale moved up (the player was ~1s+/lap
 // faster than 'Alien 82%'). Added to the normalised difficulty for the AI's
 // GRIP (not its planning): ~1.1-2.3 s a lap faster at 82%. Clean to 2.5.
 const AI_PACE_SHIFT = 0.6;
@@ -725,7 +725,7 @@ function aiPerf(driver) {
     // clamp is lifted — at the 1.20 top end dt2 reaches ~1.85, the level the AI
     // was validated to run clean. Floored slightly below 0 for the easy end.
     const dt2 = Math.max(-0.25, Math.min(1.85, (G.difficulty - 0.98) / 0.12));
-    // the BUILD 88 shift goes into GRIP only: more car, same planning margin.
+    // the BUILD 89 shift goes into GRIP only: more car, same planning margin.
     // (Shifting the planner's pace fraction too ran the Alien field wide at
     // Austria and Britain — 12 track-limit penalties a race.)
     const dt2g = Math.max(-0.25, Math.min(2.5, dt2 + AI_PACE_SHIFT));
@@ -2797,8 +2797,10 @@ function updateCamera(dt) {
     G.player.mesh.userData.haloStrut.scale.set(1, 1, 1);
   if (G.camMode === 0) {
     // F1-game chase: low, tight behind the rear wing
-    const dist = 6.3 + p.speed*0.022;
-    const h = 2.05 + p.speed*0.007;
+    // F1 25-style framing: closer and lower, so the car fills more of the
+    // screen (the old 6.3 m / 2.05 m / wide-angle view made it look tiny)
+    const dist = 4.5 + p.speed*0.010;
+    const h = 1.45 + p.speed*0.004;
     camSway += ((-p.steer * Math.min(1, p.speed/25) * 0.85) - camSway) * Math.min(1, dt*6);
     camTmp.set(
       p.x - sx*dist + rx*camSway,
@@ -2817,7 +2819,7 @@ function updateCamera(dt) {
     const tA = G.track, kA = (p.trackIdx + Math.floor(14 / (tA.length/tA.n))) % tA.n;
     camera.lookAt(p.x + sx*6 + tA.tx[kA]*3*back, baseY + 0.85, p.z + cz*6 + tA.tz[kA]*3*back);
     camera.rotation.z += camSway * 0.035; // slight roll into corners
-    camera.fov = 63 + Math.min(13, p.speed*0.10);
+    camera.fov = 52 + Math.min(8, p.speed*0.07);   // narrower lens = bigger car, less fish-eye
   } else if (G.camMode === 1) {
     // cockpit / helmet cam: driver's-eye height, halo strut and nose in frame
     // Two eyes see past the 6cm halo strut; a single camera can't, so it read
@@ -2835,7 +2837,7 @@ function updateCamera(dt) {
       camera.position.x += (Math.random()-0.5)*sh;
       camera.position.y += (Math.random()-0.5)*sh*0.7;
     }
-    camera.fov = 76;
+    camera.fov = 68;
   } else if (G.camMode === 2) {
     // T-cam onboard, mounted higher and further back than before so the halo,
     // mirrors, nose and front wheels are all in shot rather than just the top
@@ -2848,7 +2850,7 @@ function updateCamera(dt) {
       const sh = (p.speed-55)*0.0005;
       camera.position.y += (Math.random()-0.5)*sh;
     }
-    camera.fov = 72;
+    camera.fov = 64;
   } else {
     // Broadcast chase: wide and high enough to hold the whole car in frame so
     // the livery reads, but it tracks the car like a chase cam and is meant to
@@ -4109,5 +4111,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 88';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 89';
 })();

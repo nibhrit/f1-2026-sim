@@ -420,7 +420,10 @@ function _mergeStatic(g, keep) {
   victims.forEach(o => { g.remove(o); o.geometry.dispose(); });
 }
 
-const CAR_SCALE = 0.9;
+// 1.0 = the model's own size. (BUILD 88 shrank it to the real 2026 dimensions,
+// but on screen the cars already read SMALL next to F1 25 — that's mostly the
+// camera; see the chase/onboard cameras in main.js.)
+const CAR_SCALE = 1.0;
 function buildF1Car(teamKey, opts) {
   opts = opts || {};
   const team = TEAMS[teamKey];
@@ -701,8 +704,6 @@ function buildF1Car(teamKey, opts) {
   g.userData.wheels = wheels;
   g.userData.tyreRings = tyreRings;
   g.userData.team = teamKey;
-  // Real 2026 car size: ~1.9 m wide, ~5.4 m long. The model was built ~10%
-  // over (2.2 m x 5.9 m), which made the cars look too big for the road.
   g.scale.setScalar(CAR_SCALE);
   return g;
 }
