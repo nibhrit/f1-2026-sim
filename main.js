@@ -412,7 +412,7 @@ function loadAssists() {
 function saveAssists() { try { localStorage.setItem('f1sim_assists', JSON.stringify(G.assists)); } catch (e) {} }
 function playerAssists() {
   const a = G.assists || G_ASSIST_DEFAULT;
-  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 89: you
+  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 90: you
   // were on the full 1.0 while the AI had 0.6, so it turned better under
   // braking than you could)
   return { abs: !!a.abs, steer: !!a.steer, absEff: 0.94, circle: AI_ASSISTS.circle };
@@ -431,7 +431,7 @@ function syncAssistButtons() {
   syncAssistButtons();
 })();
 
-// BUILD 89: the whole difficulty scale moved up (the player was ~1s+/lap
+// BUILD 90: the whole difficulty scale moved up (the player was ~1s+/lap
 // faster than 'Alien 82%'). Added to the normalised difficulty for the AI's
 // GRIP (not its planning): ~1.1-2.3 s a lap faster at 82%. Clean to 2.5.
 const AI_PACE_SHIFT = 0.6;
@@ -725,7 +725,7 @@ function aiPerf(driver) {
     // clamp is lifted — at the 1.20 top end dt2 reaches ~1.85, the level the AI
     // was validated to run clean. Floored slightly below 0 for the easy end.
     const dt2 = Math.max(-0.25, Math.min(1.85, (G.difficulty - 0.98) / 0.12));
-    // the BUILD 89 shift goes into GRIP only: more car, same planning margin.
+    // the BUILD 90 shift goes into GRIP only: more car, same planning margin.
     // (Shifting the planner's pace fraction too ran the Alien field wide at
     // Austria and Britain — 12 track-limit penalties a race.)
     const dt2g = Math.max(-0.25, Math.min(2.5, dt2 + AI_PACE_SHIFT));
@@ -2709,7 +2709,8 @@ function updateHUD() {
       // broadcast-style in-pit tag next to the driver
       const pitTag = c.retired
         ? ' <span class="p-pen">DNF</span>'
-        : (c.pitState ? ' <span class="p-pit">' + (c.driveThrough ? 'D-T' : 'PIT') + '</span>' : '');
+        : (c.pitState ? ' <span class="p-pit">' + (c.driveThrough ? 'D-T' : 'PIT') + '</span>'
+           : c.blueBy ? ' <span class="p-blue">BLUE</span>' : '');
       // outstanding penalties, exactly as the real timing tower carries them:
       // accumulated time penalties, plus an unserved drive-through
       const secs = (G.penalties && G.penalties[c.driver.id]) || 0;
@@ -3884,6 +3885,45 @@ function simulateRemainder() {
   });
 }
 
+// ---------- blue flags ----------
+// A car about to be lapped gets blue flags once the faster car is within ~1 s
+// behind it on the road. AI backmarkers stop defending, move off the racing
+// line and lift so the leader can go by; ignoring the flags for ~15 s (three
+// marshal posts) costs a 5 s time penalty. The player gets the same flag, and
+// sees who they're lapping on the HUD.
+const BLUE_GAP_S = 1.0, BLUE_IGNORE_S = 15, BLUE_PEN = 5;
+function updateBlueFlags(dt) {
+  if (G.mode !== 'race' || !G.raceStarted) return;
+  const L = G.track.length;
+  const live = G.cars.filter(c => !c.finished && !c.retired && !c.pitState);
+  for (const c of live) {
+    let flagBy = null, best = 1e9;
+    for (const o of live) {
+      if (o === c) continue;
+      if (o.phys.totalDist - c.phys.totalDist < L * 0.5) continue;   // o isn't a lap up on c
+      // road distance from o forward to c (o behind c on track)
+      const road = ((c.phys.lapDist - o.phys.lapDist) % L + L) % L;
+      if (road > L * 0.5) continue;
+      const secs = road / Math.max(15, o.phys.speed);
+      if (secs < BLUE_GAP_S && road < best) { best = road; flagBy = o; }
+    }
+    const was = c.blueBy;
+    c.blueBy = flagBy;
+    if (c.ai) c.ai.blueFor = flagBy ? flagBy.phys : null;
+    if (flagBy) {
+      c.blueT = (was === flagBy ? (c.blueT || 0) : 0) + dt;
+      if (c.driver.player && was !== flagBy) showBanner('BLUE FLAG — LET ' + flagBy.driver.id + ' THROUGH', 2.2, '#3d8bff');
+      if (flagBy.driver.player && was !== flagBy) showBanner('BLUE FLAGS FOR ' + c.driver.id, 1.4, '#3d8bff');
+      if (c.blueT > BLUE_IGNORE_S && !c.bluePenalised) {
+        c.bluePenalised = true;
+        addPenalty(c, BLUE_PEN, 'ignoring blue flags');
+        stewardMsg('STEWARDS: ' + c.driver.id + ' +' + BLUE_PEN + 's — IGNORING BLUE FLAGS', 'coll');
+        if (c.driver.player) showBanner('+' + BLUE_PEN + 's — IGNORING BLUE FLAGS', 3, '#ff5c5c');
+      }
+    } else c.blueT = 0;
+  }
+}
+
 function stepSim(dt) {
   updateCountdown(dt);
   const started = G.raceStarted;
@@ -3891,6 +3931,7 @@ function stepSim(dt) {
   updateSlipstream();
   updateDRS();
   checkRetirements();
+  updateBlueFlags(dt);
   // qualifying clock: count down; drop the chequered flag at zero
   if (started && G.mode === 'qualify') {
     if (G.qualiTime > 0) {
@@ -4111,5 +4152,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 89';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 90';
 })();

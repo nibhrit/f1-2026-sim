@@ -415,6 +415,21 @@ class AIDriver {
       }
     }
 
+    // Blue flags (set by main.js): a car is about to lap us. Stop fighting,
+    // get off the racing line on the side away from it, and lift a little so
+    // it's past within a few hundred metres.
+    if (this.blueFor) {
+      const lp = this.blueFor;
+      const myLat = t.lateral(car.x, car.z, car.trackIdx);
+      const hisLat = t.lateral(lp.x, lp.z, lp.trackIdx);
+      const lineHere = rl ? rl[kAhead] : 0;
+      // give it the racing line: move to the side of the road away from the line
+      // (or away from the lapping car if it has already picked a side)
+      const away = Math.abs(hisLat - myLat) > 1.2 ? Math.sign(myLat - hisLat) : -(Math.sign(lineHere) || 1);
+      combatLane = away * edge * 0.85;
+      const gapB = Math.hypot(lp.x - car.x, lp.z - car.z);
+      if (gapB < 45) vAllow *= 0.92;          // lift and let it by
+    }
     let targetLane = combatLane != null ? combatLane : baseLane;
     // pit approach (set by main.js): hold the pit-lane side of the track
     if (this.laneOverride != null) targetLane = this.laneOverride;
