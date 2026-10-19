@@ -412,7 +412,7 @@ function loadAssists() {
 function saveAssists() { try { localStorage.setItem('f1sim_assists', JSON.stringify(G.assists)); } catch (e) {} }
 function playerAssists() {
   const a = G.assists || G_ASSIST_DEFAULT;
-  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 90: you
+  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 91: you
   // were on the full 1.0 while the AI had 0.6, so it turned better under
   // braking than you could)
   return { abs: !!a.abs, steer: !!a.steer, absEff: 0.94, circle: AI_ASSISTS.circle };
@@ -431,7 +431,7 @@ function syncAssistButtons() {
   syncAssistButtons();
 })();
 
-// BUILD 90: the whole difficulty scale moved up (the player was ~1s+/lap
+// BUILD 91: the whole difficulty scale moved up (the player was ~1s+/lap
 // faster than 'Alien 82%'). Added to the normalised difficulty for the AI's
 // GRIP (not its planning): ~1.1-2.3 s a lap faster at 82%. Clean to 2.5.
 const AI_PACE_SHIFT = 0.6;
@@ -725,7 +725,7 @@ function aiPerf(driver) {
     // clamp is lifted — at the 1.20 top end dt2 reaches ~1.85, the level the AI
     // was validated to run clean. Floored slightly below 0 for the easy end.
     const dt2 = Math.max(-0.25, Math.min(1.85, (G.difficulty - 0.98) / 0.12));
-    // the BUILD 90 shift goes into GRIP only: more car, same planning margin.
+    // the BUILD 91 shift goes into GRIP only: more car, same planning margin.
     // (Shifting the planner's pace fraction too ran the Alien field wide at
     // Austria and Britain — 12 track-limit penalties a race.)
     const dt2g = Math.max(-0.25, Math.min(2.5, dt2 + AI_PACE_SHIFT));
@@ -1080,7 +1080,7 @@ function startSession() {
   G.playerDrsState = 0;
   G.drsInfo = '';
   G.countdown = null;
-  G.firstFinish = null; G.winnerId = null;
+  G.firstFinish = null; G.winnerId = null; G._provCls = null; G._provT = 0;
   G.endedRace = false;
   G.bestCheckpoints = null;
   G.curCheckpoints = [];
@@ -2683,19 +2683,41 @@ function updateHUD() {
   // positions
   const panel = $('pos-panel');
   if (G.mode === 'race' && G.cars.length > 1) {
-    const order = G.cars.slice().sort((a,b) => {
+    let order = G.cars.slice().sort((a,b) => {
       if (!!a.retired !== !!b.retired) return a.retired ? 1 : -1;
       if (a.finished && b.finished) return a.finishTime - b.finishTime;
       if (a.finished) return -1;
       if (b.finished) return 1;
       return b.phys.totalDist - a.phys.totalDist;
     });
+    // Once the chequered flag is out, the tower shows the provisional RESULT —
+    // the same classification the results screen uses (laps first, then time
+    // including penalties). Ordering finished cars purely by crossing time put
+    // lapped cars that happened to cross the line just ahead of you above you
+    // (you'd see "P6" at the flag and then get P3 in the results).
+    let provisional = null;
+    if (G.firstFinish) {
+      if (!G._provCls || G.simTime - G._provT > 0.25) {
+        G._provT = G.simTime;
+        G._provCls = classifyRace(G.cars.map(c => ({
+          id: c.driver.id, retired: !!c.retired, dsq: !!c.dsq, finished: !!c.finished, finishTime: c.finishTime,
+          lapsDone: c.finished ? Math.min(G.raceLaps, c.finishDist != null
+            ? Math.floor((c.finishDist + 0.02 * G.track.length) / G.track.length) : (c.lapsDone != null ? c.lapsDone : G.raceLaps)) : null,
+          lap: Math.min(c.phys.lap, lapsByDist(c) + 1), lapDist: c.phys.lapDist, totalDist: c.phys.totalDist,
+          bestLap: c.bestLap, pitted: !!c.pitted || !!c.usedWet, _car: c })),
+          { raceLaps: G.raceLaps, trackLen: G.track.length, simTime: G.simTime, penalties: G.penalties || {}, mandatoryStop: G.raceLaps > 20 });
+      }
+      provisional = new Map(G._provCls.map(r => [r.src._car, r]));
+      order = G._provCls.map(r => r.src._car);
+    }
     let html = '';
     const leader = order[0];
     order.forEach((c,i) => {
       const sw = '#' + TEAMS[c.driver.team].color.toString(16).padStart(6,'0');
       let gap = '';
+      const pr = provisional && provisional.get(c);
       if (c.retired) gap = 'OUT';
+      else if (pr && i > 0) gap = pr.status === 'dsq' ? 'DSQ' : (pr.text || '');
       else if (i === 0) gap = c.finished ? 'FIN' : 'Leader';
       else if (c.finished) gap = '+' + (c.finishTime - leader.finishTime).toFixed(1);
       else {
@@ -4152,5 +4174,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 90';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 91';
 })();
