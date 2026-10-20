@@ -2,7 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#05060a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Outlap">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
 <title>Outlap — Grand Prix racing</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
@@ -331,6 +338,76 @@
     background:rgba(8,12,24,.6); padding:6px 16px; border-radius:20px; pointer-events:none; }
   #controls-hint { transition: opacity 1.2s ease; }
   #controls-hint.faded { opacity: 0; }
+
+  /* ================= TOUCH DEVICES (body.touch, set by touch.js) ================= */
+  body.touch, body.touch * { -webkit-tap-highlight-color:transparent; -webkit-touch-callout:none; }
+  body.touch { touch-action:none; overscroll-behavior:none; }
+  body.touch .btn, body.touch .track-card, body.touch .team-card, body.touch .drv-card, body.touch .opp-card { touch-action:manipulation; }
+  body.touch .btn:hover, body.touch #menu-driver:hover, body.touch .track-card:hover, body.touch .team-card:hover { transform:none; }
+  body.touch .screen { overflow-y:auto; -webkit-overflow-scrolling:touch; touch-action:pan-y; padding:max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) 14px max(14px, env(safe-area-inset-left)); }
+  body.touch #controls-hint { display:none; }
+  .touch-only { display:none; }
+  body.touch .touch-only { display:block; }
+  body.touch .btn.touch-only { display:block; }
+  /* HUD: panels move out of the thumbs' way and shrink */
+  body.touch .hud-panel { transform-origin:top left; }
+  body.touch #timing { left:max(10px, env(safe-area-inset-left)); top:8px; transform:scale(.72); }
+  body.touch #pos-panel { left:max(10px, env(safe-area-inset-left)); top:116px; transform:scale(.72); max-height:calc((60vh - 140px) / .72); }
+  body.touch #lap-panel { right:max(10px, env(safe-area-inset-right)); top:8px; transform:scale(.72); transform-origin:top right; }
+  body.touch #minimap { right:max(10px, env(safe-area-inset-right)); top:70px; transform:scale(.6); transform-origin:top right; }
+  body.touch #weather-panel { right:max(10px, env(safe-area-inset-right)); top:184px; transform:scale(.6); transform-origin:top right; }
+  body.touch #speedo { right:auto; left:50%; bottom:6px; transform:translateX(-50%) scale(.56); transform-origin:bottom center; }
+  body.touch #pit-hint { right:auto; left:50%; bottom:118px; transform:translateX(-50%); }
+  body.touch #close-gaps { bottom:104px; transform:translateX(-50%) scale(.8); transform-origin:bottom center; }
+  body.touch #stewards { bottom:auto; top:64px; transform:translateX(-50%) scale(.85); transform-origin:top center; }
+  body.touch #title-battle { top:58px; }
+  body.touch #box-call { top:96px; pointer-events:auto; }
+  body.touch .bc-chip { min-width:46px; padding:8px 8px; font-size:17px; }
+  body.touch #msg-banner { font-size:28px; top:22%; }
+  body.touch #pit-ui { top:56px; transform:translateX(-50%) scale(.8); transform-origin:top center; }
+  body.touch #start-lights { top:58px; transform:translateX(-50%) scale(.75); transform-origin:top center; }
+  body.touch #tyre-picker { bottom:8px; transform:translateX(-50%) scale(.82); transform-origin:bottom center; }
+  body.touch .tyre-btn { touch-action:manipulation; }
+  /* short landscape screens (phones) */
+  @media (max-height: 560px) {
+    .title { font-size:38px; }
+    .tagline { font-size:10px; letter-spacing:6px; }
+    h2.screen-head { font-size:19px; margin-bottom:4px; }
+    .screen-sub { font-size:11px; margin-bottom:10px; text-align:center; }
+    .btn { padding:9px 16px; font-size:14px; }
+    .btn.small { padding:7px 12px; font-size:12px; }
+    .back-link { margin-top:12px; padding:8px 16px; }
+    #screen-main { justify-content:flex-start; }
+    #screen-main .menu-box { margin-top:12px; display:grid; grid-template-columns:290px 330px; grid-template-rows:repeat(6, auto); gap:6px 22px; align-items:start; width:auto; }
+    #screen-main .menu-box > .btn { padding:7px 16px; }
+    #screen-main .menu-box > * { grid-column:1; margin-top:0 !important; align-self:start; }
+    #screen-main .menu-box > :nth-child(1) { grid-row:1; } #screen-main .menu-box > :nth-child(2) { grid-row:2; }
+    #screen-main .menu-box > :nth-child(3) { grid-row:3; } #screen-main .menu-box > :nth-child(4) { grid-row:4; }
+    #screen-main .menu-box > :nth-child(5) { grid-row:5; } #screen-main .menu-box > :nth-child(6) { grid-row:6; }
+    #screen-main .menu-box > :nth-child(7) { grid-column:2; grid-row:1 / 3; }
+    #screen-main .menu-box > :nth-child(8) { grid-column:2; grid-row:3 / 5; }
+    #screen-main .menu-box > :nth-child(9) { grid-column:2; grid-row:5 / 7; }
+    #menu-driver { padding:6px 12px; }
+    #menu-driver .md-team { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .menu-box { margin-top:14px; gap:8px; }
+    #loading-note { position:static; transform:none; margin-top:8px; }
+    #track-grid { grid-template-columns:repeat(auto-fill, 124px); width:100%; max-width:820px; max-height:none; overflow:visible; justify-content:center; }
+    .track-card { padding:6px; }
+    .track-card canvas { width:100px; height:62px; }
+    #team-wrap { gap:12px; }
+    #team-grid { grid-template-columns:repeat(2, 150px); max-height:none; gap:6px; }
+    .team-card { height:44px; padding:5px 8px; }
+    .team-card .tc-name { font-size:12px; }
+    #team-detail { width:400px; padding:8px; }
+    #team-car { width:384px; height:150px; }
+    .drv-card { padding:6px; gap:6px; }
+    .drv-card canvas { width:48px; height:48px; }
+    #opp-grid { max-height:none; overflow:visible; }
+    #results-table, #standings-table { max-height:48vh; font-size:13px; padding:8px 14px; }
+    .res-row { font-size:13px; padding:3px 0; }
+    #podium-pos { font-size:84px; }
+    #podium-name { font-size:22px; }
+  }
 </style>
 </head>
 <body>
@@ -371,6 +448,7 @@
         <button class="btn small selected" id="as-steer">STEER ON</button>
         <button class="btn small selected" id="as-line">LINE CORNERS</button>
         <button class="btn small" id="as-brake">BRAKE AID OFF</button>
+        <button class="btn small touch-only" id="as-controls" onclick="window.OUTLAP_OPEN_CONTROLS&&OUTLAP_OPEN_CONTROLS()">CONTROLS</button>
       </div>
     </div>
   </div>
@@ -474,6 +552,7 @@
     <button class="btn hidden" id="btn-endq">End Qualifying — Keep My Time</button>
     <button class="btn hidden" id="btn-skipq">Skip Qualifying</button>
     <button class="btn" id="btn-restart2">Restart Session</button>
+    <button class="btn touch-only" id="btn-controls2" onclick="window.OUTLAP_OPEN_CONTROLS&&OUTLAP_OPEN_CONTROLS()">Controls</button>
     <button class="btn" id="btn-menu2">Main Menu</button>
   </div>
 </div>
@@ -601,17 +680,18 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/SSAOPass.js"></script>
-<script src="trackdata.js?v=94"></script>
-<script src="tracks.js?v=94"></script>
-<script src="audio.js?v=94"></script>
-<script src="carmodel.js?v=94"></script>
-<script src="trackbuilder.js?v=94"></script>
-<script src="pitlane.js?v=94"></script>
-<script src="scenery.js?v=94"></script>
-<script src="racingline.js?v=94"></script>
-<script src="physics.js?v=94"></script>
-<script src="ai.js?v=94"></script>
-<script src="rules.js?v=94"></script>
-<script src="main.js?v=94"></script>
+<script src="touch.js?v=95"></script>
+<script src="trackdata.js?v=95"></script>
+<script src="tracks.js?v=95"></script>
+<script src="audio.js?v=95"></script>
+<script src="carmodel.js?v=95"></script>
+<script src="trackbuilder.js?v=95"></script>
+<script src="pitlane.js?v=95"></script>
+<script src="scenery.js?v=95"></script>
+<script src="racingline.js?v=95"></script>
+<script src="physics.js?v=95"></script>
+<script src="ai.js?v=95"></script>
+<script src="rules.js?v=95"></script>
+<script src="main.js?v=95"></script>
 </body>
 </html>

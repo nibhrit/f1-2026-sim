@@ -7,8 +7,12 @@
 
 // ---------- renderer ----------
 const canvas = document.getElementById('game-canvas');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
-let pixelRatio = Math.min(window.devicePixelRatio, 2);
+// Phones / tablets (touch.js sets OUTLAP_LOWQ) start on a lighter preset:
+// no MSAA, a low pixel ratio, no bloom, small hard shadows, fewer trees.
+const LOWQ = !!window.OUTLAP_LOWQ;
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: !LOWQ, powerPreference: 'high-performance' });
+let pixelRatio = LOWQ ? Math.min(window.devicePixelRatio, Math.min(window.innerWidth, window.innerHeight) >= 700 ? 1.5 : 1.25)
+                      : Math.min(window.devicePixelRatio, 2);
 const REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 renderer.setPixelRatio(pixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -28,10 +32,10 @@ const SHADOW_STEPS = [
   { size: 512,  soft: false },
   null, // off
 ];
-let shadowStep = 0;
+let shadowStep = LOWQ ? 2 : 0;
 try {
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = LOWQ ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
 } catch (e) { /* stub renderer in tests */ }
 
 // ---------- post-processing (SSAO + bloom + speed blur) ----------
@@ -111,6 +115,7 @@ function setupComposer() {
         // nudged up so the highlights that DO qualify still read.
         bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.38, 0.42, 0.94);
         c.addPass(bloomPass);
+        if (LOWQ) bloomPass.enabled = false;
       }
     } catch(e) { bloomPass = null; console.warn('bloom unavailable', e); }
     blurPass = new THREE.ShaderPass(SpeedBlurShader);
@@ -177,8 +182,8 @@ const SHADOW_HALF = 55;  // metres covered either side of the player
 const SUN_OFFSET = { x: 120, y: 210, z: 80 }; // sun direction, in metres
 try {
   sun.castShadow = true;
-  sun.shadow.mapSize.width = SHADOW_STEPS[0].size;
-  sun.shadow.mapSize.height = SHADOW_STEPS[0].size;
+  sun.shadow.mapSize.width = SHADOW_STEPS[shadowStep].size;
+  sun.shadow.mapSize.height = SHADOW_STEPS[shadowStep].size;
   const sc = sun.shadow.camera;
   sc.left = -SHADOW_HALF; sc.right = SHADOW_HALF;
   sc.top = SHADOW_HALF;   sc.bottom = -SHADOW_HALF;
@@ -470,6 +475,16 @@ window.addEventListener('pointerdown', () => { AUDIO.init(); AUDIO.musicStart();
 window.addEventListener('keydown', () => { AUDIO.musicStart(); }, { once: true });
 
 function playerInput() {
+  // touch / tilt (touch.js) — keyboard still works alongside it
+  const T = window.OUTLAP_TOUCH_INPUT;
+  if (T && T.active) {
+    const kSteer = ((keys['KeyA']||keys['ArrowLeft']) ? 1 : 0) + ((keys['KeyD']||keys['ArrowRight']) ? -1 : 0);
+    return {
+      throttle: Math.max(T.throttle, (keys['KeyW']||keys['ArrowUp']) ? 1 : 0),
+      brake: Math.max(T.brake, (keys['KeyS']||keys['ArrowDown']||keys['Space']) ? 1 : 0),
+      steer: kSteer || T.steer,
+    };
+  }
   return {
     throttle: (keys['KeyW']||keys['ArrowUp']) ? 1 : 0,
     brake: (keys['KeyS']||keys['ArrowDown']||keys['Space']) ? 1 : 0,
@@ -4358,5 +4373,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 94';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 95';
 })();

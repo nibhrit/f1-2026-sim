@@ -1266,7 +1266,7 @@ function buildTrackScene(track, scene, themeName) {
     const style = theme.buildStyle;
     const heights = style === 'tower' ? [30, 160] : style === 'riviera' ? [14, 42] : theme.night ? [18, 90] : [12, 45];
     const rows = style ? 3 : 1;
-    const bStep = Math.max(6, Math.floor(N/(style ? 180 : 140)));
+    const bStep = Math.max(6, Math.floor(N/(style ? 180 : 140))) * (window.OUTLAP_LOWQ ? 2 : 1);
     const PASTEL = [0xd9a866, 0xe0906a, 0xe8c45c, 0xc9805c, 0xdcbb92, 0xeadbbf, 0xbf9a62, 0xdca0a4];
     const roofM = new THREE.MeshStandardMaterial({ color: 0xa2553a, roughness: 0.85 });
     // Riviera façades: pastel stucco, rows of shuttered windows, balconies
@@ -1343,7 +1343,7 @@ function buildTrackScene(track, scene, themeName) {
 
   // --- vegetation (instanced, seated on terrain) ---
   if (theme.tree !== 'none' && theme.treeCount > 0) {
-    const count = theme.treeCount;
+    const count = window.OUTLAP_LOWQ ? Math.round(theme.treeCount * 0.35) : theme.treeCount;
     const positions = [];
     let attempts = 0;
     while (positions.length < count && attempts < count*8) {
