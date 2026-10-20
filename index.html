@@ -337,6 +337,7 @@
   #controls-hint { position:absolute; bottom:24px; left:50%; transform:translateX(-50%); color:#8fa3c8; font-size:12px; letter-spacing:1px;
     background:rgba(8,12,24,.6); padding:6px 16px; border-radius:20px; pointer-events:none; }
   #controls-hint { transition: opacity 1.2s ease; }
+  #gfx-stats { position:fixed; left:50%; bottom:2px; transform:translateX(-50%); z-index:60; font:10px monospace; color:#9fe0a8; background:rgba(0,0,0,.55); padding:2px 8px; border-radius:4px; pointer-events:none; white-space:nowrap; }
   #controls-hint.faded { opacity: 0; }
 
   /* ================= TOUCH DEVICES (body.touch, set by touch.js) ================= */
@@ -449,6 +450,7 @@
         <button class="btn small selected" id="as-steer">STEER ON</button>
         <button class="btn small selected" id="as-line">LINE CORNERS</button>
         <button class="btn small" id="as-brake">BRAKE AID OFF</button>
+        <button class="btn small" id="as-gfx" title="AUTO adapts to your device · SHARP = best looks · SMOOTH = best frame rate">GRAPHICS AUTO</button>
         <button class="btn small touch-only" id="as-controls" onclick="window.OUTLAP_OPEN_CONTROLS&&OUTLAP_OPEN_CONTROLS()">CONTROLS</button>
       </div>
     </div>
@@ -674,6 +676,7 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/math/SimplexNoise.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/SSAOShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/FXAAShader.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/Pass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
@@ -681,18 +684,18 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/SSAOPass.js"></script>
-<script src="touch.js?v=96"></script>
-<script src="trackdata.js?v=96"></script>
-<script src="tracks.js?v=96"></script>
-<script src="audio.js?v=96"></script>
-<script src="carmodel.js?v=96"></script>
-<script src="trackbuilder.js?v=96"></script>
-<script src="pitlane.js?v=96"></script>
-<script src="scenery.js?v=96"></script>
-<script src="racingline.js?v=96"></script>
-<script src="physics.js?v=96"></script>
-<script src="ai.js?v=96"></script>
-<script src="rules.js?v=96"></script>
-<script src="main.js?v=96"></script>
+<script src="touch.js?v=97"></script>
+<script src="trackdata.js?v=97"></script>
+<script src="tracks.js?v=97"></script>
+<script src="audio.js?v=97"></script>
+<script src="carmodel.js?v=97"></script>
+<script src="trackbuilder.js?v=97"></script>
+<script src="pitlane.js?v=97"></script>
+<script src="scenery.js?v=97"></script>
+<script src="racingline.js?v=97"></script>
+<script src="physics.js?v=97"></script>
+<script src="ai.js?v=97"></script>
+<script src="rules.js?v=97"></script>
+<script src="main.js?v=97"></script>
 </body>
 </html>

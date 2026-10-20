@@ -592,7 +592,7 @@ function buildF1Car(teamKey, opts) {
   // children[0] = tyre, children[1] = rim assembly. main.js spins exactly
   // those two, so anything that should turn with the wheel goes inside the
   // rim group and anything static goes after index 1.
-  const tyreRings = [];
+  const tyreRings = [], lodDetail = [];
   function wheel(x, z, front) {
     const w = new THREE.Group();
     const r = front ? 0.345 : 0.36;
@@ -660,6 +660,7 @@ function buildF1Car(teamKey, opts) {
     ring.position.x = outer * (tw/2 + 0.012);
     w.add(ring);                                   // child 2 — spun by main.js (rotation.z)
     w.userData.ring = ring; w.userData.outer = outer;
+    lodDetail.push(lip, cover, disc, ring);
 
     w.position.set(x, r, z);
     g.add(w);
@@ -726,6 +727,7 @@ function buildF1Car(teamKey, opts) {
   g.userData.frontWing = [fwGrp];
   g.userData.wheels = wheels;
   g.userData.tyreRings = tyreRings;
+  g.userData.lodDetail = lodDetail;
   g.userData.team = teamKey;
   g.scale.setScalar(CAR_SCALE);
   return g;

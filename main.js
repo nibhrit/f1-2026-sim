@@ -7,12 +7,13 @@
 
 // ---------- renderer ----------
 const canvas = document.getElementById('game-canvas');
-// Phones / tablets (touch.js sets OUTLAP_LOWQ) start on a lighter preset:
-// no MSAA, a low pixel ratio, no bloom, small hard shadows, fewer trees.
+// Phones / tablets (touch.js sets OUTLAP_LOWQ) open a notch lower; from there
+// the adaptive GFX controller (below) finds what each device can hold.
+// No canvas MSAA: everything renders through the post-processing chain into
+// offscreen targets, where canvas MSAA never applied anyway. FXAA does it.
 const LOWQ = !!window.OUTLAP_LOWQ;
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: !LOWQ, powerPreference: 'high-performance' });
-let pixelRatio = LOWQ ? Math.min(window.devicePixelRatio, Math.min(window.innerWidth, window.innerHeight) >= 700 ? 1.5 : 1.25)
-                      : Math.min(window.devicePixelRatio, 2);
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+let pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
 const REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 renderer.setPixelRatio(pixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -26,13 +27,16 @@ renderer.toneMappingExposure = 1.2;
 // Starts at 1024, not 2048. Until Build 34 the post-processing chain was
 // silently dead, so the GPU budget everything was tuned against was fiction.
 // With composer + shadows both live, 2048 was too much to open with.
+// Steps only change the map size (and "off" just empties the shadow camera),
+// never the shadow TYPE or castShadow: either of those makes three recompile
+// every lit shader, a visible freeze on phones each time quality moves.
 const SHADOW_STEPS = [
-  { size: 1024, soft: true },
-  { size: 1024, soft: false },
-  { size: 512,  soft: false },
+  { size: 1024 },
+  { size: 768 },
+  { size: 512 },
   null, // off
 ];
-let shadowStep = LOWQ ? 2 : 0;
+let shadowStep = 0;
 try {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = LOWQ ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
@@ -82,7 +86,17 @@ const SpeedBlurShader = {
     }`
 };
 
-let composer = null, ssaoPass = null, bloomPass = null, blurPass = null;
+let composer = null, ssaoPass = null, bloomPass = null, blurPass = null, fxaaPass = null;
+// Render resolution. The composer keeps its OWN pixel ratio (captured when it
+// was built), so it has to be told too — before BUILD 97 the FPS ladder only
+// changed the canvas, and the offscreen passes kept rendering at full size.
+function applyPixelRatio(pr) {
+  pixelRatio = pr;
+  renderer.setPixelRatio(pr);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  if (composer) { composer.setPixelRatio(pr); composer.setSize(window.innerWidth, window.innerHeight); }
+  if (fxaaPass) fxaaPass.material.uniforms.resolution.value.set(1 / (window.innerWidth * pr), 1 / (window.innerHeight * pr));
+}
 function setupComposer() {
   try {
     if (typeof THREE.EffectComposer === 'undefined' || typeof THREE.ShaderPass === 'undefined'
@@ -115,12 +129,16 @@ function setupComposer() {
         // nudged up so the highlights that DO qualify still read.
         bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.38, 0.42, 0.94);
         c.addPass(bloomPass);
-        if (LOWQ) bloomPass.enabled = false;
       }
     } catch(e) { bloomPass = null; console.warn('bloom unavailable', e); }
+    if (typeof THREE.FXAAShader !== 'undefined') {
+      fxaaPass = new THREE.ShaderPass(THREE.FXAAShader);
+      c.addPass(fxaaPass);
+    }
     blurPass = new THREE.ShaderPass(SpeedBlurShader);
     c.addPass(blurPass);
     composer = c;
+    applyPixelRatio(pixelRatio);
   } catch(e) {
     composer = null;
     console.warn('post-processing disabled', e);
@@ -166,6 +184,115 @@ const camera = new THREE.PerspectiveCamera(72, window.innerWidth/window.innerHei
 
 // now that scene and camera exist, the post-processing chain can be built
 setupComposer();
+
+// ---------- adaptive graphics (GFX) ----------
+// One controller for every device — no per-model tables. Quality levels run
+// best → lightest; the game measures its own frame rate and moves between
+// them, both ways:
+//  * the display's refresh rate ("cap") is learned from the best frame rate
+//    seen (menus included), so a 30 Hz Low Power phone or a 120 Hz screen are
+//    judged against what they can actually show
+//  * steady misses (< 80% of cap) step DOWN; if a step down doesn't help, the
+//    limit isn't the GPU (vsync / CPU / battery saver) — undo it, accept the cap
+//  * steady hits (>= 90% of cap) PROBE a step up; a probe that misses is
+//    undone and that level waits longer before the next try
+// The level that sticks is remembered per device for the next launch.
+const GFX = (() => {
+  const DEV = window.devicePixelRatio || 1, top = Math.min(DEV, 2);
+  const L = [
+    { pr: top,                  sh: 0, bloom: true,  lod: 120 },
+    { pr: Math.min(top, 1.75),  sh: 0, bloom: true,  lod: 90 },
+    { pr: Math.min(top, 1.5),   sh: 1, bloom: true,  lod: 70 },
+    { pr: Math.min(top, 1.5),   sh: 2, bloom: false, lod: 55 },
+    { pr: Math.min(top, 1.25),  sh: 3, bloom: false, lod: 40 },
+    { pr: Math.min(top, 1),     sh: 3, bloom: false, lod: 30 },
+    { pr: Math.min(top, 0.85),  sh: 3, bloom: false, lod: 25 },
+  ].filter((l, i, a) => i === 0 || JSON.stringify(l) !== JSON.stringify(a[i - 1]));
+  const KEY = 'outlap_gfx';
+  let saved = {}; try { saved = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) {}
+  const RATES = [30, 48, 60, 72, 75, 90, 100, 120, 144, 165, 240];
+  const g = {
+    levels: L, mode: saved.mode || 'auto', level: 0, lodDist: 120,
+    cap: 60, maxSeen: 0, fps: 0, stats: !!saved.stats || /[?&]stats=1/.test(location.search),
+    winN: 0, winT: 0, good: 0, bad: 0, settle: 0, check: null, fails: {}, noHelp: null,
+  };
+  const range = () => g.mode === 'sharp' ? [0, 0] : g.mode === 'smooth' ? [Math.min(4, L.length - 1), L.length - 1] : [0, L.length - 1];
+  function save() { try { localStorage.setItem(KEY, JSON.stringify({ mode: g.mode, level: g.level, dev: DEV, stats: g.stats })); } catch (e) {} }
+  function apply(i, why) {
+    const [lo, hi] = range();
+    g.level = Math.max(lo, Math.min(hi, i));
+    const l = L[g.level];
+    if (Math.abs(l.pr - pixelRatio) > 0.01) applyPixelRatio(l.pr);
+    if (shadowStep !== l.sh) setShadowStep(l.sh);
+    if (bloomPass) bloomPass.enabled = l.bloom;
+    g.lodDist = l.lod;
+    g.settle = 2; g.good = 0; g.bad = 0;
+    if (why) console.log('[gfx]', why, '→ L' + g.level, JSON.stringify(l));
+    save(); paintStats();
+  }
+  function setMode(m) { g.mode = m; g.fails = {}; g.check = null; apply(m === 'sharp' ? 0 : m === 'smooth' ? range()[0] : Math.min(g.level, L.length - 1), 'mode ' + m); }
+  const snapCap = f => RATES.find(r => r >= f * 0.97) || f;
+  function window1(fps, driving) {
+    g.fps = fps;
+    if (fps > g.maxSeen) { g.maxSeen = fps; g.cap = snapCap(fps); }
+    paintStats();
+    if (!driving || g.mode === 'sharp') return;
+    if (g.settle > 0) { g.settle--; return; }
+    const hit = fps >= g.cap * 0.9, miss = fps < g.cap * 0.8;
+    // judge the last change
+    if (g.check) {
+      const c = g.check; g.check = null;
+      if (c.dir < 0 && miss) {                       // probe up failed: back down, wait longer next time
+        g.fails[g.level] = (g.fails[g.level] || 0) + 1;
+        apply(c.from, 'probe failed'); return;
+      }
+      if (c.dir > 0) {
+        if (fps < c.fps * 1.08) {
+          // this step didn't help. One such step can just be a cheap setting;
+          // two in a row means the limit isn't the GPU (vsync / CPU / battery
+          // saver): undo both and accept this frame rate as the cap
+          if (g.noHelp) {
+            const back = g.noHelp; g.noHelp = null;
+            g.maxSeen = fps; g.cap = snapCap(fps);
+            apply(back, 'not GPU-limited, cap ' + g.cap); return;
+          }
+          g.noHelp = c.from;
+        } else g.noHelp = null;
+      }
+    }
+    if (miss && g.noHelp != null && g.level >= range()[1]) {   // at the floor and still no help
+      const back = g.noHelp; g.noHelp = null; g.maxSeen = fps; g.cap = snapCap(fps);
+      apply(back, 'not GPU-limited, cap ' + g.cap); return;
+    }
+    if (miss) { g.good = 0; if ((g.noHelp != null || ++g.bad >= 2) && g.level < range()[1]) { g.check = { dir: 1, from: g.level, fps }; apply(g.level + 1, 'slow ' + fps.toFixed(0) + '/' + g.cap); } }
+    else if (hit) {
+      g.bad = 0;
+      const need = Math.min(60, 4 * Math.pow(2, g.fails[g.level - 1] || 0));
+      g.noHelp = null;
+      if (++g.good >= need && g.level > range()[0]) { g.check = { dir: -1, from: g.level, fps }; apply(g.level - 1, 'headroom, probing up'); }
+    } else { g.good = 0; g.bad = 0; }
+  }
+  g.tick = (dt) => {
+    g.winN++; g.winT += dt;
+    if (g.winT >= 1) { window1(g.winN / g.winT, G.state === 'driving' && G.simTime > 2); g.winN = 0; g.winT = 0; }
+  };
+  // tiny readout: FPS, cap, resolution, what's on (tap the build line, or ?stats=1)
+  let el = null;
+  function paintStats() {
+    if (!g.stats) { if (el) el.style.display = 'none'; return; }
+    if (!el) { el = document.createElement('div'); el.id = 'gfx-stats'; document.body.appendChild(el); }
+    el.style.display = 'block';
+    const l = L[g.level], sh = SHADOW_STEPS[l.sh];
+    el.textContent = `${g.fps.toFixed(0)} fps / ${g.cap} · ${pixelRatio.toFixed(2)}x · shadows ${sh ? sh.size : 'off'} · bloom ${l.bloom ? 'on' : 'off'} · LOD ${l.lod}m · L${g.level} ${g.mode.toUpperCase()}`;
+  }
+  g.toggleStats = () => { g.stats = !g.stats; save(); paintStats(); };
+  g.setMode = setMode;
+  // first launch: desktops open at the top, touch devices two notches down
+  // and probe upward within a few seconds if there's headroom
+  const start = (saved.dev === DEV && saved.level != null) ? saved.level : (LOWQ ? Math.min(2, L.length - 1) : 0);
+  g.init = () => apply(g.mode === 'sharp' ? 0 : start);
+  return g;
+})();
 // the shader pass owns the vignette when post-processing is available; the
 // CSS overlay stays behind purely as the no-composer fallback
 {
@@ -194,6 +321,7 @@ try {
   sun.shadow.normalBias = 0.02;
   scene.add(sun.target);
 } catch (e) { /* stub light in tests */ }
+window.__GFX = GFX; GFX.init();   // needs the sun (shadow step) and the composer (bloom, pixel ratio)
 
 // Keep the shadow box centred on the car. Snapping the centre to whole
 // texels stops the shadow edges crawling as you drive.
@@ -207,27 +335,24 @@ function updateSunRig(x, z) {
   sun.target.updateMatrixWorld();
 }
 
-// Walk down the shadow ladder when frames get tight.
-function degradeShadows() {
-  if (shadowStep >= SHADOW_STEPS.length - 1) return false;
-  shadowStep++;
-  const s = SHADOW_STEPS[shadowStep];
+// Set the shadow step (up or down) without a shader recompile.
+function setShadowStep(i) {
+  shadowStep = Math.max(0, Math.min(SHADOW_STEPS.length - 1, i));
+  const st = SHADOW_STEPS[shadowStep];
   try {
-    if (!s) {
-      sun.castShadow = false;
-      renderer.shadowMap.enabled = false;
-      console.log('[perf] shadows off');
-    } else {
-      sun.shadow.mapSize.width = s.size;
-      sun.shadow.mapSize.height = s.size;
+    const size = st ? st.size : 16;
+    if (sun.shadow.mapSize.width !== size) {
+      sun.shadow.mapSize.width = sun.shadow.mapSize.height = size;
       if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
-      renderer.shadowMap.type = s.soft ? THREE.PCFSoftShadowMap : THREE.BasicShadowMap;
-      renderer.shadowMap.needsUpdate = true;
-      console.log('[perf] shadows →', s.size + (s.soft ? ' soft' : ' hard'));
     }
-  } catch (e) { return false; }
-  return true;
+    const sc = sun.shadow.camera;
+    // "off": a 1 m deep frustum high in the sky — nothing to draw into it,
+    // and everything outside a shadow frustum renders as lit
+    sc.near = st ? 20 : 1; sc.far = st ? 700 : 2;
+    sc.updateProjectionMatrix();
+  } catch (e) {}
 }
+function shadowsOn() { return !!SHADOW_STEPS[shadowStep]; }
 const ambient = new THREE.AmbientLight(0x8899bb, 0.45);
 scene.add(ambient);
 const hemi = new THREE.HemisphereLight(0xbfd8ff, 0x3a5a2a, 0.25);
@@ -253,8 +378,7 @@ function applyTheme(themeName) {
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth/window.innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  if (composer) composer.setSize(window.innerWidth, window.innerHeight);
+  applyPixelRatio(pixelRatio);
 });
 
 // ---------- dom ----------
@@ -582,6 +706,11 @@ function syncAssistButtons() {
   click('as-steer', () => { G.assists.steer = !G.assists.steer; });
   click('as-line', () => { G.assists.line = ({ off: 'corners', corners: 'full', full: 'off' })[G.assists.line || 'off']; });
   click('as-brake', () => { G.assists.brakeAssist = !G.assists.brakeAssist; });
+  const gb = document.getElementById('as-gfx');
+  const gfxLabel = () => { if (gb) { gb.textContent = 'GRAPHICS ' + GFX.mode.toUpperCase(); gb.classList.toggle('selected', GFX.mode !== 'auto'); } };
+  if (gb) gb.addEventListener('click', () => { GFX.setMode(({ auto: 'sharp', sharp: 'smooth', smooth: 'auto' })[GFX.mode]); gfxLabel(); });
+  gfxLabel();
+  const ln = document.getElementById('loading-note'); if (ln) ln.addEventListener('click', () => GFX.toggleStats());
   syncAssistButtons();
 })();
 
@@ -3421,34 +3550,12 @@ function updateCountdown(dt) {
 let lastT = performance.now();
 const FIXED = 1/120;
 let acc = 0;
-let fpsCount = 0, fpsT = 0;
 
 function frame(now) {
   requestAnimationFrame(frame);
   const rawDt = Math.min(0.1, (now - lastT)/1000);
   lastT = now;
-  fpsCount++; fpsT += rawDt;
-  // 2s window, not 5: on a struggling machine the old ladder took 15 seconds
-  // to walk down two steps, which felt like the game was just slow.
-  if (fpsT >= 2) {
-    const fps = fpsCount/fpsT;
-    console.log('[FPS]', fps.toFixed(1), G.state, G.cars.length + ' cars');
-    // adaptive quality ladder (skyline-run style): pixel ratio first —
-    // least visible — then SSAO, then bloom
-    if (fps < 45 && G.state === 'driving') {
-      if (pixelRatio > 1.01) {
-        pixelRatio = Math.max(1, pixelRatio - 0.35);
-        renderer.setPixelRatio(pixelRatio);
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        if (composer) composer.setSize(window.innerWidth, window.innerHeight);
-        console.log('[perf] pixel ratio →', pixelRatio.toFixed(2));
-      } else if (ssaoPass && ssaoPass.enabled) { ssaoPass.enabled = false; console.log('[perf] SSAO off'); }
-      else if (degradeShadows()) { /* 2048 soft → 1024 soft → 1024 hard → off */ }
-      else if (bloomPass && bloomPass.enabled) { bloomPass.enabled = false; console.log('[perf] bloom off'); }
-    }
-    fpsCount = 0; fpsT = 0;
-  }
-
+  GFX.tick(rawDt);
   if (G.state !== 'driving') {
     if (rainMesh) rainMesh.visible = false;
     AUDIO.update(null, rawDt, null, false); // silence engine on pause/menu/results
@@ -3543,7 +3650,15 @@ function frame(now) {
     }
     if (c.retired && !c.mesh.visible) return;   // recovered by the marshals
     // the painted blob is only needed when real shadow maps are off
-    if (c.mesh.userData.blobShadow) c.mesh.userData.blobShadow.visible = !sun.castShadow;
+    if (c.mesh.userData.blobShadow) c.mesh.userData.blobShadow.visible = !shadowsOn();
+    // distant cars drop their small parts (wheel covers, rims, discs, tyre
+    // bands): invisible at that range, and ~half of each car's draw calls
+    const lod = c.mesh.userData.lodDetail;
+    if (lod) {
+      const dx = c.mesh.position.x - camera.position.x, dz = c.mesh.position.z - camera.position.z;
+      const near = dx * dx + dz * dz < GFX.lodDist * GFX.lodDist;
+      if (c.mesh.userData._lodNear !== near) { c.mesh.userData._lodNear = near; for (const o of lod) o.visible = near; }
+    }
     // cockpit rig: visible from the helmet cam only. Read-only mirror of the
     // steer value the physics already produced — roughly 120° of wheel at
     // full lock. Nothing here feeds back into the car's behaviour.
@@ -4376,5 +4491,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 96';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 97';
 })();
