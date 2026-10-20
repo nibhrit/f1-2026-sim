@@ -141,7 +141,7 @@ function brakeAssistInput(inp) {
   if (v > need) {
     const amt = Math.min(1, 0.4 + (v - need) / 3);
     p._brakeAssist = amt;
-    return { throttle: 0, brake: Math.max(inp.brake, amt), steer: inp.steer };
+    return { throttle: 0, brake: Math.max(inp.brake, amt), steer: inp.steer, analog: inp.analog };
   }
   p._brakeAssist = 0;
   return inp;

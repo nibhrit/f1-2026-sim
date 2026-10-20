@@ -13,7 +13,7 @@
 <title>Outlap — Grand Prix racing</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  html,body { width:100%; height:100%; overflow:hidden; background:#05060a; font-family:'Segoe UI',Arial,sans-serif; color:#fff; user-select:none; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#05060a; font-family:'Segoe UI',Arial,sans-serif; color:#fff; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
   #game-canvas { display:block; width:100%; height:100%; }
 
   /* ---------- MENUS ---------- */
@@ -340,7 +340,8 @@
   #controls-hint.faded { opacity: 0; }
 
   /* ================= TOUCH DEVICES (body.touch, set by touch.js) ================= */
-  body.touch, body.touch * { -webkit-tap-highlight-color:transparent; -webkit-touch-callout:none; }
+  body.touch, body.touch * { -webkit-tap-highlight-color:transparent; -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; }
+  body.touch input, body.touch textarea { -webkit-user-select:auto; user-select:auto; }
   body.touch { touch-action:none; overscroll-behavior:none; }
   body.touch .btn, body.touch .track-card, body.touch .team-card, body.touch .drv-card, body.touch .opp-card { touch-action:manipulation; }
   body.touch .btn:hover, body.touch #menu-driver:hover, body.touch .track-card:hover, body.touch .team-card:hover { transform:none; }
@@ -680,18 +681,18 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/SSAOPass.js"></script>
-<script src="touch.js?v=95"></script>
-<script src="trackdata.js?v=95"></script>
-<script src="tracks.js?v=95"></script>
-<script src="audio.js?v=95"></script>
-<script src="carmodel.js?v=95"></script>
-<script src="trackbuilder.js?v=95"></script>
-<script src="pitlane.js?v=95"></script>
-<script src="scenery.js?v=95"></script>
-<script src="racingline.js?v=95"></script>
-<script src="physics.js?v=95"></script>
-<script src="ai.js?v=95"></script>
-<script src="rules.js?v=95"></script>
-<script src="main.js?v=95"></script>
+<script src="touch.js?v=96"></script>
+<script src="trackdata.js?v=96"></script>
+<script src="tracks.js?v=96"></script>
+<script src="audio.js?v=96"></script>
+<script src="carmodel.js?v=96"></script>
+<script src="trackbuilder.js?v=96"></script>
+<script src="pitlane.js?v=96"></script>
+<script src="scenery.js?v=96"></script>
+<script src="racingline.js?v=96"></script>
+<script src="physics.js?v=96"></script>
+<script src="ai.js?v=96"></script>
+<script src="rules.js?v=96"></script>
+<script src="main.js?v=96"></script>
 </body>
 </html>

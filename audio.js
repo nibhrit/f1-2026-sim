@@ -402,5 +402,27 @@ const AUDIO = (() => {
     return muted;
   }
 
-  return { init, update, beep, crash, whoosh, toggleMute, musicStart, musicDuck, get muted(){return muted;} };
+  // Leaving the page (home button, app switch, tab change, lock screen): stop
+  // everything. Mobile browsers keep <audio> and Web Audio running in the
+  // background otherwise. Comes back when the page is visible again.
+  let wasPlaying = false;
+  function background(hidden) {
+    try {
+      if (hidden) {
+        wasPlaying = !!(musicEl && !musicEl.paused);
+        if (musicEl) musicEl.pause();
+        if (ctx && ctx.state === 'running') ctx.suspend();
+      } else {
+        if (ctx && ctx.state === 'suspended') ctx.resume();
+        if (musicEl && wasPlaying) { const pr = musicEl.play(); if (pr && pr.catch) pr.catch(() => {}); }
+      }
+    } catch (e) {}
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => background(document.hidden));
+    window.addEventListener('pagehide', () => background(true));
+    window.addEventListener('pageshow', () => { if (!document.hidden) background(false); });
+  }
+
+  return { init, update, beep, crash, whoosh, toggleMute, musicStart, musicDuck, background, get muted(){return muted;} };
 })();

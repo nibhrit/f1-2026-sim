@@ -20,9 +20,11 @@
   const unlock = () => { try { if (typeof AUDIO !== 'undefined') { AUDIO.init(); AUDIO.musicStart && AUDIO.musicStart(); } } catch (e) {} };
   window.addEventListener('touchend', unlock, { passive: true });
   const LS = 'outlap_controls';
-  const cfg = Object.assign({ mode: null, sens: 22, invert: false, autoThrottle: false }, (() => {
+  const cfg = Object.assign({ mode: null, sens: 16, invert: false, autoThrottle: false }, (() => {
     try { return JSON.parse(localStorage.getItem(LS) || '{}'); } catch (e) { return {}; }
   })());
+  // BUILD 96: tilt got more direct; move anyone still on the old 22° default
+  if (!cfg.v) { if (cfg.sens === 22) cfg.sens = 16; cfg.v = 2; }
   const save = () => { try { localStorage.setItem(LS, JSON.stringify(cfg)); } catch (e) {} };
   const input = window.OUTLAP_TOUCH_INPUT = { active: false, steer: 0, throttle: 0, brake: 0 };
   const G = () => window.__G;
@@ -65,7 +67,8 @@
 
   // ---------- DOM ----------
   const css = `
-  #tc-layer { position:fixed; inset:0; z-index:15; pointer-events:none; display:none; touch-action:none; }
+  #tc-layer { position:fixed; inset:0; z-index:15; pointer-events:none; display:none; touch-action:none; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+  #tc-layer * { touch-action:none; -webkit-user-select:none; user-select:none; }
   #tc-layer.on { display:block; }
   .tc-pedal, .tc-arrow { position:absolute; bottom:max(10px, env(safe-area-inset-bottom)); height:40vh; border-radius:18px; pointer-events:auto;
     display:flex; align-items:flex-end; justify-content:center; padding-bottom:12px; font:900 12px Arial; letter-spacing:2px;
@@ -134,46 +137,80 @@
     document.body.appendChild(layer);
 
     // pressable regions with multi-touch: track which pointers are down where
-    const held = new Map();   // pointerId -> element
+    // What's pressed is RE-DERIVED from the full list of fingers on every touch
+    // event (e.touches), not tracked press-by-release. iOS sometimes swallows
+    // a touchend/pointerup (text-selection or zoom gestures grabbing the
+    // touch), and the old press/release bookkeeping then left the brake "held"
+    // forever: throttle fought a stuck brake (car wouldn't move) and lifting
+    // left brake-at-standstill = reverse. A stale finger can't survive this.
+    const held = new Map();   // touch id / pointer id -> element (or null = finger off any pad)
     const isDown = id => [...held.values()].some(e => e && e.id === id);
     const target = (x, y, fallback) => {
       const e = (document.elementFromPoint && document.elementFromPoint(x, y)) || fallback;
       return e && e.closest ? e.closest('.tc-pedal, .tc-arrow, .tc-btn, #tc-tap') : null;
     };
-    layer.addEventListener('pointerdown', ev => {
-      const t = target(ev.clientX, ev.clientY, ev.target); if (!t) return;
-      ev.preventDefault();
-      held.set(ev.pointerId, t); t.classList.add('down');
+    const slidable = t => !!t && (t.classList.contains('tc-pedal') || t.classList.contains('tc-arrow'));
+    function press(t) {
       if (t.dataset.k) tap(t.dataset.k);
       if (t.dataset.hold) key(t.dataset.hold, 'keydown');
       if (t.id === 'tc-center') recenter();
       if (t.id === 'tc-tap') tap('Space');
-      // touch pointers are captured to where they started; release so a
-      // thumb can slide from ◀ to ▶ (or brake to throttle) without lifting
-      try { if (t.hasPointerCapture && t.hasPointerCapture(ev.pointerId)) t.releasePointerCapture(ev.pointerId); } catch (e) {}
+    }
+    function release(t) { if (t && t.dataset.hold && !isDown(t.id)) key(t.dataset.hold, 'keyup'); }
+    function paint() {
+      layer.querySelectorAll('.down').forEach(e => { if (!isDown(e.id)) e.classList.remove('down'); });
+      held.forEach(e => e && e.classList.add('down'));
+    }
+    function syncTouches(e) {
+      const now = new Map();
+      for (const tt of e.touches) {
+        const id = 't' + tt.identifier, prev = held.get(id);
+        let el = target(tt.clientX, tt.clientY, tt.target);
+        if (prev === undefined) {                       // a new finger
+          if (el) press(el);
+        } else if (el !== prev && !(slidable(el) || el === null)) el = prev;   // buttons don't take over a sliding thumb
+        else if (el !== prev && !slidable(prev) && prev) el = prev;            // a held button stays held
+        now.set(id, el);
+      }
+      const gone = [];
+      held.forEach((el, id) => { if (String(id)[0] === 't' && !now.has(id)) gone.push(el); });
+      [...held.keys()].forEach(id => { if (String(id)[0] === 't') held.delete(id); });
+      now.forEach((el, id) => held.set(id, el));
+      gone.forEach(release);
+      paint();
+    }
+    const inLayer = e => e.target && e.target.closest && e.target.closest('#tc-layer');
+    const onTouch = e => {
+      if (layer.classList.contains('on') && (inLayer(e) || e.type !== 'touchstart')) {
+        if (e.cancelable) e.preventDefault();        // no text selection, magnifier, zoom or scroll
+      }
+      syncTouches(e);
+    };
+    ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach(t => document.addEventListener(t, onTouch, { passive: false }));
+    // mouse / pen (desktop testing with ?touch=1)
+    layer.addEventListener('pointerdown', ev => {
+      if (ev.pointerType === 'touch') return;
+      const t = target(ev.clientX, ev.clientY, ev.target); if (!t) return;
+      ev.preventDefault();
+      held.set('p' + ev.pointerId, t); press(t); paint();
     });
-    const slidable = t => t && (t.classList.contains('tc-pedal') || t.classList.contains('tc-arrow'));
     window.addEventListener('pointermove', ev => {
-      if (!held.has(ev.pointerId)) return;
-      const cur = held.get(ev.pointerId); if (cur && !slidable(cur)) return;
+      if (ev.pointerType === 'touch') return;
+      const id = 'p' + ev.pointerId; if (!held.has(id)) return;
+      const cur = held.get(id); if (cur && !slidable(cur)) return;
       const t = target(ev.clientX, ev.clientY);
-      if (t === cur || (t && !slidable(t))) return;
-      held.delete(ev.pointerId);
-      if (cur && ![...held.values()].includes(cur)) cur.classList.remove('down');
-      if (t) { held.set(ev.pointerId, t); t.classList.add('down'); }
-      else held.set(ev.pointerId, null);       // off the pad: nothing pressed until it comes back
+      if (t !== cur && (t === null || slidable(t))) { held.set(id, t); paint(); }
     });
     const up = ev => {
-      if (!held.has(ev.pointerId)) return;
-      const t = held.get(ev.pointerId);
-      held.delete(ev.pointerId);
-      if (!t) return;
-      if (![...held.values()].includes(t)) t.classList.remove('down');
-      if (t.dataset.hold) key(t.dataset.hold, 'keyup');
+      if (ev.pointerType === 'touch') return;
+      const id = 'p' + ev.pointerId; if (!held.has(id)) return;
+      const t = held.get(id); held.delete(id); release(t); paint();
     };
     window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
-    // safety: app switch / notification shade drops every press
-    window.addEventListener('blur', () => { held.forEach((t) => t && t.classList.remove('down')); held.clear(); key('KeyV', 'keyup'); });
+    // safety: app switch / notification shade / tab hidden drops every press
+    const dropAll = () => { held.clear(); paint(); key('KeyV', 'keyup'); };
+    window.addEventListener('blur', dropAll);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) dropAll(); });
 
     // box-call tyre chips become tappable (1-5)
     document.addEventListener('pointerdown', ev => {
@@ -189,6 +226,7 @@
       const driving = g && g.state === 'driving';
       layer.classList.toggle('on', !!driving && !!cfg.mode);
       input.active = !!driving && !!cfg.mode;
+      if (!input.active && held.size) { held.clear(); paint(); }   // never carry a press out of a session
       if (input.active) {
         layer.classList.toggle('mode-buttons', cfg.mode === 'buttons');
         $id('tc-center').style.display = cfg.mode === 'tilt' ? 'flex' : 'none';
@@ -196,17 +234,18 @@
         if (cfg.mode === 'tilt' && tiltRaw != null) {
           let d = tiltRaw - (tiltCenter || 0);
           while (d > 180) d -= 360; while (d < -180) d += 360;
-          const dz = 2.0;                                       // dead-zone, degrees
+          const dz = 0.8;                                       // dead-zone, degrees
           d = Math.sign(d) * Math.max(0, Math.abs(d) - dz);
           let s = Math.max(-1, Math.min(1, d / Math.max(8, cfg.sens)));
-          s = Math.sign(s) * Math.pow(Math.abs(s), 1.35);       // finer near centre
+          s = Math.sign(s) * Math.pow(Math.abs(s), 1.1);        // nearly linear: small tilts must do something
           if (cfg.invert) s = -s;
-          tiltSm += (s - tiltSm) * 0.35;                        // smoothing
+          tiltSm += (s - tiltSm) * 0.6;                         // light smoothing (sensor jitter only)
           steer = tiltSm;
         } else if (cfg.mode === 'buttons') {
           steer = (isDown('tc-left') ? 1 : 0) - (isDown('tc-right') ? 1 : 0);
         }
         input.steer = steer;
+        input.analog = cfg.mode === 'tilt';
         input.brake = isDown('tc-brake') ? 1 : 0;
         input.throttle = isDown('tc-gas') || (cfg.autoThrottle && !input.brake) ? 1 : 0;
         // pit-stop reaction game: a big TAP target

@@ -483,6 +483,7 @@ function playerInput() {
       throttle: Math.max(T.throttle, (keys['KeyW']||keys['ArrowUp']) ? 1 : 0),
       brake: Math.max(T.brake, (keys['KeyS']||keys['ArrowDown']||keys['Space']) ? 1 : 0),
       steer: kSteer || T.steer,
+      analog: !kSteer && !!T.analog,
     };
   }
   return {
@@ -756,6 +757,8 @@ $('btn-restart2').addEventListener('click', () => startSession());
 $('btn-menu').addEventListener('click', backToMenu);
 $('btn-menu2').addEventListener('click', backToMenu);
 $('btn-resume').addEventListener('click', togglePause);
+// leaving the page mid-session pauses it (and audio.js silences the sound)
+document.addEventListener('visibilitychange', () => { if (document.hidden && G.state === 'driving') togglePause(); });
 $('btn-next').addEventListener('click', () => {
   // season race finished → standings; otherwise drive the GP weekend forward
   if (G.seasonActive && G.mode === 'race') showStandings();
@@ -4373,5 +4376,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 95';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 96';
 })();
