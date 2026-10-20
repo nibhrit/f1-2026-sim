@@ -286,9 +286,8 @@ const TEAM_PACE = {
 // normalise the grip handicap so the best car sits at full grip.
 const CAR_PACE_TOP = 1.0035;
 
-// The player's Red Bull gets a small lift so every weekend stays winnable
-// without making the hierarchy meaningless.
-const PLAYER_CAR_BONUS = 1.004;
+// (There used to be a PLAYER_CAR_BONUS for "the player's Red Bull". You now
+// pick any seat, and your car runs exactly your team's pace.)
 
 // Where each car's strengths lie. Values are pace deltas applied when a
 // circuit has that character, drawn from how 2025 actually played out:
@@ -363,7 +362,6 @@ function carPace(driver, trackId, wetness) {
   const traits = TRACK_TRAITS[trackId] || ['balanced'];
   const bonus = TEAM_TRAITS[driver.team] || {};
   for (const t of traits) if (bonus[t]) pace += bonus[t];
-  if (driver.player) pace *= PLAYER_CAR_BONUS;
   if (wetness > 0.05) {
     const wetOf = WET_SKILL[driver.id] != null ? WET_SKILL[driver.id] : 0.90;
     // In the wet the driver matters far more than the car. At full wetness

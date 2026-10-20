@@ -255,7 +255,7 @@ window.addEventListener('resize', () => {
 // ---------- dom ----------
 const $ = id => document.getElementById(id);
 const screens = {
-  main: $('screen-main'), track: $('screen-track'), raceopts: $('screen-raceopts'),
+  main: $('screen-main'), track: $('screen-track'), raceopts: $('screen-raceopts'), team: $('screen-team'),
   opponent: $('screen-opponent'), results: $('screen-results'), pause: $('screen-pause'),
   standings: $('screen-standings'),
 };
@@ -268,6 +268,136 @@ function showScreen(name) {
   Object.values(screens).forEach(s => s.classList.add('hidden'));
   if (name) screens[name].classList.remove('hidden');
 }
+
+// ---------- your seat ----------
+function playerDriver() { return DRIVERS.find(d => d.player) || DRIVERS[0]; }
+function setPlayerDriver(id, noSave) {
+  if (!DRIVERS.some(d => d.id === id)) return;
+  DRIVERS.forEach(d => { d.player = d.id === id; });
+  if (!noSave) { try { localStorage.setItem('f1sim_driver', id); } catch (e) {} }
+  updateMenuDriver();
+}
+function updateMenuDriver() {
+  const d = playerDriver(), team = TEAMS[d.team];
+  const sub = document.querySelector('#screen-main .subtitle');
+  if (sub) sub.innerHTML = d.name + ' &middot; ' + team.name;
+  const card = document.getElementById('menu-driver');
+  if (card) {
+    const hex = '#' + team.color.toString(16).padStart(6, '0');
+    card.style.borderColor = hex;
+    card.innerHTML = '<span class="md-sw" style="background:' + hex + '"></span><span class="md-name">' + d.name + '</span><span class="md-team">' + team.name + '</span><span class="md-change">CHANGE &rsaquo;</span>';
+  }
+  document.title = 'F1 2026 Simulator — ' + d.name;
+}
+(function initPlayerDriver() {
+  let id = null;
+  try { id = localStorage.getItem('f1sim_driver'); } catch (e) {}
+  if (id) setPlayerDriver(id, true); else updateMenuDriver();
+})();
+
+// ---------- team & driver select ----------
+// Team grid (ordered by the pecking order) -> a spinning 3D preview of that
+// team's car in its livery -> its two drivers as cards with a helmet avatar.
+// (Team colours and names only: no real logos or driver likenesses.)
+const TS = { renderer: null, scene: null, cam: null, car: null, team: null, raf: 0 };
+function teamOrder() { return Object.keys(TEAMS).sort((a, b) => (TEAM_PACE[b] || 0) - (TEAM_PACE[a] || 0)); }
+function hexOf(c) { return '#' + c.toString(16).padStart(6, '0'); }
+function helmetAvatar(cv, d) {
+  const t = TEAMS[d.team], ctx = cv.getContext('2d'), W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  // helmet shell, side-on: team colour with an accent stripe, dark visor
+  ctx.save(); ctx.translate(W / 2, H / 2 + 4);
+  ctx.fillStyle = hexOf(t.color);
+  ctx.beginPath(); ctx.ellipse(0, 0, W * 0.40, H * 0.36, 0, Math.PI * 0.95, Math.PI * 2.25); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = hexOf(t.color); ctx.fillRect(-W * 0.40, -2, W * 0.70, H * 0.22);
+  ctx.strokeStyle = hexOf(t.accent); ctx.lineWidth = W * 0.07;
+  ctx.beginPath(); ctx.ellipse(0, 0, W * 0.30, H * 0.26, 0, Math.PI * 1.05, Math.PI * 1.75); ctx.stroke();
+  ctx.fillStyle = '#0d1018';
+  ctx.beginPath(); ctx.moveTo(W * 0.05, -H * 0.10); ctx.lineTo(W * 0.40, -H * 0.06); ctx.lineTo(W * 0.38, H * 0.10); ctx.lineTo(W * 0.02, H * 0.08); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(160,200,255,0.35)'; ctx.fillRect(W * 0.08, -H * 0.08, W * 0.18, H * 0.03);
+  ctx.restore();
+  ctx.fillStyle = '#fff'; ctx.font = '900 ' + Math.round(H * 0.17) + 'px Arial'; ctx.textAlign = 'center';
+  ctx.fillText(d.id, W / 2, H - 4);
+}
+function teamPreview(teamKey) {
+  const cv = $('team-car'); if (!cv) return;
+  try {
+    if (!TS.renderer) {
+      TS.renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true, alpha: true });
+      TS.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+      TS.renderer.setSize(cv.width, cv.height, false);
+      TS.renderer.outputEncoding = THREE.sRGBEncoding;
+      TS.renderer.toneMapping = THREE.ACESFilmicToneMapping; TS.renderer.toneMappingExposure = 1.35;
+      TS.scene = new THREE.Scene();
+      TS.scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x223044, 0.9));
+      const key = new THREE.DirectionalLight(0xffffff, 1.1); key.position.set(4, 6, 5); TS.scene.add(key);
+      const rim = new THREE.DirectionalLight(0x88aaff, 0.6); rim.position.set(-5, 3, -4); TS.scene.add(rim);
+      const floor = new THREE.Mesh(new THREE.CircleGeometry(4.2, 48), new THREE.MeshStandardMaterial({ color: 0x0e1426, roughness: 0.6, metalness: 0.2 }));
+      floor.rotation.x = -Math.PI / 2; TS.scene.add(floor);
+      TS.cam = new THREE.PerspectiveCamera(32, cv.width / cv.height, 0.1, 100);
+      TS.cam.position.set(0, 2.3, 9.2); TS.cam.lookAt(0, 0.45, 0);
+    }
+    if (TS.team !== teamKey) {
+      if (TS.car) { TS.scene.remove(TS.car); }
+      TS.car = buildF1Car(teamKey, { helmet: TEAMS[teamKey].accent });
+      TS.scene.add(TS.car); TS.team = teamKey;
+    }
+    cancelAnimationFrame(TS.raf);
+    const spin = () => {
+      if ($('screen-team').classList.contains('hidden')) return;
+      TS.car.rotation.y += 0.008;
+      TS.renderer.render(TS.scene, TS.cam);
+      TS.raf = requestAnimationFrame(spin);
+    };
+    spin();
+  } catch (e) { /* preview is optional */ }
+}
+function selectTeam(teamKey) {
+  document.querySelectorAll('.team-card').forEach(c => c.classList.toggle('sel', c.dataset.team === teamKey));
+  const t = TEAMS[teamKey], order = teamOrder(), rank = order.indexOf(teamKey) + 1;
+  $('team-name').textContent = t.name.toUpperCase(); $('team-name').style.color = hexOf(t.color === 0x16255e ? 0x3671c6 : t.color);
+  $('team-rank').textContent = 'CAR #' + rank + ' OF ' + order.length;
+  const top = TEAM_PACE[order[0]], bot = TEAM_PACE[order[order.length - 1]];
+  $('team-pacefill').style.width = Math.round(20 + 80 * ((TEAM_PACE[teamKey] - bot) / Math.max(1e-6, top - bot))) + '%';
+  const box = $('driver-cards'); box.innerHTML = '';
+  DRIVERS.filter(d => d.team === teamKey).forEach(d => {
+    const card = document.createElement('div');
+    card.className = 'drv-card' + (d.player ? ' me' : '');
+    const cv = document.createElement('canvas'); cv.width = 144; cv.height = 144; helmetAvatar(cv, d);
+    const wet = (typeof WET_SKILL !== 'undefined' && WET_SKILL[d.id] != null) ? WET_SKILL[d.id] : 0.9;
+    card.appendChild(cv);
+    const info = document.createElement('div'); info.style.flex = '1';
+    info.innerHTML = '<div class="dc-name">' + d.name + '</div><div class="dc-code">' + d.id + '</div>'
+      + '<div class="dc-stat">RACECRAFT</div><div class="dc-bar"><div style="width:' + Math.round(d.skill * 100) + '%"></div></div>'
+      + '<div class="dc-stat">IN THE WET</div><div class="dc-bar"><div style="width:' + Math.round(wet * 100) + '%"></div></div>'
+      + '<div class="dc-pick">' + (d.player ? 'YOUR SEAT' : 'RACE AS ' + d.id + ' &rsaquo;') + '</div>';
+    card.appendChild(info);
+    card.addEventListener('click', () => { setPlayerDriver(d.id); showScreen('main'); });
+    box.appendChild(card);
+  });
+  teamPreview(teamKey);
+}
+function openTeamSelect() {
+  const grid = $('team-grid'); grid.innerHTML = '';
+  teamOrder().forEach((key, i) => {
+    const t = TEAMS[key];
+    const c = document.createElement('div'); c.className = 'team-card'; c.dataset.team = key;
+    c.style.background = 'linear-gradient(115deg,' + hexOf(t.color) + ' 0%,' + hexOf(t.color) + ' 55%,' + hexOf(t.accent) + ' 140%)';
+    c.innerHTML = '<span class="tc-stripe" style="background:' + hexOf(t.accent) + '"></span><span class="tc-rank">#' + (i + 1) + '</span><span class="tc-name">' + t.name.toUpperCase() + '</span>';
+    // light liveries need dark text
+    const lum = ((t.color >> 16) * 0.3 + ((t.color >> 8) & 255) * 0.59 + (t.color & 255) * 0.11);
+    if (lum > 170) c.style.color = '#111';
+    c.addEventListener('click', () => selectTeam(key));
+    grid.appendChild(c);
+  });
+  showScreen('team');
+  const saved = (() => { try { return JSON.parse(localStorage.getItem('f1sim_season') || 'null'); } catch (e) { return null; } })();
+  $('team-sub').textContent = saved && saved.round > 0 && saved.round < TRACKS.length
+    ? 'A season is in progress as ' + (saved.playerId || 'VER') + ' — it continues in that seat. Your pick applies to other modes and a new season.'
+    : "Your car's pace follows the team's pecking order — a top team to fight for wins, a midfield car for a challenge";
+  selectTeam(playerDriver().team);
+}
+{ const md = document.getElementById('menu-driver'); if (md) md.addEventListener('click', openTeamSelect); }
 
 // ---------- input ----------
 const keys = {};
@@ -295,6 +425,12 @@ window.addEventListener('keydown', e => {
     showBanner(G.autopilot ? 'AUTOPILOT ON' : 'AUTOPILOT OFF', 1.5, '#6fa0ff');
   }
   if (e.code === 'KeyR' && G.state === 'driving' && G.player) G.player.phys.resetToTrack();
+  if (e.code === 'KeyL' && G.state === 'driving' && G.track && typeof racingLineBuild === 'function') {
+    G.assists.line = ({ off: 'corners', corners: 'full', full: 'off' })[G.assists.line || 'off'];
+    saveAssists(); syncAssistButtons();
+    racingLineBuild(G.track, G.trackGroup, G.assists.line);
+    showBanner('RACING LINE: ' + G.assists.line.toUpperCase(), 1.2, '#2ecc71');
+  }
   // box any lap, in any session — practice and qualifying included
   if (e.code === 'KeyP' && G.state === 'driving' && G.player
       && !G.player.finished && !G.player.pitState) {
@@ -404,7 +540,7 @@ document.querySelectorAll('#screen-main .btn[data-mode]').forEach(b => {
 // slides on a keyboard). Steering assist on:
 // the steer key asks for a share of the grip that's left, so you can't over-
 // drive the fronts (braking still eats into it). Saved between sessions.
-const G_ASSIST_DEFAULT = { abs: true, steer: true };
+const G_ASSIST_DEFAULT = { abs: true, steer: true, line: 'corners', brakeAssist: false };
 function loadAssists() {
   try { return Object.assign({}, G_ASSIST_DEFAULT, JSON.parse(localStorage.getItem('f1sim_assists') || '{}')); }
   catch (e) { return Object.assign({}, G_ASSIST_DEFAULT); }
@@ -412,7 +548,7 @@ function loadAssists() {
 function saveAssists() { try { localStorage.setItem('f1sim_assists', JSON.stringify(G.assists)); } catch (e) {} }
 function playerAssists() {
   const a = G.assists || G_ASSIST_DEFAULT;
-  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 91: you
+  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 92: you
   // were on the full 1.0 while the AI had 0.6, so it turned better under
   // braking than you could)
   return { abs: !!a.abs, steer: !!a.steer, absEff: 0.94, circle: AI_ASSISTS.circle };
@@ -422,16 +558,20 @@ function syncAssistButtons() {
   const set = (id, txt, on) => { const b = $(id); if (b) { b.textContent = txt; b.classList.toggle('selected', on); } };
   set('as-abs', 'ABS ' + (a.abs ? 'ON' : 'OFF'), a.abs);
   set('as-steer', 'STEER ' + (a.steer ? 'ON' : 'OFF'), a.steer);
+  set('as-line', 'LINE ' + ({ off: 'OFF', corners: 'CORNERS', full: 'FULL' })[a.line || 'off'], (a.line || 'off') !== 'off');
+  set('as-brake', 'BRAKE AID ' + (a.brakeAssist ? 'ON' : 'OFF'), !!a.brakeAssist);
 }
 (function initAssists() {
   G.assists = loadAssists();
   const click = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener('click', () => { fn(); saveAssists(); syncAssistButtons(); }); };
   click('as-abs', () => { G.assists.abs = !G.assists.abs; });
   click('as-steer', () => { G.assists.steer = !G.assists.steer; });
+  click('as-line', () => { G.assists.line = ({ off: 'corners', corners: 'full', full: 'off' })[G.assists.line || 'off']; });
+  click('as-brake', () => { G.assists.brakeAssist = !G.assists.brakeAssist; });
   syncAssistButtons();
 })();
 
-// BUILD 91: the whole difficulty scale moved up (the player was ~1s+/lap
+// BUILD 92: the whole difficulty scale moved up (the player was ~1s+/lap
 // faster than 'Alien 82%'). Added to the normalised difficulty for the AI's
 // GRIP (not its planning): ~1.1-2.3 s a lap faster at 82%. Clean to 2.5.
 const AI_PACE_SHIFT = 0.6;
@@ -682,12 +822,20 @@ function makeCar(driver, track) {
   // only the player's car needs a steering wheel and hands — nobody ever
   // sits in anyone else's cockpit
   const mesh = buildF1Car(driver.team, {
-    helmet: driver.player ? 0xe10600 : 0xdddddd,
+    helmet: driver.player ? (TEAMS[driver.team].accent || 0xe10600) : 0xdddddd,
     cockpit: !!driver.player,
   });
   scene.add(mesh);
   const phys = new CarPhysics(track);
-  if (driver.player) phys.assists = playerAssists();
+  if (driver.player) {
+    phys.assists = playerAssists();
+    // Your car is as good as your team's: the same pecking order the AI cars
+    // run (TEAM_PACE + circuit traits). Grip scales with the team's car pace,
+    // the best car on the day at full grip (a Haas runs ~4.5% less grip, which
+    // is ~1.5-2% a lap off a McLaren — about the real 2025 qualifying gap).
+    const cp = carPace(driver, G.trackDef.id, (G.weather && G.weather.wetness) || 0);
+    phys.gripBonus = Math.min(1, Math.max(0.9, 1 - (1 - cp / CAR_PACE_TOP) * 1.6));
+  }
   const car = {
     driver, mesh, phys,
     ai: driver.player ? null : null, // set after
@@ -725,7 +873,7 @@ function aiPerf(driver) {
     // clamp is lifted — at the 1.20 top end dt2 reaches ~1.85, the level the AI
     // was validated to run clean. Floored slightly below 0 for the easy end.
     const dt2 = Math.max(-0.25, Math.min(1.85, (G.difficulty - 0.98) / 0.12));
-    // the BUILD 91 shift goes into GRIP only: more car, same planning margin.
+    // the BUILD 92 shift goes into GRIP only: more car, same planning margin.
     // (Shifting the planner's pace fraction too ran the Alien field wide at
     // Austria and Britain — 12 track-limit penalties a race.)
     const dt2g = Math.max(-0.25, Math.min(2.5, dt2 + AI_PACE_SHIFT));
@@ -1207,6 +1355,8 @@ function startSession() {
   }
   applyWeatherVisuals();
   updateLapPanel();
+  // racing line assist (racingline.js), painted for the conditions right now
+  if (typeof racingLineBuild === 'function') { RL.prof = null; racingLineBuild(G.track, G.trackGroup, (G.assists && G.assists.line) || 'off'); }
   AUDIO.musicDuck(true);
   lastT = performance.now();
 }
@@ -1710,7 +1860,8 @@ function endQualify() {
   finishQualiSim();
   const p = G.player;
   const rows = G.qualiAITimes.map(q => ({ id:q.driver.id, name:q.driver.name, team:q.driver.team, time:q.time, tyre:q.tyre, me:false }));
-  rows.push({ id:'VER', name:'Max Verstappen', team:'redbull', time:p.bestLap || 9999,
+  const meD = playerDriver();
+  rows.push({ id:meD.id, name:meD.name, team:meD.team, time:p.bestLap || 9999,
               tyre:p.bestLapTyre || p.phys.compound, me:true });
   rows.sort((a,b)=>a.time-b.time);
   if (G.weekend) {
@@ -1735,7 +1886,7 @@ function skipQualify() {
   const rows = G.qualiAITimes.map(q => ({ id:q.driver.id, name:q.driver.name, team:q.driver.team, time:q.time, tyre:q.tyre, me:false }));
   rows.sort((a,b) => a.time - b.time);
   const slot = Math.floor(Math.random()*22); // random P1..P22
-  rows.splice(slot, 0, { id:'VER', name:'Max Verstappen', team:'redbull', time:null, me:true });
+  { const meD = playerDriver(); rows.splice(slot, 0, { id:meD.id, name:meD.name, team:meD.team, time:null, me:true }); }
   G.gpGrid = rows.map(r => r.id);
   if (G.seasonActive) saveSeasonProgress('race');  // grid banked
   const myPos = slot + 1;
@@ -2089,11 +2240,12 @@ function normalizeSeason(saved) {
     points,
     teamPoints: saved.teamPoints || rebuildTeamPoints(points),
     history: saved.history || [],
+    playerId: saved.playerId || null,
     session: saved.session || null,
     grid: saved.grid || null,
   };
 }
-function freshSeason() { return { round: 0, points: {}, teamPoints: {}, history: [], session: null, grid: null }; }
+function freshSeason() { return { round: 0, points: {}, teamPoints: {}, history: [], session: null, grid: null, playerId: playerDriver().id }; }
 
 // rebuild a race mid-flight from a snapshot: every car back where it was, on
 // the tyres it was using, with its wear, damage to its strategy and penalties
@@ -2239,6 +2391,8 @@ function openSeason() {
     && (saved.round > 0 || saved.session);
   if (inProgress) {
     G.seasonData = normalizeSeason(saved);
+    // a season is raced in one seat: resume as the driver it was started with
+    if (saved.playerId) { G.seasonData.playerId = saved.playerId; setPlayerDriver(saved.playerId, true); }
     if (G.seasonData.session) {
       // mid-weekend: drop straight back into the session that was running
       G.weekend = true;
@@ -2287,7 +2441,7 @@ function renderStandingsTable() {
     const order = Object.keys(TEAMS).sort((a,b) => (tp[b]||0) - (tp[a]||0));
     order.forEach((key,i) => {
       const div = document.createElement('div');
-      div.className = 'res-row' + (key === 'redbull' ? ' me' : '');
+      div.className = 'res-row' + (key === playerDriver().team ? ' me' : '');
       div.innerHTML = '<span class="r-pos">'+(i+1)+'</span>'
         + teamSwatch(key)
         + '<span class="r-name">'+TEAMS[key].name+'</span><span class="r-time">'+(tp[key]||0)+' pts</span>';
@@ -2756,7 +2910,7 @@ function updateHUD() {
     // AI times appear as each car actually completes its lap
     const rows = G.qualiAITimes.map(q => ({ name:q.driver.id, time:q.driven ? q.time : 99998, me:false, team:q.driver.team, tyre:q.tyre }));
     // the player's badge tracks the tyre they're on right now
-    rows.push({ name:'VER', time:p.bestLap || 99999, me:true, team:'redbull', tyre:p.phys.compound });
+    rows.push({ name:p.driver.id, time:p.bestLap || 99999, me:true, team:p.driver.team, tyre:p.phys.compound });
     rows.sort((a,b)=>a.time-b.time);
     let html = '';
     rows.forEach((r,i) => {
@@ -2810,7 +2964,7 @@ function updateHUD() {
 const camTmp = new THREE.Vector3();
 let camSway = 0;
 function updateCamera(dt) {
-  const p = G.player.phys;
+  const p = G.player.view || G.player.phys;   // interpolated pose (smooth at any refresh rate)
   const back = keys['KeyV'] ? -1 : 1; // hold V to look behind
   const sx = Math.sin(p.heading) * back, cz = Math.cos(p.heading) * back;
   const rx = cz, rz = -sx; // right vector
@@ -2835,8 +2989,10 @@ function updateCamera(dt) {
     // subtle high-speed vibration
     if (p.speed > 60 && !REDUCED_MOTION) {
       const sh = (p.speed-60)*0.0006;
-      camera.position.x += (Math.random()-0.5)*sh;
-      camera.position.y += (Math.random()-0.5)*sh*0.6;
+      // smooth (not random) high-speed buzz: random per-frame jitter read as
+      // the car/camera "vibrating"
+      const tt = performance.now() * 0.001;
+      camera.position.y += Math.sin(tt * 23) * sh * 0.25;
     }
     // look ahead through corners along the track direction
     const tA = G.track, kA = (p.trackIdx + Math.floor(14 / (tA.length/tA.n))) % tA.n;
@@ -2857,8 +3013,8 @@ function updateCamera(dt) {
     camera.rotation.z += -p.steer * 0.03; // head leans with the g-force
     if (p.speed > 55 && !REDUCED_MOTION) {
       const sh = (p.speed-55)*0.0007;
-      camera.position.x += (Math.random()-0.5)*sh;
-      camera.position.y += (Math.random()-0.5)*sh*0.7;
+      const tt = performance.now() * 0.001;
+      camera.position.y += Math.sin(tt * 27) * sh * 0.3;
     }
     camera.fov = 68;
   } else if (G.camMode === 2) {
@@ -2871,7 +3027,7 @@ function updateCamera(dt) {
     camera.rotation.z += -p.steer * 0.022;
     if (p.speed > 55 && !REDUCED_MOTION) {
       const sh = (p.speed-55)*0.0005;
-      camera.position.y += (Math.random()-0.5)*sh;
+      camera.position.y += Math.sin(performance.now() * 0.025) * sh * 0.3;
     }
     camera.fov = 64;
   } else {
@@ -3037,7 +3193,7 @@ function checkTrackLimits(dt) {
       if (c.limitTimer >= STEW.limitTime && !c._limitFlagged) {
         c._limitFlagged = true; // one strike per excursion
         if (G.mode === 'qualify') {
-          if (c.driver.player) { c.lapInvalid = true; stewardMsg('TRACK LIMITS: VER — LAP DELETED', 'limits'); }
+          if (c.driver.player) { c.lapInvalid = true; stewardMsg('TRACK LIMITS: ' + c.driver.id + ' — LAP DELETED', 'limits'); }
         } else if (G.mode === 'race') {
           // FIA ladder: 3 warnings, then 5s, then 10s, then drive-through
           c.limitStrikes = (c.limitStrikes || 0) + 1;
@@ -3286,16 +3442,35 @@ function frame(now) {
 
   acc += rawDt;
   while (acc >= FIXED) {
+    // remember where every car was before this physics step, so the frame can
+    // be drawn BETWEEN steps (see "render interpolation" below)
+    for (const c of G.cars) { const q = c.phys; const pv = c._prev || (c._prev = {}); pv.x = q.x; pv.z = q.z; pv.h = q.heading; }
     stepSim(FIXED);
     acc -= FIXED;
   }
+  // Render interpolation. Physics runs at a fixed 120 Hz but the screen
+  // refreshes at 60/90/144 Hz with uneven frame times, so drawing the raw
+  // physics pose made the car move 0, 1 or 2 steps per frame — a constant
+  // judder that read as the car vibrating. Draw it at the exact point between
+  // the last two physics states instead.
+  const alpha = Math.max(0, Math.min(1, acc / FIXED));
+  for (const c of G.cars) {
+    const q = c.phys, pv = c._prev;
+    const v = c.view || (c.view = Object.create(q));
+    if (Object.getPrototypeOf(v) !== q) Object.setPrototypeOf(v, q);
+    if (!pv || Math.hypot(q.x - pv.x, q.z - pv.z) > 20) { v.x = q.x; v.z = q.z; v.heading = q.heading; continue; }
+    v.x = pv.x + (q.x - pv.x) * alpha; v.z = pv.z + (q.z - pv.z) * alpha;
+    let dh = q.heading - pv.h; while (dh > Math.PI) dh -= 2 * Math.PI; while (dh < -Math.PI) dh += 2 * Math.PI;
+    v.heading = pv.h + dh * alpha;
+  }
   // the AI's qualifying laps are driven in the background, a slice per frame
   if (G.mode === 'qualify' && G.qualiSim && !G.qualiSim.done) stepQualiSim(240);
+  if (typeof racingLineUpdate === 'function') racingLineUpdate();
 
   // visuals
   const trk = G.track;
   G.cars.forEach(c => {
-    const p = c.phys;
+    const p = c.view || c.phys;        // interpolated pose for drawing
     // Ride height follows whatever the car is actually on. surfaceY only knows
     // about the road, so once a car ran wide it stayed pinned at road height
     // and hovered above the grass, which sits below the tarmac. Past the verge
@@ -3329,9 +3504,20 @@ function frame(now) {
     const slope = (trk.py[iA]-trk.py[iB]) / (10 * trk.length / trk.n);
     c.mesh.rotation.x = Math.atan(slope) * (p.speed > 1 ? 1 : 0);
     c.mesh.rotation.z = Math.atan(trk.bank[p.trackIdx]);
-    const wr = p.speed / 0.35 * FIXED * 8;
+    // Wheels roll at the real rate (speed / radius, per real frame time). They
+    // used to step a fixed angle per frame, which at racing speed aliased into a
+    // wheel that looked frozen. The sidewall band carries marks so the roll is
+    // visible at low speed, and swaps to a motion-blurred band once the marks
+    // would strobe (like the F1 games do).
+    const omega = p.speed / 0.355;
+    c._wAng = ((c._wAng || 0) + omega * rawDt) % (Math.PI * 2);
     const w = c.mesh.userData.wheels;
-    [w.fl,w.fr,w.rl,w.rr].forEach(wh => { wh.children.forEach((ch,ci) => { if (ci<2) ch.rotation.x += p.speed*0.05; }); });
+    const blur = Math.abs(omega) > 40;
+    [w.fl,w.fr,w.rl,w.rr].forEach(wh => {
+      wh.children.forEach((ch,ci) => { if (ci<2) ch.rotation.x = c._wAng; });
+      const ring = wh.userData.ring;
+      if (ring) { ring.rotation.z = c._wAng * (wh.userData.outer || 1); if (ring.userData.blurMap && ring.material.map !== (blur ? ring.userData.blurMap : ring.userData.markMap)) { ring.material.map = blur ? ring.userData.blurMap : ring.userData.markMap; ring.material.needsUpdate = true; } }
+    });
     w.fl.rotation.y = p.steer*0.35; w.fr.rotation.y = p.steer*0.35;
     // sidewall band shows the compound actually fitted (updates after a stop)
     if (c._ringComp !== p.compound && c.mesh.userData.tyreRings) {
@@ -4057,7 +4243,7 @@ function stepSim(dt) {
       if (G.autopilot) {
         if (!c.autoAi) c.autoAi = new AIDriver(c.phys, G.track, c.driver);
         inp = c.autoAi.compute(dt, physList);
-      } else inp = playerInput();
+      } else inp = (typeof brakeAssistInput === 'function') ? brakeAssistInput(playerInput()) : playerInput();
     }
     else inp = c.ai.compute(dt, physList);
     c.phys.step(dt, inp);
@@ -4174,5 +4360,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 91';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 92';
 })();

@@ -631,12 +631,35 @@ function buildF1Car(teamKey, opts) {
     // coloured compound band on the outer sidewall (static, reads at speed)
     // compound band on the sidewall — main.js tints it to the fitted compound
     // (it used to be fixed red on every car, whatever tyre was on)
-    const ringMat = new THREE.MeshBasicMaterial({ color: 0xd02020, side: THREE.DoubleSide });
+    // The band has gaps and lettering blocks so you can SEE it roll; above
+    // ~50 km/h main.js swaps in a smeared copy (motion blur), as a real
+    // sidewall looks at speed.
+    const markMap = _shared('tyreMarks', () => _carTex(128, 128, (ctx, W, H) => {
+      ctx.clearRect(0, 0, W, H);
+      const cx = W / 2, cy = H / 2;
+      for (let i = 0; i < 4; i++) {
+        const a0 = i * Math.PI / 2;
+        ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 9;
+        ctx.beginPath(); ctx.arc(cx, cy, 55, a0 + 0.18, a0 + Math.PI / 2 - 0.18); ctx.stroke();
+        ctx.fillStyle = '#ffffff';                                   // a "logo" block
+        ctx.save(); ctx.translate(cx + Math.cos(a0) * 55, cy + Math.sin(a0) * 55); ctx.rotate(a0 + Math.PI / 2);
+        ctx.fillRect(-7, -3, 14, 6); ctx.restore();
+      }
+    }));
+    const blurMap = _shared('tyreBlur', () => _carTex(128, 128, (ctx, W, H) => {
+      ctx.clearRect(0, 0, W, H);
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 9;
+      ctx.beginPath(); ctx.arc(W / 2, H / 2, 55, 0, Math.PI * 2); ctx.stroke();
+    }));
+    const ringMat = new THREE.MeshBasicMaterial({ color: 0xd02020, side: THREE.DoubleSide, map: markMap, transparent: true, alphaTest: 0.3 });
     tyreRings.push(ringMat);
-    const ring = new THREE.Mesh(new THREE.RingGeometry(r*0.84, r*0.96, 20), ringMat);
-    ring.rotation.y = Math.PI/2;
+    const ring = new THREE.Mesh(new THREE.CircleGeometry(r * 0.99, 24), ringMat);
+    ring.userData.markMap = markMap; ring.userData.blurMap = blurMap;
+    ring.rotation.order = 'YXZ';
+    ring.rotation.y = Math.PI/2 * outer;
     ring.position.x = outer * (tw/2 + 0.012);
-    w.add(ring);                                   // child 2 — static
+    w.add(ring);                                   // child 2 — spun by main.js (rotation.z)
+    w.userData.ring = ring; w.userData.outer = outer;
 
     w.position.set(x, r, z);
     g.add(w);
