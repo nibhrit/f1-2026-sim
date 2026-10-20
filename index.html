@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>F1 2026 Simulator — Max Verstappen</title>
+<title>Outlap — Grand Prix racing</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html,body { width:100%; height:100%; overflow:hidden; background:#05060a; font-family:'Segoe UI',Arial,sans-serif; color:#fff; user-select:none; }
@@ -13,8 +13,9 @@
   .screen { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
     background:radial-gradient(ellipse at 50% 30%, #10182e 0%, #05060a 70%); z-index:20; }
   .hidden { display:none !important; }
-  .title { font-size:52px; font-weight:900; letter-spacing:4px; font-style:italic;
+  .title { font-size:76px; font-weight:900; letter-spacing:4px; font-style:italic;
     background:linear-gradient(90deg,#3671c6,#ffd12e,#e10600); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  .tagline { font-size:13px; font-weight:800; letter-spacing:9px; color:#e8b64c; margin-top:2px; }
   .subtitle { font-size:16px; letter-spacing:6px; color:#8fa3c8; margin-top:6px; text-transform:uppercase; }
   .menu-box { margin-top:44px; display:flex; flex-direction:column; gap:14px; width:340px; }
   .btn { padding:15px 22px; font-size:18px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:#fff;
@@ -337,8 +338,8 @@
 
 <!-- MAIN MENU -->
 <div id="screen-main" class="screen">
-  <div class="title">F1 SIMULATOR 2026</div>
-  <div class="subtitle">Max Verstappen &middot; Oracle Red Bull Racing</div>
+  <div class="title">OUTLAP</div>
+  <div class="tagline">GRAND PRIX RACING</div>
   <div class="menu-box">
     <div id="menu-driver" title="Choose your team and driver"></div>
     <button class="btn" data-mode="practice">Practice</button>
@@ -600,17 +601,17 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/SSAOPass.js"></script>
-<script src="trackdata.js?v=92"></script>
-<script src="tracks.js?v=92"></script>
-<script src="audio.js?v=92"></script>
-<script src="carmodel.js?v=92"></script>
-<script src="trackbuilder.js?v=92"></script>
-<script src="pitlane.js?v=92"></script>
-<script src="scenery.js?v=92"></script>
-<script src="racingline.js?v=92"></script>
-<script src="physics.js?v=92"></script>
-<script src="ai.js?v=92"></script>
-<script src="rules.js?v=92"></script>
-<script src="main.js?v=92"></script>
+<script src="trackdata.js?v=93"></script>
+<script src="tracks.js?v=93"></script>
+<script src="audio.js?v=93"></script>
+<script src="carmodel.js?v=93"></script>
+<script src="trackbuilder.js?v=93"></script>
+<script src="pitlane.js?v=93"></script>
+<script src="scenery.js?v=93"></script>
+<script src="racingline.js?v=93"></script>
+<script src="physics.js?v=93"></script>
+<script src="ai.js?v=93"></script>
+<script src="rules.js?v=93"></script>
+<script src="main.js?v=93"></script>
 </body>
 </html>

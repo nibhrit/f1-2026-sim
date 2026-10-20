@@ -1,5 +1,5 @@
 // ============================================================
-// F1 2026 Simulator — main game loop, modes, UI
+// Outlap — Grand Prix racing — main game loop, modes, UI
 // ============================================================
 
 (function(){
@@ -279,15 +279,13 @@ function setPlayerDriver(id, noSave) {
 }
 function updateMenuDriver() {
   const d = playerDriver(), team = TEAMS[d.team];
-  const sub = document.querySelector('#screen-main .subtitle');
-  if (sub) sub.innerHTML = d.name + ' &middot; ' + team.name;
   const card = document.getElementById('menu-driver');
   if (card) {
     const hex = '#' + team.color.toString(16).padStart(6, '0');
     card.style.borderColor = hex;
     card.innerHTML = '<span class="md-sw" style="background:' + hex + '"></span><span class="md-name">' + d.name + '</span><span class="md-team">' + team.name + '</span><span class="md-change">CHANGE &rsaquo;</span>';
   }
-  document.title = 'F1 2026 Simulator — ' + d.name;
+  document.title = 'Outlap — Grand Prix racing';
 }
 (function initPlayerDriver() {
   let id = null;
@@ -548,7 +546,7 @@ function loadAssists() {
 function saveAssists() { try { localStorage.setItem('f1sim_assists', JSON.stringify(G.assists)); } catch (e) {} }
 function playerAssists() {
   const a = G.assists || G_ASSIST_DEFAULT;
-  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 92: you
+  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 93: you
   // were on the full 1.0 while the AI had 0.6, so it turned better under
   // braking than you could)
   return { abs: !!a.abs, steer: !!a.steer, absEff: 0.94, circle: AI_ASSISTS.circle };
@@ -571,7 +569,7 @@ function syncAssistButtons() {
   syncAssistButtons();
 })();
 
-// BUILD 92: the whole difficulty scale moved up (the player was ~1s+/lap
+// BUILD 93: the whole difficulty scale moved up (the player was ~1s+/lap
 // faster than 'Alien 82%'). Added to the normalised difficulty for the AI's
 // GRIP (not its planning): ~1.1-2.3 s a lap faster at 82%. Clean to 2.5.
 const AI_PACE_SHIFT = 0.6;
@@ -873,7 +871,7 @@ function aiPerf(driver) {
     // clamp is lifted — at the 1.20 top end dt2 reaches ~1.85, the level the AI
     // was validated to run clean. Floored slightly below 0 for the easy end.
     const dt2 = Math.max(-0.25, Math.min(1.85, (G.difficulty - 0.98) / 0.12));
-    // the BUILD 92 shift goes into GRIP only: more car, same planning margin.
+    // the BUILD 93 shift goes into GRIP only: more car, same planning margin.
     // (Shifting the planner's pace fraction too ran the Alien field wide at
     // Austria and Britain — 12 track-limit penalties a race.)
     const dt2g = Math.max(-0.25, Math.min(2.5, dt2 + AI_PACE_SHIFT));
@@ -4360,5 +4358,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 92';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 93';
 })();

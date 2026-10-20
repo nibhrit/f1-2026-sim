@@ -1,10 +1,10 @@
-# F1 2026 Simulator
+# Outlap — Grand Prix racing
 
-A 3D Formula 1 simulator that runs entirely in the browser. No build step, no
+A 3D Grand Prix racing game that runs entirely in the browser. No build step, no
 framework, no game engine — just Three.js and vanilla JavaScript.
 
-Drive as Max Verstappen for Oracle Red Bull Racing across all 24 circuits of the
-2026 season, with real track geometry, tyre strategy, dynamic weather, pit stops
+Pick any team and driver on the grid and race all 24 circuits of the
+calendar, with real track geometry, tyre strategy, dynamic weather, pit stops
 and an FIA-style stewards system.
 
 **▶ Play it:** _https://nibhrit.github.io/f1-2026-sim/_

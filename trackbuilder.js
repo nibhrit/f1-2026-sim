@@ -1198,7 +1198,7 @@ function buildTrackScene(track, scene, themeName) {
   // --- ad boards along straights ---
   {
     const texts = [
-      boardTex('F1 2026', '#111', '#fff'),
+      boardTex('OUTLAP', '#111', '#fff'),
       boardTex('GRAND PRIX', '#e10600', '#fff'),
       boardTex(track.def.gp.toUpperCase(), '#0a1a3a', '#fff'),
       boardTex('APEX FUEL', '#0d4d2a', '#ffd12e'),
