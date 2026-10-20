@@ -546,7 +546,7 @@ function loadAssists() {
 function saveAssists() { try { localStorage.setItem('f1sim_assists', JSON.stringify(G.assists)); } catch (e) {} }
 function playerAssists() {
   const a = G.assists || G_ASSIST_DEFAULT;
-  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 93: you
+  // circle 0.6 = the same grip-sharing the AI drives with (BUILD 94: you
   // were on the full 1.0 while the AI had 0.6, so it turned better under
   // braking than you could)
   return { abs: !!a.abs, steer: !!a.steer, absEff: 0.94, circle: AI_ASSISTS.circle };
@@ -569,7 +569,7 @@ function syncAssistButtons() {
   syncAssistButtons();
 })();
 
-// BUILD 93: the whole difficulty scale moved up (the player was ~1s+/lap
+// BUILD 94: the whole difficulty scale moved up (the player was ~1s+/lap
 // faster than 'Alien 82%'). Added to the normalised difficulty for the AI's
 // GRIP (not its planning): ~1.1-2.3 s a lap faster at 82%. Clean to 2.5.
 const AI_PACE_SHIFT = 0.6;
@@ -871,7 +871,7 @@ function aiPerf(driver) {
     // clamp is lifted — at the 1.20 top end dt2 reaches ~1.85, the level the AI
     // was validated to run clean. Floored slightly below 0 for the easy end.
     const dt2 = Math.max(-0.25, Math.min(1.85, (G.difficulty - 0.98) / 0.12));
-    // the BUILD 93 shift goes into GRIP only: more car, same planning margin.
+    // the BUILD 94 shift goes into GRIP only: more car, same planning margin.
     // (Shifting the planner's pace fraction too ran the Alien field wide at
     // Austria and Britain — 12 track-limit penalties a race.)
     const dt2g = Math.max(-0.25, Math.min(2.5, dt2 + AI_PACE_SHIFT));
@@ -4358,5 +4358,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 93';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 94';
 })();

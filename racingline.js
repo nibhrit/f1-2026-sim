@@ -10,6 +10,12 @@
 // so it's a line a beginner can actually follow.
 // ============================================================
 
+// The game state lives inside main.js's closure; the page exposes it as
+// window.__G. (Referencing a bare `G` here worked in the test harness, which
+// unwraps main.js, but threw in the real page — the BUILD 92/93 "race won't
+// start" bug.)
+function _G() { return (typeof G !== 'undefined') ? G : window.__G; }
+
 const RL = { mesh: null, colors: null, prof: null, idx: null, mode: 'off', key: '', t: 0, track: null };
 
 function _rlPlanner(track) {
@@ -24,7 +30,7 @@ function _rlPlanner(track) {
 // ideal speed at every track sample for the current conditions
 function _rlProfile(track) {
   const wet = (typeof TRACK_WETNESS !== 'undefined') ? TRACK_WETNESS : 0;
-  const comp = (G.player && G.player.phys.compound) || 'medium';
+  const comp = (_G().player && _G().player.phys.compound) || 'medium';
   const wg = wetGrip(comp, wet);
   const key = track.def.id + ':' + Math.round(wg * 40);
   if (RL.prof && RL.key === key && RL.track === track) return RL.prof;
@@ -86,12 +92,12 @@ function racingLineClear() {
 
 // Recolour the line around the player a few times a second.
 function racingLineUpdate(force) {
-  if (!RL.mesh || !G.player || !G.track) return;
+  if (!RL.mesh || !_G().player || !_G().track) return;
   const now = performance.now();
   if (!force && now - RL.t < 90) return;
   RL.t = now;
-  const track = G.track, prof = _rlProfile(track), N = track.n, seg = track.length / N;
-  const p = G.player.phys, v = Math.max(0, p.speed);
+  const track = _G().track, prof = _rlProfile(track), N = track.n, seg = track.length / N;
+  const p = _G().player.phys, v = Math.max(0, p.speed);
   const dec = brakeGripAt(v, track.aeroDf) * 0.8 * (0.35 + 0.65 * (p.wetGripMul || 1));
   const arr = RL.colors.array, idx = RL.idx;
   const me = p.trackIdx;
@@ -122,9 +128,9 @@ function racingLineUpdate(force) {
 // Braking assist: if you're far too fast for what's coming, it brakes for you
 // (you can still brake harder yourself). Returns the adjusted input.
 function brakeAssistInput(inp) {
-  if (!G.player || !G.track || !G.assists || !G.assists.brakeAssist) return inp;
-  const track = G.track, prof = _rlProfile(track), N = track.n, seg = track.length / N;
-  const p = G.player.phys, v = p.speed;
+  if (!_G().player || !_G().track || !_G().assists || !_G().assists.brakeAssist) return inp;
+  const track = _G().track, prof = _rlProfile(track), N = track.n, seg = track.length / N;
+  const p = _G().player.phys, v = p.speed;
   if (v < 8) return inp;
   const dec = brakeGripAt(v, track.aeroDf) * 0.85 * (0.35 + 0.65 * (p.wetGripMul || 1));
   // allow for the ~0.2 s it takes the brake to bite
