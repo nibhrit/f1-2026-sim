@@ -157,7 +157,10 @@ class CarPhysics {
     // on a keyboard just spins the car; real steering isn't instant either.
     // Tilt steering is already analog and smooth (the hands do the ramp), so
     // only a light rate limit — the keyboard one made tilt feel laggy.
-    const steerSpeed = inp.analog ? 12 : (Math.abs(inp.steer) > Math.abs(this.steer)) ? 4.5 : 8;
+    // BUILD 99: 12 → 6/4.5 — tilt was reaching the wheels almost unfiltered.
+    // Returning to centre is a touch slower, like a real self-centring wheel.
+    const steerSpeed = inp.analog ? ((Math.abs(inp.steer) > Math.abs(this.steer)) ? 6 : 4.5)
+                                  : (Math.abs(inp.steer) > Math.abs(this.steer)) ? 4.5 : 8;
     this.steer += Math.max(-steerSpeed*dt, Math.min(steerSpeed*dt, inp.steer - this.steer));
     // Pedal travel. A keyboard gives instant 0->100%, which is a big part of
     // why the car felt weightless: real brake pressure builds over ~0.2s and

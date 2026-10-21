@@ -20,13 +20,21 @@
   const unlock = () => { try { if (typeof AUDIO !== 'undefined') { AUDIO.init(); AUDIO.musicStart && AUDIO.musicStart(); } } catch (e) {} };
   window.addEventListener('touchend', unlock, { passive: true });
   const LS = 'outlap_controls';
-  const cfg = Object.assign({ mode: null, sens: 16, invert: false, autoThrottle: false }, (() => {
+  const cfg = Object.assign({ mode: null, sens: 20, feel: 'balanced', invert: false, autoThrottle: false }, (() => {
     try { return JSON.parse(localStorage.getItem(LS) || '{}'); } catch (e) { return {}; }
   })());
   // BUILD 96: tilt got more direct; move anyone still on the old 22° default
   if (!cfg.v) { if (cfg.sens === 22) cfg.sens = 16; cfg.v = 2; }
   // BUILD 98: the tilt sign is now absolute; an old "invert" was a workaround
   if (cfg.v < 3) { cfg.invert = false; cfg.v = 3; }
+  // BUILD 99: smoother steering — wider default range, curved response
+  if (cfg.v < 4) { if (cfg.sens <= 16) cfg.sens = 20; cfg.feel = cfg.feel || 'balanced'; cfg.v = 4; }
+  // steering feel: response curve (higher = gentler centre) and filter time
+  const FEEL = {
+    smooth:   { curve: 1.75, tau: 0.10 },
+    balanced: { curve: 1.45, tau: 0.07 },
+    direct:   { curve: 1.15, tau: 0.045 },
+  };
   const save = () => { try { localStorage.setItem(LS, JSON.stringify(cfg)); } catch (e) {} };
   const input = window.OUTLAP_TOUCH_INPUT = { active: false, steer: 0, throttle: 0, brake: 0 };
   const G = () => window.__G;
@@ -44,21 +52,37 @@
   // so it doesn't care whether the page is landscape, portrait-locked or
   // mid-rotation, nor that iOS and Android report gravity with opposite signs.
   let tiltRaw = null, tiltTrim = 0, tiltSm = 0, tiltOK = false, tiltAxis = null, gammaNow = null;
-  function onMotion(e) {
-    const g = e.accelerationIncludingGravity;
-    if (!g || g.x == null || g.y == null) return;
-    const gx = g.x, gy = g.y;
-    if (Math.hypot(gx, gy) < 2.5) return;                // lying flat: hold the last value
-    // which device edge is "down" (landscape → x). Locked while driving so a
-    // big steer can never flip the reference.
+  // angle of gravity away from the device edge that points down (landscape →
+  // the x edge), + = device turned clockwise. Works from either sensor.
+  function angleFrom(gx, gy) {
+    if (Math.hypot(gx, gy) < 2.5) return null;          // lying flat: meaningless
+    // which edge is "down" — locked while driving so a big steer can't flip it
     const axis = (tiltAxis && input.active) ? tiltAxis : (Math.abs(gx) >= Math.abs(gy) ? 'x' : 'y');
     if (!input.active) tiltAxis = axis;
-    // angle of gravity away from that edge; + = device turned clockwise
     const along = axis === 'x' ? gx : gy, perp = axis === 'x' ? gy : -gx;
-    tiltOK = true;
-    tiltRaw = Math.atan2(perp * Math.sign(along || 1), Math.abs(along)) * 180 / Math.PI;
+    return Math.atan2(perp * Math.sign(along || 1), Math.abs(along)) * 180 / Math.PI;
   }
-  function onOrient(e) { if (e.gamma != null) gammaNow = e.gamma; }
+  // BUILD 99: prefer the phone's FUSED orientation (gyroscope + accelerometer).
+  // Raw accelerometer gravity also contains hand shake, kerb bumps and the
+  // jolt of pressing a pedal — that noise was a big part of the twitchiness.
+  let lastOrientT = -1e9;
+  function onOrient(e) {
+    if (e.gamma == null || e.beta == null) return;
+    gammaNow = e.gamma;
+    const b = e.beta * Math.PI / 180, c = e.gamma * Math.PI / 180;
+    // world "up" in the device frame, from the orientation angles
+    const a = angleFrom(-Math.cos(b) * Math.sin(c) * 9.81, Math.sin(b) * 9.81);
+    if (a == null) return;
+    tiltOK = true; tiltRaw = a; lastOrientT = performance.now();
+  }
+  function onMotion(e) {
+    if (performance.now() - lastOrientT < 500) return;   // fused sensor is live: use that
+    const g = e.accelerationIncludingGravity;
+    if (!g || g.x == null || g.y == null) return;
+    const a = angleFrom(g.x, g.y);
+    if (a == null) return;
+    tiltOK = true; tiltRaw = a;
+  }
   let listening = false;
   function listen() {
     if (listening) return; listening = true;
@@ -181,6 +205,8 @@
   .tc-row { display:flex; gap:12px; align-items:center; font:12px Arial; color:#cdd8f0; letter-spacing:1px; }
   .tc-row input[type=range] { width:200px; }
   .tc-go { margin-top:6px; padding:12px 28px; border-radius:8px; border:1px solid #6fa0ff; background:linear-gradient(90deg,#1a3a6b,#2f5ca8); color:#fff; font:900 15px Arial; letter-spacing:2px; }
+  .tc-feel { padding:6px 10px; border-radius:6px; border:1px solid #2c4270; background:#101a30; font:800 11px Arial; letter-spacing:1px; }
+  .tc-feel.sel { border-color:#ffd12e; color:#ffd12e; }
   #tc-meter { width:220px; height:8px; background:#1a2440; border-radius:4px; position:relative; overflow:hidden; }
   #tc-meter div { position:absolute; top:0; bottom:0; width:6px; left:calc(50% - 3px); background:#ffd12e; border-radius:3px; }
   `;
@@ -297,7 +323,7 @@
     });
 
     // live input
-    function loop() {
+    function loop(ts) {
       const g = G();
       const driving = g && g.state === 'driving';
       layer.classList.toggle('on', !!driving && !!cfg.mode);
@@ -308,13 +334,22 @@
         $id('tc-center').style.display = cfg.mode === 'tilt' ? 'flex' : 'none';
         let steer = 0;
         if (cfg.mode === 'tilt' && tiltRaw != null) {
+          const F = FEEL[cfg.feel] || FEEL.balanced;
           let d = tiltRaw - tiltTrim;
-          const dz = 0.8;                                       // dead-zone, degrees
+          const dz = 0.6;                                       // dead-zone, degrees
           d = Math.sign(d) * Math.max(0, Math.abs(d) - dz);
-          let s = Math.max(-1, Math.min(1, d / Math.max(8, cfg.sens)));
+          let x = Math.min(1, Math.abs(d) / Math.max(8, cfg.sens));
+          // curved response: gentle around centre, full lock still at the
+          // same angle. Gets a little gentler still at high speed (fast
+          // corners need small, precise inputs; hairpins are slow anyway).
+          const v = (g.player && g.player.phys && g.player.phys.speed) || 0;
+          const hi = Math.max(0, Math.min(1, (v - 50) / 35));  // 180 → 306 km/h
+          let s = Math.sign(d) * Math.pow(x, F.curve + 0.35 * hi);
           s = -s;                                               // clockwise = right = negative steer
           if (cfg.invert) s = -s;
-          tiltSm += (s - tiltSm) * 0.6;                         // light smoothing (sensor jitter only)
+          // time-based low-pass: removes jitter, not intent
+          const now = ts || performance.now(), dtS = Math.min(0.1, Math.max(0, (now - (loop._t || now)) / 1000));
+          tiltSm += (s - tiltSm) * (1 - Math.exp(-dtS / F.tau));
           steer = tiltSm;
         } else if (cfg.mode === 'buttons') {
           steer = (isDown('tc-left') ? 1 : 0) - (isDown('tc-right') ? 1 : 0);
@@ -334,6 +369,7 @@
         gaugeBar.style.left = (f < 0 ? 50 + f * 50 : 50) + '%'; gaugeBar.style.width = Math.abs(f) * 50 + '%';
         gauge.classList.toggle('full', Math.abs(f) > 0.97);
       } else gauge.style.display = 'none';
+      loop._t = ts || performance.now();
       requestAnimationFrame(loop);
     }
     requestAnimationFrame(loop);
@@ -356,17 +392,21 @@
         <div class="tc-opt" data-m="tilt"><b>TILT TO STEER</b><span>Turn the device like a wheel. Smooth, analog steering — recommended.</span></div>
         <div class="tc-opt" data-m="buttons"><b>TOUCH BUTTONS</b><span>◀ ▶ buttons on the left. Works anywhere, no motion sensor needed.</span></div>
       </div>
+      <div class="tc-row" id="tc-feelrow">STEERING FEEL <span class="tc-feel" data-f="smooth">SMOOTH</span><span class="tc-feel" data-f="balanced">BALANCED</span><span class="tc-feel" data-f="direct">DIRECT</span></div>
       <div class="tc-row" id="tc-tiltrow">TILT FOR FULL LOCK <input type="range" id="tc-sens" min="10" max="40" step="1"> <span><span id="tc-sensv"></span>°</span></div>
       <div class="tc-row" id="tc-meterrow">STEERING <div id="tc-meter"><div></div></div></div>
       <div class="tc-row"><label><input type="checkbox" id="tc-inv"> INVERT TILT</label> &nbsp; <label><input type="checkbox" id="tc-auto"> AUTO-THROTTLE</label></div>
       <button class="tc-go" id="tc-ok">LET'S RACE</button>`;
     document.body.appendChild(s);
     const sel = m => { cfg.mode = m; s.querySelectorAll('.tc-opt').forEach(o => o.classList.toggle('sel', o.dataset.m === m));
-      $id('tc-tiltrow').style.display = $id('tc-meterrow').style.display = m === 'tilt' ? 'flex' : 'none'; };
+      $id('tc-tiltrow').style.display = $id('tc-meterrow').style.display = $id('tc-feelrow').style.display = m === 'tilt' ? 'flex' : 'none'; };
     s.querySelectorAll('.tc-opt').forEach(o => o.addEventListener('click', () => {
       sel(o.dataset.m);
       if (o.dataset.m === 'tilt') startTilt().then(r => { if (r !== 'granted') { $id('tc-meterrow').innerHTML = 'Motion access was refused — use TOUCH BUTTONS, or allow it in Settings.'; } });
     }));
+    const feelSel = () => s.querySelectorAll('.tc-feel').forEach(f => f.classList.toggle('sel', f.dataset.f === cfg.feel));
+    s.querySelectorAll('.tc-feel').forEach(f => f.addEventListener('click', () => { cfg.feel = f.dataset.f; feelSel(); }));
+    feelSel();
     $id('tc-sens').value = cfg.sens; $id('tc-sensv').textContent = cfg.sens;
     $id('tc-sens').addEventListener('input', e => { cfg.sens = +e.target.value; $id('tc-sensv').textContent = cfg.sens; });
     $id('tc-inv').checked = cfg.invert; $id('tc-inv').addEventListener('change', e => { cfg.invert = e.target.checked; });
