@@ -25,6 +25,8 @@
   })());
   // BUILD 96: tilt got more direct; move anyone still on the old 22° default
   if (!cfg.v) { if (cfg.sens === 22) cfg.sens = 16; cfg.v = 2; }
+  // BUILD 98: the tilt sign is now absolute; an old "invert" was a workaround
+  if (cfg.v < 3) { cfg.invert = false; cfg.v = 3; }
   const save = () => { try { localStorage.setItem(LS, JSON.stringify(cfg)); } catch (e) {} };
   const input = window.OUTLAP_TOUCH_INPUT = { active: false, steer: 0, throttle: 0, brake: 0 };
   const G = () => window.__G;
@@ -32,64 +34,136 @@
   const tap = code => { key(code, 'keydown'); setTimeout(() => key(code, 'keyup'), 60); };
 
   // ---------- tilt ----------
-  let tiltRaw = null, tiltCenter = null, tiltSm = 0, tiltOK = false;
-  function screenAngle() {
-    const a = (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle
-      : (typeof window.orientation === 'number' ? window.orientation : 0);
-    return ((a % 360) + 360) % 360;
-  }
-  // Steering angle = how far gravity has rotated within the screen plane,
-  // i.e. the device turned like a wheel. Works however far back it's tilted,
-  // and doesn't care that iOS and Android report gravity with opposite signs
-  // (both flip together, so the change from the centre point is the same).
+  // BUILD 98: steering is measured against the HORIZON, not against wherever
+  // the phone happened to be at the start. The old auto-centre grabbed the
+  // phone's angle as the lights went out — usually while a thumb was pressing
+  // the throttle, so "straight" was already a few degrees off and one
+  // direction needed more tilt than the other. Level = straight, always;
+  // CENTRE adds a small personal trim if wanted.
+  // The angle is taken in the DEVICE's own frame (no screen-orientation maths),
+  // so it doesn't care whether the page is landscape, portrait-locked or
+  // mid-rotation, nor that iOS and Android report gravity with opposite signs.
+  let tiltRaw = null, tiltTrim = 0, tiltSm = 0, tiltOK = false, tiltAxis = null, gammaNow = null;
   function onMotion(e) {
     const g = e.accelerationIncludingGravity;
     if (!g || g.x == null || g.y == null) return;
-    const a = screenAngle() * Math.PI / 180;
-    const sx = g.x * Math.cos(a) - g.y * Math.sin(a);
-    const sy = g.x * Math.sin(a) + g.y * Math.cos(a);
-    if (Math.hypot(sx, sy) < 2.5) return;          // lying flat: angle is meaningless, hold the last value
+    const gx = g.x, gy = g.y;
+    if (Math.hypot(gx, gy) < 2.5) return;                // lying flat: hold the last value
+    // which device edge is "down" (landscape → x). Locked while driving so a
+    // big steer can never flip the reference.
+    const axis = (tiltAxis && input.active) ? tiltAxis : (Math.abs(gx) >= Math.abs(gy) ? 'x' : 'y');
+    if (!input.active) tiltAxis = axis;
+    // angle of gravity away from that edge; + = device turned clockwise
+    const along = axis === 'x' ? gx : gy, perp = axis === 'x' ? gy : -gx;
     tiltOK = true;
-    tiltRaw = Math.atan2(sx, sy) * 180 / Math.PI;
-    if (tiltCenter == null) tiltCenter = tiltRaw;
+    tiltRaw = Math.atan2(perp * Math.sign(along || 1), Math.abs(along)) * 180 / Math.PI;
   }
+  function onOrient(e) { if (e.gamma != null) gammaNow = e.gamma; }
+  let listening = false;
+  function listen() {
+    if (listening) return; listening = true;
+    window.addEventListener('devicemotion', onMotion);
+  }
+  window.addEventListener('deviceorientation', onOrient);   // free on Android; on iOS starts once motion access is granted
+  const needsAsk = () => typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function';
+  // must run INSIDE a tap on iOS
   function startTilt() {
-    const add = () => window.addEventListener('devicemotion', onMotion);
-    const DM = typeof DeviceMotionEvent !== 'undefined' ? DeviceMotionEvent : null;
-    if (DM && typeof DM.requestPermission === 'function') {
-      // iOS 13+: must be asked from a tap
-      return DM.requestPermission().then(r => { if (r === 'granted') add(); return r; }).catch(() => 'denied');
-    }
-    add(); return Promise.resolve(DM ? 'granted' : 'unsupported');
+    if (!needsAsk()) { listen(); return Promise.resolve(typeof DeviceMotionEvent !== 'undefined' ? 'granted' : 'unsupported'); }
+    const asks = [DeviceMotionEvent.requestPermission()];
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function')
+      asks.push(DeviceOrientationEvent.requestPermission().catch(() => 'denied'));
+    return Promise.all(asks).then(r => { if (r[0] === 'granted') listen(); return r[0]; }).catch(() => 'denied');
   }
-  function recenter() { tiltCenter = tiltRaw; tiltSm = 0; }
+  // iOS forgets the grant between launches of a home-screen app and only lets
+  // a page ask from a tap — so ask on the FIRST tap anywhere (usually a menu
+  // button), instead of making you open CONTROLS every time.
+  function armTiltOnFirstTap() {
+    if (!needsAsk()) { listen(); return; }
+    const once = () => { document.removeEventListener('touchend', once, true); document.removeEventListener('click', once, true); if (!tiltOK) startTilt(); };
+    document.addEventListener('touchend', once, true); document.addEventListener('click', once, true);
+  }
+  function recenter() { if (tiltRaw != null) tiltTrim = Math.abs(tiltRaw) < 12 ? tiltRaw : 0; tiltSm = 0; }
   window.OUTLAP_RECENTER = recenter;
+
+  // ---------- always landscape ----------
+  // Phones can't lock orientation from a web page (iOS ignores the manifest).
+  // A big steer used to make iOS spin the page to portrait mid-corner and
+  // throw up the "rotate your device" screen. Now, whenever the PAGE is
+  // portrait on a touch device, the game draws itself rotated 90° so it stays
+  // landscape on the glass. With Portrait Orientation Lock on, the page never
+  // rotates at all — the smoothest way to play.
+  const view = { rot: 0, w: window.innerWidth, h: window.innerHeight };
+  window.OUTLAP_VW = () => view.w; window.OUTLAP_VH = () => view.h;
+  let saProbe = null;
+  function safeAreas() {
+    if (!saProbe) { saProbe = document.createElement('div'); saProbe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)'; document.documentElement.appendChild(saProbe); }
+    const cs = getComputedStyle(saProbe);
+    return [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map(v => parseFloat(v) || 0);
+  }
+  function layout() {
+    const W = window.innerWidth, H = window.innerHeight;
+    let rot = 0;
+    if (isTouch && H > W) {
+      // which way is the phone actually held? (gamma < 0: top of the phone to the left)
+      const driving = input.active;
+      if (driving && view.rot) rot = view.rot;
+      else if (gammaNow != null && Math.abs(gammaNow) > 25) rot = gammaNow < 0 ? 90 : -90;
+      else rot = view.rot || 90;
+    }
+    const lw = rot ? H : W, lh = rot ? W : H;
+    const changed = rot !== view.rot || lw !== view.w || lh !== view.h;
+    view.rot = rot; view.w = lw; view.h = lh;
+    const b = document.body, r = document.documentElement.style;
+    if (b) {
+      b.classList.toggle('short', isTouch && lh <= 560);
+      if (rot) {
+        b.style.position = 'fixed'; b.style.left = '0'; b.style.top = '0';
+        b.style.width = lw + 'px'; b.style.height = lh + 'px';
+        b.style.transformOrigin = '0 0';
+        b.style.transform = rot === 90 ? `translateX(${W}px) rotate(90deg)` : `translateY(${H}px) rotate(-90deg)`;
+      } else { b.style.position = b.style.left = b.style.top = b.style.width = b.style.height = b.style.transform = ''; }
+    }
+    r.setProperty('--vh', (lh / 100) + 'px'); r.setProperty('--vw', (lw / 100) + 'px');
+    // safe areas follow the rotation (the notch is on a SIDE in landscape)
+    const [t, rt, bt, l] = safeAreas();
+    const sa = rot === 90 ? [l, t, rt, bt] : rot === -90 ? [rt, bt, l, t] : [t, rt, bt, l];
+    ['--sat', '--sar', '--sab', '--sal'].forEach((k, i) => r.setProperty(k, sa[i] + 'px'));
+    return changed;
+  }
+  window.addEventListener('resize', layout);                 // registered before main.js's own resize handler
+  window.addEventListener('orientationchange', () => setTimeout(() => { if (layout()) window.dispatchEvent(new Event('resize')); }, 250));
+  setInterval(() => { if (layout()) window.dispatchEvent(new Event('resize')); }, 500);   // direction follows how it's held (menus)
+  layout();
 
   // ---------- DOM ----------
   const css = `
   #tc-layer { position:fixed; inset:0; z-index:15; pointer-events:none; display:none; touch-action:none; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   #tc-layer * { touch-action:none; -webkit-user-select:none; user-select:none; }
   #tc-layer.on { display:block; }
-  .tc-pedal, .tc-arrow { position:absolute; bottom:max(10px, env(safe-area-inset-bottom)); height:40vh; border-radius:18px; pointer-events:auto;
+  .tc-pedal, .tc-arrow { position:absolute; bottom:max(10px, var(--sab)); height:calc(var(--vh) * 40); border-radius:18px; pointer-events:auto;
     display:flex; align-items:flex-end; justify-content:center; padding-bottom:12px; font:900 12px Arial; letter-spacing:2px;
     color:rgba(255,255,255,.75); border:2px solid rgba(255,255,255,.18); background:rgba(255,255,255,.08); }
-  .tc-pedal { width:22vw; max-width:220px; }
-  #tc-brake { left:max(10px, env(safe-area-inset-left)); background:rgba(225,6,0,.16); }
-  #tc-gas { right:max(10px, env(safe-area-inset-right)); background:rgba(46,204,113,.16); }
-  .tc-arrow { width:14vw; max-width:150px; align-items:center; padding-bottom:0; font-size:30px; display:none; }
-  #tc-left { left:max(10px, env(safe-area-inset-left)); }
-  #tc-right { left:calc(max(10px, env(safe-area-inset-left)) + min(14vw, 150px) + 10px); }
+  .tc-pedal { width:calc(var(--vw) * 22); max-width:220px; }
+  #tc-brake { left:max(10px, var(--sal)); background:rgba(225,6,0,.16); }
+  #tc-gas { right:max(10px, var(--sar)); background:rgba(46,204,113,.16); }
+  .tc-arrow { width:calc(var(--vw) * 14); max-width:150px; align-items:center; padding-bottom:0; font-size:30px; display:none; }
+  #tc-left { left:max(10px, var(--sal)); }
+  #tc-right { left:calc(max(10px, var(--sal)) + min(calc(var(--vw) * 14), 150px) + 10px); }
   /* buttons mode: steer with the left thumb, both pedals under the right */
   #tc-layer.mode-buttons .tc-arrow { display:flex; }
-  #tc-layer.mode-buttons .tc-pedal { width:15vw; max-width:160px; }
-  #tc-layer.mode-buttons #tc-brake { left:auto; right:calc(max(10px, env(safe-area-inset-right)) + min(15vw, 160px) + 10px); }
+  #tc-layer.mode-buttons .tc-pedal { width:calc(var(--vw) * 15); max-width:160px; }
+  #tc-layer.mode-buttons #tc-brake { left:auto; right:calc(max(10px, var(--sar)) + min(calc(var(--vw) * 15), 160px) + 10px); }
   .tc-pedal.down, .tc-arrow.down { background:rgba(255,255,255,.32); border-color:rgba(255,255,255,.65); }
-  #tc-buttons { position:absolute; top:max(10px, env(safe-area-inset-top)); left:50%; transform:translateX(-50%); display:flex; gap:8px; pointer-events:auto; }
+  #tc-buttons { position:absolute; top:max(10px, var(--sat)); left:50%; transform:translateX(-50%); display:flex; gap:8px; pointer-events:auto; }
   .tc-btn { min-width:46px; height:40px; padding:0 10px; border-radius:10px; background:rgba(8,12,24,.72); border:1px solid rgba(255,255,255,.25);
     color:#fff; font:800 12px Arial; letter-spacing:1px; display:flex; align-items:center; justify-content:center; }
   .tc-btn.down { background:rgba(255,255,255,.3); }
-  #tc-tap { position:absolute; left:50%; top:70%; transform:translate(-50%,-50%); width:38vw; height:24vh; border-radius:20px; display:none;
+  #tc-tap { position:absolute; left:50%; top:70%; transform:translate(-50%,-50%); width:calc(var(--vw) * 38); height:calc(var(--vh) * 24); border-radius:20px; display:none;
     background:rgba(255,209,46,.25); border:3px solid #ffd12e; color:#ffd12e; font:900 28px Arial; letter-spacing:3px; align-items:center; justify-content:center; pointer-events:auto; }
+  #tc-gauge { position:absolute; left:50%; top:calc(var(--sat) + 56px); transform:translateX(-50%); width:180px; height:6px; border-radius:3px; background:rgba(8,12,24,.6); display:none; }
+  #tc-gauge div { position:absolute; top:0; bottom:0; background:#6fa0ff; border-radius:3px; }
+  #tc-gauge i { position:absolute; left:50%; top:-3px; bottom:-3px; width:2px; background:rgba(255,255,255,.7); }
+  #tc-gauge.full div { background:#ffd12e; }
   #tc-rotate { position:fixed; inset:0; z-index:200; background:#05060a; color:#dfe8ff; display:none; flex-direction:column; align-items:center; justify-content:center; gap:14px; font:800 16px Arial; letter-spacing:2px; text-align:center; padding:20px; }
   #tc-rotate .ph { width:58px; height:96px; border:4px solid #dfe8ff; border-radius:12px; animation:tcrot 1.8s ease-in-out infinite; }
   @keyframes tcrot { 0%,25% { transform:rotate(0) } 60%,100% { transform:rotate(-90deg) } }
@@ -115,7 +189,7 @@
   function build() {
     document.head.appendChild(el('style', {}, css));
     // rotate prompt
-    const rot = el('div', { id: 'tc-rotate', className: isTouch ? 'need' : '' }, '<div class="ph"></div><div>ROTATE YOUR DEVICE</div><div style="font-weight:400;color:#8fa3c8;letter-spacing:1px">Outlap plays in landscape</div>');
+    const rot = el('div', { id: 'tc-rotate', className: '' }, '<div class="ph"></div><div>ROTATE YOUR DEVICE</div><div style="font-weight:400;color:#8fa3c8;letter-spacing:1px">Outlap plays in landscape</div>');
     document.body.appendChild(rot);
     if (!isTouch) return;
     document.body.classList.add('touch');
@@ -133,8 +207,10 @@
       <div class="tc-arrow" id="tc-left">◀</div><div class="tc-arrow" id="tc-right">▶</div>
       <div class="tc-pedal" id="tc-brake">BRAKE</div>
       <div class="tc-pedal" id="tc-gas">THROTTLE</div>
-      <div id="tc-tap">TAP!</div>`;
+      <div id="tc-tap">TAP!</div>
+      <div id="tc-gauge"><div></div><i></i></div>`;
     document.body.appendChild(layer);
+    const gauge = $id('tc-gauge'), gaugeBar = gauge.firstChild;
 
     // pressable regions with multi-touch: track which pointers are down where
     // What's pressed is RE-DERIVED from the full list of fingers on every touch
@@ -232,12 +308,11 @@
         $id('tc-center').style.display = cfg.mode === 'tilt' ? 'flex' : 'none';
         let steer = 0;
         if (cfg.mode === 'tilt' && tiltRaw != null) {
-          let d = tiltRaw - (tiltCenter || 0);
-          while (d > 180) d -= 360; while (d < -180) d += 360;
+          let d = tiltRaw - tiltTrim;
           const dz = 0.8;                                       // dead-zone, degrees
           d = Math.sign(d) * Math.max(0, Math.abs(d) - dz);
           let s = Math.max(-1, Math.min(1, d / Math.max(8, cfg.sens)));
-          s = Math.sign(s) * Math.pow(Math.abs(s), 1.1);        // nearly linear: small tilts must do something
+          s = -s;                                               // clockwise = right = negative steer
           if (cfg.invert) s = -s;
           tiltSm += (s - tiltSm) * 0.6;                         // light smoothing (sensor jitter only)
           steer = tiltSm;
@@ -252,9 +327,13 @@
         const pg = g && g.player && g.player.pitState === 'stopped' && g.pitGame && !g.pitGame.done;
         $id('tc-tap').style.display = pg ? 'flex' : 'none';
       }
-      // recentre automatically as the lights go out
-      if (g && g.raceStarted && !loop._started) { loop._started = true; if (cfg.mode === 'tilt') recenter(); }
-      if (g && !g.raceStarted) loop._started = false;
+      // steering gauge: shows how much lock you're asking for (fills = full lock)
+      if (input.active && cfg.mode === 'tilt') {
+        gauge.style.display = 'block';
+        const f = Math.max(-1, Math.min(1, -input.steer));
+        gaugeBar.style.left = (f < 0 ? 50 + f * 50 : 50) + '%'; gaugeBar.style.width = Math.abs(f) * 50 + '%';
+        gauge.classList.toggle('full', Math.abs(f) > 0.97);
+      } else gauge.style.display = 'none';
       requestAnimationFrame(loop);
     }
     requestAnimationFrame(loop);
@@ -262,7 +341,8 @@
     const firstRun = !cfg.mode;
     buildSetup();
     if (firstRun) openSetup(true);
-    else if (cfg.mode === 'tilt') startTilt();
+    else if (cfg.mode === 'tilt') armTiltOnFirstTap();
+    layout();
   }
   function $id(id) { return document.getElementById(id); }
 
@@ -271,7 +351,7 @@
     const s = el('div', { id: 'tc-setup' });
     s.innerHTML = `
       <h3>HOW DO YOU WANT TO STEER?</h3>
-      <p>Hold the device in landscape like a steering wheel. Pedals: brake on the left, throttle on the right.</p>
+      <p>Hold the device in landscape like a steering wheel — level is straight ahead. Pedals: brake on the left, throttle on the right.<br>Tip: turn on Portrait Orientation Lock so the screen never spins mid-corner.</p>
       <div class="tc-choice">
         <div class="tc-opt" data-m="tilt"><b>TILT TO STEER</b><span>Turn the device like a wheel. Smooth, analog steering — recommended.</span></div>
         <div class="tc-opt" data-m="buttons"><b>TOUCH BUTTONS</b><span>◀ ▶ buttons on the left. Works anywhere, no motion sensor needed.</span></div>
@@ -291,14 +371,14 @@
     $id('tc-sens').addEventListener('input', e => { cfg.sens = +e.target.value; $id('tc-sensv').textContent = cfg.sens; });
     $id('tc-inv').checked = cfg.invert; $id('tc-inv').addEventListener('change', e => { cfg.invert = e.target.checked; });
     $id('tc-auto').checked = cfg.autoThrottle; $id('tc-auto').addEventListener('change', e => { cfg.autoThrottle = e.target.checked; });
-    $id('tc-ok').addEventListener('click', () => { if (!cfg.mode) sel('tilt'); save(); recenter(); s.classList.remove('on'); goFullscreen(); });
+    $id('tc-ok').addEventListener('click', () => { if (!cfg.mode) sel('tilt'); save(); s.classList.remove('on'); goFullscreen(); });
     // live meter while choosing, so you can feel the tilt range
     (function meter() {
       if (s.classList.contains('on') && cfg.mode === 'tilt' && tiltRaw != null) {
-        let d = tiltRaw - (tiltCenter || 0); if (cfg.invert) d = -d;
+        let d = tiltRaw - tiltTrim; if (cfg.invert) d = -d;
         const f = Math.max(-1, Math.min(1, d / cfg.sens));
         const bar = $id('tc-meter') && $id('tc-meter').firstChild;
-        if (bar) bar.style.left = 'calc(' + (50 - f * 50) + '% - 3px)';
+        if (bar) bar.style.left = 'calc(' + (50 + f * 50) + '% - 3px)';
       }
       requestAnimationFrame(meter);
     })();

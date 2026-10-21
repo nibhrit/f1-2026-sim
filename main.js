@@ -7,6 +7,10 @@
 
 // ---------- renderer ----------
 const canvas = document.getElementById('game-canvas');
+// logical view size: touch.js may be drawing the game rotated inside a
+// portrait page, where the window's width and height are swapped
+const VW = () => (window.OUTLAP_VW ? window.OUTLAP_VW() : window.innerWidth);
+const VH = () => (window.OUTLAP_VH ? window.OUTLAP_VH() : window.innerHeight);
 // Phones / tablets (touch.js sets OUTLAP_LOWQ) open a notch lower; from there
 // the adaptive GFX controller (below) finds what each device can hold.
 // No canvas MSAA: everything renders through the post-processing chain into
@@ -16,7 +20,7 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPrefer
 let pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
 const REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 renderer.setPixelRatio(pixelRatio);
-renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setSize(VW(), VH());
 renderer.outputEncoding = THREE.sRGBEncoding;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.2;
@@ -93,9 +97,9 @@ let composer = null, ssaoPass = null, bloomPass = null, blurPass = null, fxaaPas
 function applyPixelRatio(pr) {
   pixelRatio = pr;
   renderer.setPixelRatio(pr);
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  if (composer) { composer.setPixelRatio(pr); composer.setSize(window.innerWidth, window.innerHeight); }
-  if (fxaaPass) fxaaPass.material.uniforms.resolution.value.set(1 / (window.innerWidth * pr), 1 / (window.innerHeight * pr));
+  renderer.setSize(VW(), VH());
+  if (composer) { composer.setPixelRatio(pr); composer.setSize(VW(), VH()); }
+  if (fxaaPass) fxaaPass.material.uniforms.resolution.value.set(1 / (VW() * pr), 1 / (VH() * pr));
 }
 function setupComposer() {
   try {
@@ -105,7 +109,7 @@ function setupComposer() {
     c.addPass(new THREE.RenderPass(scene, camera));
     try {
       if (typeof THREE.SSAOPass !== 'undefined') {
-        ssaoPass = new THREE.SSAOPass(scene, camera, window.innerWidth, window.innerHeight);
+        ssaoPass = new THREE.SSAOPass(scene, camera, VW(), VH());
         // Pulled in from 0.7: real sun shadows now darken the same contact
         // points SSAO was faking, and the two stacked into black mush under
         // the cars. AO's job here is just the tight creases the shadow map
@@ -127,7 +131,7 @@ function setupComposer() {
         // lines now sit far brighter under PBR + IBL than they did flat-lit,
         // and at the old threshold the whole track edge glowed. Strength
         // nudged up so the highlights that DO qualify still read.
-        bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.38, 0.42, 0.94);
+        bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(VW(), VH()), 0.38, 0.42, 0.94);
         c.addPass(bloomPass);
       }
     } catch(e) { bloomPass = null; console.warn('bloom unavailable', e); }
@@ -180,7 +184,7 @@ scene.fog = new THREE.Fog(0x87b5e0, 500, 1600);
 // because at 0.25 m the T-cam starts drawing the airbox and engine cover that
 // sit right in front of it — a block filling the middle of the screen.
 const NEAR_COCKPIT = 0.25, NEAR_DEFAULT = 1;
-const camera = new THREE.PerspectiveCamera(72, window.innerWidth/window.innerHeight, NEAR_DEFAULT, 3000);
+const camera = new THREE.PerspectiveCamera(72, VW()/VH(), NEAR_DEFAULT, 3000);
 
 // now that scene and camera exist, the post-processing chain can be built
 setupComposer();
@@ -234,7 +238,6 @@ const GFX = (() => {
   const snapCap = f => RATES.find(r => r >= f * 0.97) || f;
   function window1(fps, driving) {
     g.fps = fps;
-    if (fps > g.maxSeen) { g.maxSeen = fps; g.cap = snapCap(fps); }
     paintStats();
     if (!driving || g.mode === 'sharp') return;
     if (g.settle > 0) { g.settle--; return; }
@@ -253,7 +256,7 @@ const GFX = (() => {
           // saver): undo both and accept this frame rate as the cap
           if (g.noHelp) {
             const back = g.noHelp; g.noHelp = null;
-            g.maxSeen = fps; g.cap = snapCap(fps);
+            g.maxSeen = fps; g.cap = snapCap(fps); for (const k in capHits) delete capHits[k];
             apply(back, 'not GPU-limited, cap ' + g.cap); return;
           }
           g.noHelp = c.from;
@@ -261,7 +264,7 @@ const GFX = (() => {
       }
     }
     if (miss && g.noHelp != null && g.level >= range()[1]) {   // at the floor and still no help
-      const back = g.noHelp; g.noHelp = null; g.maxSeen = fps; g.cap = snapCap(fps);
+      const back = g.noHelp; g.noHelp = null; g.maxSeen = fps; g.cap = snapCap(fps); for (const k in capHits) delete capHits[k];
       apply(back, 'not GPU-limited, cap ' + g.cap); return;
     }
     if (miss) { g.good = 0; if ((g.noHelp != null || ++g.bad >= 2) && g.level < range()[1]) { g.check = { dir: 1, from: g.level, fps }; apply(g.level + 1, 'slow ' + fps.toFixed(0) + '/' + g.cap); } }
@@ -272,9 +275,24 @@ const GFX = (() => {
       if (++g.good >= need && g.level > range()[0]) { g.check = { dir: -1, from: g.level, fps }; apply(g.level - 1, 'headroom, probing up'); }
     } else { g.good = 0; g.bad = 0; }
   }
+  // the cap is only raised by a rate seen in 3 separate windows, measured on
+  // the MEDIAN frame time — one burst of catch-up frames after a stall must
+  // not convince it the screen is 90 Hz (it would then chase an impossible
+  // target all the way down to the lowest level)
+  const dts = [], capHits = {};
   g.tick = (dt) => {
-    g.winN++; g.winT += dt;
-    if (g.winT >= 1) { window1(g.winN / g.winT, G.state === 'driving' && G.simTime > 2); g.winN = 0; g.winT = 0; }
+    if (!(dt > 0)) return;
+    g.winN++; g.winT += dt; dts.push(dt);
+    if (g.winT >= 1) {
+      dts.sort((a, b) => a - b);
+      const med = 1 / dts[dts.length >> 1], avg = g.winN / g.winT;
+      dts.length = 0;
+      const r = snapCap(Math.min(med, 250));
+      capHits[r] = (capHits[r] || 0) + 1;
+      if (r > g.cap && capHits[r] >= 3) { g.cap = r; g.maxSeen = med; }
+      window1(avg, G.state === 'driving' && G.simTime > 2);
+      g.winN = 0; g.winT = 0;
+    }
   };
   // tiny readout: FPS, cap, resolution, what's on (tap the build line, or ?stats=1)
   let el = null;
@@ -376,7 +394,7 @@ function applyTheme(themeName) {
 }
 
 window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.aspect = VW()/VH();
   camera.updateProjectionMatrix();
   applyPixelRatio(pixelRatio);
 });
@@ -2268,8 +2286,8 @@ function startConfetti() {
   const cv = $('confetti-canvas');
   const ctx = cv.getContext && cv.getContext('2d');
   if (!ctx) return;
-  cv.width = window.innerWidth || 800;
-  cv.height = window.innerHeight || 600;
+  cv.width = VW() || 800;
+  cv.height = VH() || 600;
   const colors = ['#ffd12e','#e10600','#3671c6','#2ecc71','#ffffff','#a640ff'];
   const parts = [];
   for (let i = 0; i < 120; i++) parts.push({
@@ -4491,5 +4509,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 97';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 98';
 })();
