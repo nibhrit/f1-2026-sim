@@ -415,6 +415,28 @@
   body.short #podium-pos { font-size:84px; }
   body.short #podium-name { font-size:22px; }
 
+
+  /* BUILD 100: pop-ups always fit a phone screen (scroll if they still don't) */
+  body.short #tyre-picker { bottom:auto; top:calc(var(--sat) + 6px); transform:translateX(-50%); padding:8px 16px;
+    max-height:calc(var(--vh) * 100 - 12px); overflow-y:auto; -webkit-overflow-scrolling:touch; touch-action:pan-y; }
+  body.short #tyre-picker .tp-title { font-size:12px; margin-bottom:2px; }
+  body.short #tp-weather { margin:2px 0 4px; font-size:10px; }
+  body.short #tyre-picker .tp-label { margin:4px 0 4px; font-size:10px; }
+  body.short #tyre-picker .tp-row { margin-bottom:14px; gap:8px; }
+  body.short .tyre-btn { width:46px; height:46px; font-size:15px; border-width:4px;
+    box-shadow: inset 0 0 0 5px #0b0b0e, inset 0 0 0 7px #2c2c34, inset 0 0 0 14px #101014; }
+  body.short .tyre-btn::after { bottom:-14px; font-size:8px; }
+  body.short #tp-confirm { margin-top:4px; padding:8px 16px; }
+  body.short #tc-setup { justify-content:flex-start; overflow-y:auto; -webkit-overflow-scrolling:touch; touch-action:pan-y; gap:7px;
+    padding:calc(var(--sat) + 8px) calc(var(--sar) + 12px) 10px calc(var(--sal) + 12px); }
+  body.short #tc-setup h3 { font-size:17px; }
+  body.short #tc-setup p { font-size:11px; line-height:1.35; }
+  body.short .tc-opt { width:200px; padding:9px 12px; }
+  body.short .tc-opt b { font-size:13px; margin-bottom:3px; }
+  body.short .tc-opt span { font-size:10.5px; }
+  body.short .tc-go { margin-top:2px; padding:9px 24px; }
+  body.short #pit-ui .pu-box { padding:8px 18px; }
+  body.short #pit-stationary { font-size:30px; }
 </style>
 </head>
 <body>
@@ -456,6 +478,8 @@
         <button class="btn small selected" id="as-line">LINE CORNERS</button>
         <button class="btn small" id="as-brake">BRAKE AID OFF</button>
         <button class="btn small" id="as-gfx" title="AUTO adapts to your device · SHARP = best looks · SMOOTH = best frame rate">GRAPHICS AUTO</button>
+        <button class="btn small" id="as-music">MUSIC ON</button>
+        <button class="btn small" id="as-sound">SOUND ON</button>
         <button class="btn small touch-only" id="as-controls" onclick="window.OUTLAP_OPEN_CONTROLS&&OUTLAP_OPEN_CONTROLS()">CONTROLS</button>
       </div>
     </div>
@@ -560,6 +584,7 @@
     <button class="btn hidden" id="btn-endq">End Qualifying — Keep My Time</button>
     <button class="btn hidden" id="btn-skipq">Skip Qualifying</button>
     <button class="btn" id="btn-restart2">Restart Session</button>
+    <button class="btn" id="btn-music2">Music: On</button>
     <button class="btn touch-only" id="btn-controls2" onclick="window.OUTLAP_OPEN_CONTROLS&&OUTLAP_OPEN_CONTROLS()">Controls</button>
     <button class="btn" id="btn-menu2">Main Menu</button>
   </div>
@@ -689,18 +714,18 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/SSAOPass.js"></script>
-<script src="touch.js?v=99"></script>
-<script src="trackdata.js?v=99"></script>
-<script src="tracks.js?v=99"></script>
-<script src="audio.js?v=99"></script>
-<script src="carmodel.js?v=99"></script>
-<script src="trackbuilder.js?v=99"></script>
-<script src="pitlane.js?v=99"></script>
-<script src="scenery.js?v=99"></script>
-<script src="racingline.js?v=99"></script>
-<script src="physics.js?v=99"></script>
-<script src="ai.js?v=99"></script>
-<script src="rules.js?v=99"></script>
-<script src="main.js?v=99"></script>
+<script src="touch.js?v=100"></script>
+<script src="trackdata.js?v=100"></script>
+<script src="tracks.js?v=100"></script>
+<script src="audio.js?v=100"></script>
+<script src="carmodel.js?v=100"></script>
+<script src="trackbuilder.js?v=100"></script>
+<script src="pitlane.js?v=100"></script>
+<script src="scenery.js?v=100"></script>
+<script src="racingline.js?v=100"></script>
+<script src="physics.js?v=100"></script>
+<script src="ai.js?v=100"></script>
+<script src="rules.js?v=100"></script>
+<script src="main.js?v=100"></script>
 </body>
 </html>

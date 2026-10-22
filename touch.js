@@ -31,9 +31,10 @@
   if (cfg.v < 4) { if (cfg.sens <= 16) cfg.sens = 20; cfg.feel = cfg.feel || 'balanced'; cfg.v = 4; }
   // steering feel: response curve (higher = gentler centre) and filter time
   const FEEL = {
-    smooth:   { curve: 1.75, tau: 0.10 },
-    balanced: { curve: 1.45, tau: 0.07 },
-    direct:   { curve: 1.15, tau: 0.045 },
+    // BUILD 100: every preset a notch calmer (Balanced is the old Smooth+)
+    smooth:   { curve: 2.0,  tau: 0.16 },
+    balanced: { curve: 1.75, tau: 0.11 },
+    direct:   { curve: 1.4,  tau: 0.07 },
   };
   const save = () => { try { localStorage.setItem(LS, JSON.stringify(cfg)); } catch (e) {} };
   const input = window.OUTLAP_TOUCH_INPUT = { active: false, steer: 0, throttle: 0, brake: 0 };
@@ -51,7 +52,7 @@
   // The angle is taken in the DEVICE's own frame (no screen-orientation maths),
   // so it doesn't care whether the page is landscape, portrait-locked or
   // mid-rotation, nor that iOS and Android report gravity with opposite signs.
-  let tiltRaw = null, tiltTrim = 0, tiltSm = 0, tiltOK = false, tiltAxis = null, gammaNow = null;
+  let tiltDegSm = 0, brakeT = 0, tiltRaw = null, tiltTrim = 0, tiltSm = 0, tiltOK = false, tiltAxis = null, gammaNow = null;
   // angle of gravity away from the device edge that points down (landscape →
   // the x edge), + = device turned clockwise. Works from either sensor.
   function angleFrom(gx, gy) {
@@ -349,14 +350,25 @@
           if (cfg.invert) s = -s;
           // time-based low-pass: removes jitter, not intent
           const now = ts || performance.now(), dtS = Math.min(0.1, Math.max(0, (now - (loop._t || now)) / 1000));
-          tiltSm += (s - tiltSm) * (1 - Math.exp(-dtS / F.tau));
+          const kf = 1 - Math.exp(-dtS / F.tau);
+          tiltSm += (s - tiltSm) * kf;
           steer = tiltSm;
+          // how far the phone is turned (deg, + clockwise), smoothed — the
+          // camera uses it to keep the horizon level in the real world
+          tiltDegSm += ((tiltRaw - tiltTrim) - tiltDegSm) * kf;
+          input.tilt = cfg.invert ? -tiltDegSm : tiltDegSm;
         } else if (cfg.mode === 'buttons') {
           steer = (isDown('tc-left') ? 1 : 0) - (isDown('tc-right') ? 1 : 0);
         }
         input.steer = steer;
         input.analog = cfg.mode === 'tilt';
-        input.brake = isDown('tc-brake') ? 1 : 0;
+        if (cfg.mode !== 'tilt') input.tilt = 0;
+        // progressive brake pedal: a press starts at 55% and builds to full
+        // over ~0.4 s — a tap is a lift-and-dab, holding is a stop. An on/off
+        // pedal slammed full braking every time, the "twitchy" feel.
+        if (isDown('tc-brake')) { brakeT += (performance.now() - (loop._bt || performance.now())) / 1000; input.brake = Math.min(1, 0.55 + 0.45 * brakeT / 0.4); }
+        else { brakeT = 0; input.brake = 0; }
+        loop._bt = performance.now();
         input.throttle = isDown('tc-gas') || (cfg.autoThrottle && !input.brake) ? 1 : 0;
         // pit-stop reaction game: a big TAP target
         const pg = g && g.player && g.player.pitState === 'stopped' && g.pitGame && !g.pitGame.done;

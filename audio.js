@@ -25,7 +25,11 @@ const AUDIO = (() => {
   // ------------------------------------------------------------------
   let ctx = null;
   let master, noiseBuf = null, engWave = null;
-  let muted = false;
+  // sound + music switches survive restarts
+  let prefs = {}; try { prefs = JSON.parse(localStorage.getItem('outlap_audio') || '{}'); } catch (e) {}
+  let muted = prefs.sound === false;
+  let musicOn = prefs.music !== false;
+  const savePrefs = () => { try { localStorage.setItem('outlap_audio', JSON.stringify({ sound: !muted, music: musicOn })); } catch (e) {} };
   let volume = 0.55;
   let player = null;               // player voice
   const opp = [];                  // rival voices
@@ -335,6 +339,11 @@ const AUDIO = (() => {
   // Plays ./music.mp3 (drop your own track into the game folder) on loop.
   // Falls back to an original procedural driving loop if the file is absent.
   let musicEl = null, musicFailed = false, procTimer = null, procGain = null, procStep = 0;
+  // The music runs through Web Audio (element → gain → master). iPhones and
+  // iPads ignore an <audio> element's volume entirely, which is why the
+  // track never dipped under the engines once a race started on mobile.
+  let musicGain = null;
+  const MUSIC_MENU = 0.25, MUSIC_DRIVE = 0.035;     // absolute levels (as before)
 
   function startProcLoop() {
     if (!ctx || procTimer) return;
@@ -379,8 +388,17 @@ const AUDIO = (() => {
       musicEl = new Audio('music.mp3');
       musicEl.loop = true;
       musicEl.muted = muted;
+      musicEl.setAttribute('playsinline', '');
+      if (ctx) {
+        try {
+          const src = ctx.createMediaElementSource(musicEl);
+          musicGain = ctx.createGain(); musicGain.gain.value = 0;
+          src.connect(musicGain); musicGain.connect(master);
+          musicEl.muted = false;                       // master handles mute now
+        } catch (e) { musicGain = null; }
+      }
       musicEl.addEventListener('error', () => { musicFailed = true; musicEl = null; startProcLoop(); });
-      const pr = musicEl.play(); if (pr && pr.catch) pr.catch(() => {});
+      const pr = musicOn ? musicEl.play() : null; if (pr && pr.catch) pr.catch(() => {});
       musicDuck(musicDriving); // apply correct starting volume
     } catch(e) { musicFailed = true; startProcLoop(); }
   }
@@ -388,19 +406,24 @@ const AUDIO = (() => {
   // music keeps playing on track but sits well under the cars; fuller in menus
   function musicDuck(isDriving) {
     musicDriving = isDriving;
+    const level = musicOn ? (isDriving ? MUSIC_DRIVE : MUSIC_MENU) : 0;   // very quiet while driving
     if (musicEl) {
-      musicEl.volume = isDriving ? 0.035 : 0.25; // very quiet while driving
-      const pr = musicEl.play(); if (pr && pr.catch) pr.catch(() => {});
+      if (musicGain && ctx) musicGain.gain.setTargetAtTime(level / volume, ctx.currentTime, 0.35);
+      else musicEl.volume = level;
+      if (!musicOn) musicEl.pause();
+      else if (!document.hidden) { const pr = musicEl.play(); if (pr && pr.catch) pr.catch(() => {}); }
     }
-    if (procGain && ctx) procGain.gain.setTargetAtTime(isDriving ? 0.012 : 0.10, ctx.currentTime, 0.4);
+    if (procGain && ctx) procGain.gain.setTargetAtTime(musicOn ? (isDriving ? 0.012 : 0.10) : 0, ctx.currentTime, 0.4);
   }
 
   function toggleMute() {
     muted = !muted;
     if (ctx && master) master.gain.value = muted ? 0 : volume;
-    if (musicEl) musicEl.muted = muted;
+    if (musicEl && !musicGain) musicEl.muted = muted;
+    savePrefs();
     return muted;
   }
+  function setMusic(on) { musicOn = !!on; savePrefs(); musicDuck(musicDriving); return musicOn; }
 
   // Leaving the page (home button, app switch, tab change, lock screen): stop
   // everything. Mobile browsers keep <audio> and Web Audio running in the
@@ -414,7 +437,7 @@ const AUDIO = (() => {
         if (ctx && ctx.state === 'running') ctx.suspend();
       } else {
         if (ctx && ctx.state === 'suspended') ctx.resume();
-        if (musicEl && wasPlaying) { const pr = musicEl.play(); if (pr && pr.catch) pr.catch(() => {}); }
+        if (musicEl && wasPlaying && musicOn) { const pr = musicEl.play(); if (pr && pr.catch) pr.catch(() => {}); }
       }
     } catch (e) {}
   }
@@ -424,5 +447,5 @@ const AUDIO = (() => {
     window.addEventListener('pageshow', () => { if (!document.hidden) background(false); });
   }
 
-  return { init, update, beep, crash, whoosh, toggleMute, musicStart, musicDuck, background, get muted(){return muted;} };
+  return { init, update, beep, crash, whoosh, toggleMute, setMusic, get musicOn(){return musicOn;}, musicStart, musicDuck, background, get muted(){return muted;} };
 })();

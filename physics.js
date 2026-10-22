@@ -159,7 +159,7 @@ class CarPhysics {
     // only a light rate limit — the keyboard one made tilt feel laggy.
     // BUILD 99: 12 → 6/4.5 — tilt was reaching the wheels almost unfiltered.
     // Returning to centre is a touch slower, like a real self-centring wheel.
-    const steerSpeed = inp.analog ? ((Math.abs(inp.steer) > Math.abs(this.steer)) ? 6 : 4.5)
+    const steerSpeed = inp.analog ? ((Math.abs(inp.steer) > Math.abs(this.steer)) ? 4 : 3.2)
                                   : (Math.abs(inp.steer) > Math.abs(this.steer)) ? 4.5 : 8;
     this.steer += Math.max(-steerSpeed*dt, Math.min(steerSpeed*dt, inp.steer - this.steer));
     // Pedal travel. A keyboard gives instant 0->100%, which is a big part of

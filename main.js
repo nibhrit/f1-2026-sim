@@ -551,6 +551,7 @@ window.addEventListener('keydown', e => {
   AUDIO.init();
   if (e.code === 'KeyN') {
     const m = AUDIO.toggleMute();
+    if (window.__audioLabels) window.__audioLabels();
     if (G.state === 'driving') showBanner(m ? 'SOUND OFF' : 'SOUND ON', 1.2, '#6fa0ff');
   }
   // M cycles the minimap zoom: whole circuit → 2x → 3.5x (follows the car)
@@ -728,6 +729,19 @@ function syncAssistButtons() {
   const gfxLabel = () => { if (gb) { gb.textContent = 'GRAPHICS ' + GFX.mode.toUpperCase(); gb.classList.toggle('selected', GFX.mode !== 'auto'); } };
   if (gb) gb.addEventListener('click', () => { GFX.setMode(({ auto: 'sharp', sharp: 'smooth', smooth: 'auto' })[GFX.mode]); gfxLabel(); });
   gfxLabel();
+  // music / sound switches (menu + pause)
+  const audioLabels = () => {
+    const m = document.getElementById('as-music'), sd = document.getElementById('as-sound'), m2 = document.getElementById('btn-music2');
+    if (m) { m.textContent = 'MUSIC ' + (AUDIO.musicOn ? 'ON' : 'OFF'); m.classList.toggle('selected', AUDIO.musicOn); }
+    if (sd) { sd.textContent = 'SOUND ' + (AUDIO.muted ? 'OFF' : 'ON'); sd.classList.toggle('selected', !AUDIO.muted); }
+    if (m2) m2.textContent = 'Music: ' + (AUDIO.musicOn ? 'On' : 'Off');
+  };
+  window.__audioLabels = audioLabels;
+  const onClick = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener('click', () => { AUDIO.init(); fn(); audioLabels(); }); };
+  onClick('as-music', () => AUDIO.setMusic(!AUDIO.musicOn));
+  onClick('btn-music2', () => AUDIO.setMusic(!AUDIO.musicOn));
+  onClick('as-sound', () => AUDIO.toggleMute());
+  audioLabels();
   const ln = document.getElementById('loading-note'); if (ln) ln.addEventListener('click', () => GFX.toggleStats());
   syncAssistButtons();
 })();
@@ -3125,7 +3139,7 @@ function updateHUD() {
 
 // ---------- camera ----------
 const camTmp = new THREE.Vector3();
-let camSway = 0;
+let camHead = null, camSway = 0;
 function updateCamera(dt) {
   const p = G.player.view || G.player.phys;   // interpolated pose (smooth at any refresh rate)
   const back = keys['KeyV'] ? -1 : 1; // hold V to look behind
@@ -3136,12 +3150,24 @@ function updateCamera(dt) {
   if (G.player && G.player.mesh && G.player.mesh.userData.haloStrut && G.camMode !== 1)
     G.player.mesh.userData.haloStrut.scale.set(1, 1, 1);
   if (G.camMode === 0) {
+    // Tilt steering (phones): the camera follows a SMOOTHED heading, doesn't
+    // roll with the steering, and counter-rolls by the phone's own tilt so
+    // the horizon stays level in the real world — the whole picture swinging
+    // with every small wrist movement is most of what reads as "twitchy".
+    const TI = window.OUTLAP_TOUCH_INPUT, tiltCam = !!(TI && TI.active && TI.analog);
+    let sx = Math.sin(p.heading) * back, cz = Math.cos(p.heading) * back, rx = cz, rz = -sx;
+    if (tiltCam) {
+      if (camHead == null) camHead = p.heading;
+      let dh = p.heading - camHead; dh = Math.atan2(Math.sin(dh), Math.cos(dh));
+      camHead += dh * Math.min(1, dt * 7);
+      sx = Math.sin(camHead) * back; cz = Math.cos(camHead) * back; rx = cz; rz = -sx;
+    } else camHead = null;
     // F1-game chase: low, tight behind the rear wing
     // F1 25-style framing: closer and lower, so the car fills more of the
     // screen (the old 6.3 m / 2.05 m / wide-angle view made it look tiny)
     const dist = 4.5 + p.speed*0.010;
     const h = 1.45 + p.speed*0.004;
-    camSway += ((-p.steer * Math.min(1, p.speed/25) * 0.85) - camSway) * Math.min(1, dt*6);
+    camSway += ((-p.steer * Math.min(1, p.speed/25) * (tiltCam ? 0.35 : 0.85)) - camSway) * Math.min(1, dt*(tiltCam ? 3 : 6));
     camTmp.set(
       p.x - sx*dist + rx*camSway,
       baseY + h,
@@ -3160,7 +3186,8 @@ function updateCamera(dt) {
     // look ahead through corners along the track direction
     const tA = G.track, kA = (p.trackIdx + Math.floor(14 / (tA.length/tA.n))) % tA.n;
     camera.lookAt(p.x + sx*6 + tA.tx[kA]*3*back, baseY + 0.85, p.z + cz*6 + tA.tz[kA]*3*back);
-    camera.rotation.z += camSway * 0.035; // slight roll into corners
+    if (tiltCam) camera.rotation.z -= (TI.tilt || 0) * Math.PI / 180 * 0.75;   // level horizon
+    else camera.rotation.z += camSway * 0.035; // slight roll into corners
     camera.fov = 52 + Math.min(8, p.speed*0.07);   // narrower lens = bigger car, less fish-eye
   } else if (G.camMode === 1) {
     // cockpit / helmet cam: driver's-eye height, halo strut and nose in frame
@@ -4509,5 +4536,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 99';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 100';
 })();
