@@ -101,6 +101,15 @@
     background:linear-gradient(90deg,#2a7d3f 0%,#c9a227 55%,#c1121f 100%); outline:none; cursor:pointer; }
   #diff-slider::-webkit-slider-thumb { -webkit-appearance:none; appearance:none; width:18px; height:18px;
     border-radius:50%; background:#eef3ff; border:2px solid #1e3a8a; box-shadow:0 1px 4px rgba(0,0,0,.5); cursor:pointer; }
+  #st-diff { -webkit-appearance:none; appearance:none; width:100%; height:6px; border-radius:3px;
+    background:linear-gradient(90deg,#2a7d3f 0%,#c9a227 55%,#c1121f 100%); outline:none; }
+  #st-diff::-webkit-slider-thumb { -webkit-appearance:none; appearance:none; width:18px; height:18px; border-radius:50%; background:#eef3ff; border:2px solid #1e3a8a; }
+  #st-prefs { display:flex; gap:26px; align-items:flex-end; margin-top:14px; padding:10px 16px; background:#0c1426; border:1px solid #24365c; border-radius:10px; }
+  .stp-col { min-width:220px; }
+  .stp-k { font-size:11px; letter-spacing:2px; color:#7d8db0; margin-bottom:8px; }
+  #st-diff-label { color:#cdd8f0; margin-left:6px; }
+  body.short #st-prefs { margin-top:8px; padding:6px 12px; gap:16px; }
+  body.short #screen-standings .menu-box { margin-top:8px !important; }
   #diff-slider::-moz-range-thumb { width:16px; height:16px; border-radius:50%; background:#eef3ff;
     border:2px solid #1e3a8a; box-shadow:0 1px 4px rgba(0,0,0,.5); cursor:pointer; }
 
@@ -568,7 +577,17 @@
     <button class="btn small" id="st-view-calendar">Calendar</button>
   </div>
   <div id="standings-table"></div>
-  <div class="menu-box" style="margin-top:22px; width:340px;">
+  <div id="st-prefs">
+    <div class="stp-col"><div class="stp-k">AI DIFFICULTY <span id="st-diff-label"></span></div>
+      <input type="range" id="st-diff" class="diff-range" min="0.95" max="1.20" step="0.005" value="1.06"></div>
+    <div class="stp-col"><div class="stp-k">RACE DISTANCE</div>
+      <div class="row-opts" id="st-dist-row" style="margin-top:0;">
+        <button class="btn small" data-dist="short">Short</button>
+        <button class="btn small" data-dist="half">Half</button>
+        <button class="btn small" data-dist="full">Full</button>
+      </div></div>
+  </div>
+  <div class="menu-box" style="margin-top:14px; width:340px;">
     <button class="btn accent" id="btn-nextround">Next Round</button>
     <button class="btn" id="btn-newseason">New Season</button>
     <button class="btn" id="btn-standings-menu">Main Menu</button>
@@ -714,18 +733,18 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/SSAOPass.js"></script>
-<script src="touch.js?v=100"></script>
-<script src="trackdata.js?v=100"></script>
-<script src="tracks.js?v=100"></script>
-<script src="audio.js?v=100"></script>
-<script src="carmodel.js?v=100"></script>
-<script src="trackbuilder.js?v=100"></script>
-<script src="pitlane.js?v=100"></script>
-<script src="scenery.js?v=100"></script>
-<script src="racingline.js?v=100"></script>
-<script src="physics.js?v=100"></script>
-<script src="ai.js?v=100"></script>
-<script src="rules.js?v=100"></script>
-<script src="main.js?v=100"></script>
+<script src="touch.js?v=101"></script>
+<script src="trackdata.js?v=101"></script>
+<script src="tracks.js?v=101"></script>
+<script src="audio.js?v=101"></script>
+<script src="carmodel.js?v=101"></script>
+<script src="trackbuilder.js?v=101"></script>
+<script src="pitlane.js?v=101"></script>
+<script src="scenery.js?v=101"></script>
+<script src="racingline.js?v=101"></script>
+<script src="physics.js?v=101"></script>
+<script src="ai.js?v=101"></script>
+<script src="rules.js?v=101"></script>
+<script src="main.js?v=101"></script>
 </body>
 </html>

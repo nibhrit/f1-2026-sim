@@ -759,31 +759,50 @@ function diffTier(d) {
   if (d < 1.15) return 'Elite';
   return 'Alien';
 }
-(function initDiffSlider() {
-  const s = document.getElementById('diff-slider');
-  const lab = document.getElementById('diff-label');
-  if (!s) return;
-  const sync = () => {
-    G.difficulty = parseFloat(s.value);
-    const pct = Math.round((G.difficulty - 0.95) / (1.20 - 0.95) * 100);
-    if (lab) lab.textContent = diffTier(G.difficulty) + ' · ' + pct + '%';
-  };
-  s.addEventListener('input', sync);
-  sync();
+// ---------- race preferences (AI difficulty + race distance) ----------
+// BUILD 101: saved, so they survive closing the app (they used to reset to
+// Pro / Short on every launch), and editable from the main menu AND the
+// Season standings screen. Read at the start of every session.
+const RACE_PREFS_KEY = 'outlap_race_prefs';
+const racePrefs = (() => {
+  let p = {}; try { p = JSON.parse(localStorage.getItem(RACE_PREFS_KEY) || '{}'); } catch (e) {}
+  return { difficulty: (p.difficulty >= 0.95 && p.difficulty <= 1.20) ? p.difficulty : 1.06,
+           raceDist: ['short', 'half', 'full'].includes(p.raceDist) ? p.raceDist : 'short' };
 })();
-// race distance selector
-document.querySelectorAll('#dist-row [data-dist]').forEach(b => {
-  b.addEventListener('click', () => {
-    G.raceDist = b.dataset.dist;
-    syncDistButtons();
+function saveRacePrefs() { try { localStorage.setItem(RACE_PREFS_KEY, JSON.stringify(racePrefs)); } catch (e) {} }
+function diffText(d) { return diffTier(d) + ' · ' + Math.round((d - 0.95) / (1.20 - 0.95) * 100) + '%'; }
+// the settings every new session uses (a resumed race keeps its own)
+function applyRacePrefs() { G.difficulty = racePrefs.difficulty; G.raceDist = racePrefs.raceDist; }
+function syncDiffUI() {
+  [['diff-slider', 'diff-label'], ['st-diff', 'st-diff-label']].forEach(([sid, lid]) => {
+    const sl = document.getElementById(sid), lb = document.getElementById(lid);
+    if (sl) sl.value = racePrefs.difficulty;
+    if (lb) lb.textContent = diffText(racePrefs.difficulty);
   });
+}
+function setRaceDist(d) { racePrefs.raceDist = d; G.raceDist = d; saveRacePrefs(); syncDistButtons(); }
+(function initRacePrefs() {
+  ['diff-slider', 'st-diff'].forEach(id => {
+    const sl = document.getElementById(id); if (!sl) return;
+    sl.addEventListener('input', () => {
+      racePrefs.difficulty = parseFloat(sl.value); G.difficulty = racePrefs.difficulty;
+      saveRacePrefs(); syncDiffUI();
+    });
+  });
+  applyRacePrefs();
+  syncDiffUI();
+  syncDistButtons();
+})();
+// race distance selectors (main menu + season standings)
+document.querySelectorAll('#dist-row [data-dist], #st-dist-row [data-dist]').forEach(b => {
+  b.addEventListener('click', () => setRaceDist(b.dataset.dist));
 });
 // laps for a race at this track, honouring the race-distance setting
 function raceLapsFor(def) { return G.raceDist==='full' ? def.fullLaps : G.raceDist==='half' ? Math.ceil(def.fullLaps/2) : def.laps; }
 
 // keep both distance selectors in step and show real lap counts for the track
 function syncDistButtons() {
-  document.querySelectorAll('#dist-row [data-dist], #ro-dist-row [data-dist]').forEach(x =>
+  document.querySelectorAll('#dist-row [data-dist], #ro-dist-row [data-dist], #st-dist-row [data-dist]').forEach(x =>
     x.classList.toggle('selected', x.dataset.dist === G.raceDist));
   const def = G.trackDef;
   if (!def) return;
@@ -888,10 +907,7 @@ $('opt-h2h').addEventListener('click', () => {
 // race-setup distance buttons mirror the home-page setting — one shared value,
 // editable from either screen, labelled with this circuit's real lap counts
 document.querySelectorAll('#ro-dist-row [data-dist]').forEach(b => {
-  b.addEventListener('click', () => {
-    G.raceDist = b.dataset.dist;
-    syncDistButtons();
-  });
+  b.addEventListener('click', () => setRaceDist(b.dataset.dist));
 });
 
 function buildOpponentGrid() {
@@ -1388,6 +1404,7 @@ const QUALI_TIME = 300; // qualifying session length in seconds (F1-style clock)
 
 function startSession() {
   teardownSession();
+  applyRacePrefs();   // the saved settings — restoreRace() overrides for a resumed race
   showScreen(null);
   hud.classList.add('active');
   banner.style.display = 'none';
@@ -2496,7 +2513,9 @@ function restoreRace(snap) {
   G.countdown = null;
   G.raceStarted = true;
   G.state = 'driving';
+  const changed = (snap.difficulty != null && Math.abs(snap.difficulty - racePrefs.difficulty) > 1e-6) || (snap.raceDist && snap.raceDist !== racePrefs.raceDist);
   showBanner('RESUMING — LAP ' + Math.min(G.player ? G.player.phys.lap : 1, G.raceLaps) + ' / ' + G.raceLaps, 2.5, '#ffd12e');
+  if (changed) stewardMsg('Resumed race keeps its original settings — your new difficulty / distance apply from the next session', 'limits');
 }
 
 // ---------- mid-race snapshot (season only, written once per lap) ----------
@@ -4536,5 +4555,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 100';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 101';
 })();
