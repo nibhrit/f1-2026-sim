@@ -935,7 +935,12 @@ $('btn-menu').addEventListener('click', backToMenu);
 $('btn-menu2').addEventListener('click', backToMenu);
 $('btn-resume').addEventListener('click', togglePause);
 // leaving the page mid-session pauses it (and audio.js silences the sound)
-document.addEventListener('visibilitychange', () => { if (document.hidden && G.state === 'driving') togglePause(); });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) return;
+  if (G.state === 'driving') togglePause();
+  // the phone may kill a backgrounded app: keep the race where it is
+  if (G.seasonActive && G.mode === 'race' && G.raceStarted && G.player && !G.player.finished) saveRaceSnapshot();
+});
 $('btn-next').addEventListener('click', () => {
   // season race finished → standings; otherwise drive the GP weekend forward
   if (G.seasonActive && G.mode === 'race') showStandings();
@@ -944,6 +949,10 @@ $('btn-next').addEventListener('click', () => {
 $('btn-next2').addEventListener('click', () => { showScreen(null); advanceWeekend(); });
 
 function backToMenu() {
+  // BUILD 102: quitting a season race keeps it EXACTLY where you left it
+  // (it used to resume from the last line crossing — which, with pit lanes
+  // that straddle the line, could be halfway down the pit lane)
+  if (G.seasonActive && G.mode === 'race' && G.raceStarted && G.player && !G.player.finished) saveRaceSnapshot();
   teardownSession();
   G.state = 'menu';
   G.weekend = false;
@@ -2441,6 +2450,38 @@ function normalizeSeason(saved) {
 }
 function freshSeason() { return { round: 0, points: {}, teamPoints: {}, history: [], session: null, grid: null, playerId: playerDriver().id }; }
 
+// Put a restored car back into the pit machine if it was saved in the pit
+// lane. Snapshots from before BUILD 102 carry no pit state, so a car found
+// inside the pit complex is handed to the pit machine too (stopping at its box
+// if it hasn't reached it yet, otherwise driving out) — never left "on track"
+// in the lane, where the track logic dragged it along the pit wall.
+function restorePitState(car, cs) {
+  const p = car.phys, t = G.track;
+  if (car.retired || car.finished) return;
+  let st = cs.pitState || null;
+  const lat = t.lateral(p.x, p.z, p.trackIdx);
+  if (!st && typeof inPitComplex === 'function' && inPitComplex(t, p.trackIdx, lat) && lat < -(t.width / 2 + 1.0)) {
+    const g = pitLaneGeom(t), sNow = pitS(t, p.lapDist);
+    const boxS = (g.boxS && g.boxS[car.driver.team] != null) ? g.boxS[car.driver.team] : g.sBox;
+    st = (sNow < boxS - 2 && !car.driveThrough) ? 'entering' : 'exiting';
+  }
+  if (!st) return;
+  car.pitState = st; car.pitArmed = true; car.pitArmLap = null;
+  p.inPit = true;
+  car.pitLaneStart = G.simTime - (cs.pitLaneAgo != null ? cs.pitLaneAgo : 0);
+  if (cs.boxCall) car.boxCall = cs.boxCall;
+  if (st === 'stopped') {
+    p.speed = 0;
+    car.pitStopStart = G.simTime;
+    if (car.driver.player) {
+      // the release-lights game starts again from the top
+      car.pitTimer = 99;
+      G.pitGame = { t: 0, lights: 0, holdT: 0.45 + Math.random() * 0.85, done: false,
+                    pressed: false, stationary: 0, msg: 'SPACE when the lights go out' };
+    } else car.pitTimer = cs.pitTimer != null ? Math.max(0.5, cs.pitTimer) : 2.5;
+  } else p.speed = Math.min(p.speed, 22);
+}
+
 // rebuild a race mid-flight from a snapshot: every car back where it was, on
 // the tyres it was using, with its wear, damage to its strategy and penalties
 function restoreRace(snap) {
@@ -2479,6 +2520,7 @@ function restoreRace(snap) {
     car.dsq = !!cs.dsq; car.stewPen = cs.stewPen || 0;
     car.driveThrough = !!cs.driveThrough;
     car.pitArmed = !!cs.pitArmed; car.pitArmLap = cs.pitArmLap != null ? cs.pitArmLap : null;
+    restorePitState(car, cs);
     if (cs.retired) {
       car.retired = true; p.dead = true; p.speed = 0;
       car.retireAt = G.simTime - 10;           // hidden straight away, stays OUT on the tower
@@ -2514,7 +2556,7 @@ function restoreRace(snap) {
   G.raceStarted = true;
   G.state = 'driving';
   const changed = (snap.difficulty != null && Math.abs(snap.difficulty - racePrefs.difficulty) > 1e-6) || (snap.raceDist && snap.raceDist !== racePrefs.raceDist);
-  showBanner('RESUMING — LAP ' + Math.min(G.player ? G.player.phys.lap : 1, G.raceLaps) + ' / ' + G.raceLaps, 2.5, '#ffd12e');
+  showBanner((G.player && G.player.pitState ? 'RESUMING IN THE PIT LANE — LAP ' : 'RESUMING — LAP ') + Math.min(G.player ? G.player.phys.lap : 1, G.raceLaps) + ' / ' + G.raceLaps, 2.5, '#ffd12e');
   if (changed) stewardMsg('Resumed race keeps its original settings — your new difficulty / distance apply from the next session', 'limits');
 }
 
@@ -2553,6 +2595,11 @@ function saveRaceSnapshot() {
         driveThrough: !!c.driveThrough,
         pitArmed: !!c.pitArmed, pitArmLap: c.pitArmLap != null ? c.pitArmLap : null,
         stewPen: c.stewPen || 0,
+        // pit-lane state, so a car saved mid-stop resumes IN the pit lane
+        pitState: c.pitState || null, inPit: !!c.phys.inPit,
+        pitTimer: c.pitTimer != null ? c.pitTimer : null,
+        pitLaneAgo: c.pitLaneStart != null ? G.simTime - c.pitLaneStart : null,
+        boxCall: c.boxCall || null,
       })),
       raceFL: G.raceFL ? { time: G.raceFL.time, id: G.raceFL.id } : null,
       player: {
@@ -4555,5 +4602,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 101';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 102';
 })();
