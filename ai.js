@@ -309,6 +309,7 @@ class AIDriver {
 
     // ---- wheel-to-wheel combat ----
     this.avoidTimer -= dt;
+    if (this.attackCool > 0) this.attackCool -= dt;
     const carLen = 5;
     let combatLane = null;
     // inside of the corner coming up (for dives / defensive cover)
@@ -326,14 +327,23 @@ class AIDriver {
     // speed while the front rows braked.
     let laneAhead=null, laneGap=1e9;
     const myLatF = t.lateral(car.x, car.z, car.trackIdx);
+    // BUILD 103: gaps are measured along the ROAD (modulo a lap). They used
+    // to be raw race distance, so a car that had just lapped us — physically
+    // a few metres ahead, but a whole lap ahead in race distance — was
+    // invisible: no following, no side guard. A lapped car that had just
+    // moved over for blue flags would swing straight back onto the racing
+    // line into it. aheadLaps / behindLaps record a lap difference.
+    const L = t.length;
+    const roadGap = o => { const raw = o.totalDist - car.totalDist; const g = ((raw % L) + L + L / 2) % L - L / 2; return g; };
+    let aheadLaps = 0, behindLaps = 0;
     for (const other of allCars) {
       if (other === car || other.finished || other.dead) continue;  // finished/retired cars aren't racing
-      const gap = other.totalDist - car.totalDist;
+      const gap = roadGap(other);
       const dd = Math.hypot(other.x-car.x, other.z-car.z);
-      if (gap > 0 && gap < 55 && dd < 58 && gap < aheadGap) { aheadGap = gap; ahead = other; }
+      if (gap > 0 && gap < 55 && dd < 58 && gap < aheadGap) { aheadGap = gap; ahead = other; aheadLaps = Math.round((other.totalDist - car.totalDist - gap) / L); }
       if (gap > 0 && gap < 70 && dd < 72 && gap < laneGap && !other.inPit
           && Math.abs(t.lateral(other.x, other.z, other.trackIdx) - myLatF) < 3.0) { laneGap = gap; laneAhead = other; }
-      if (gap < 0 && gap > -15 && dd < 22 && -gap < behindGap) { behindGap = -gap; behind = other; }
+      if (gap < 0 && gap > -15 && dd < 22 && -gap < behindGap) { behindGap = -gap; behind = other; behindLaps = Math.round((other.totalDist - car.totalDist - gap) / L); }
     }
     // car-following against the car in our lane (the obstacle we'd hit). The
     // second rule is for braking zones: the car ahead may be braking far harder
@@ -381,19 +391,58 @@ class AIDriver {
         vAllow = Math.min(vAllow, maxApproach);
 
       }
-      // attacker: faster and close → make a move
-      // vs the title rival (the player) they go for the gap earlier and harder
+      // ---- attacking: pick the moment, then commit or back out ----
+      // BUILD 103. It used to dive for the inside whenever it was roughly as
+      // fast and within 24 m — anywhere on the lap, every lap — and the dive
+      // dropped the following brake (it was "not lined up" any more), so it
+      // arrived at the turn-in point on top of the car ahead. Now:
+      //  * never race a car that is LAPPING us (it was just let by on blue
+      //    flags) — and a lapped car is only "attacked" to pass it cleanly
+      //  * a move starts on a straight, needs real pace (closing, DRS or the
+      //    tow), and only into a braking zone close enough to get there
+      //  * if it isn't at least a third alongside by the time braking starts,
+      //    it aborts, tucks back in and keeps the following brake
       const huntingRival = this.rivalTarget && ahead === this.rivalTarget;
-      // ...but not in the opening seconds: off the line everyone was "faster
-      // than the car ahead" and all dived for the same inside line at once —
-      // the turn-1 pile-up. Attacks open once the field has strung out.
-      if (this.laneBlend >= 1 && v > ahead.speed - (huntingRival ? 4 : 3) && aheadGap < (huntingRival ? 34 : 24)) {
-        const insideLat = insideSign * edge;
-        const defenderCoversInside = Math.abs(otherLat - insideLat) < 2.6;
-        if (defenderCoversInside) combatLane = -insideSign * edge * 0.85; // switchback for the exit
-        else combatLane = insideLat; // dive down the inside
+      const lappingUs = aheadLaps > 0;
+      const segM = t.length / N;
+      // distance to the next braking zone (where the plan sheds 8+ m/s)
+      let dBrake = 1e9;
+      for (let q = 1; q * segM < 220; q += 2) { if (prof[(idx + q) % N] < v - 8) { dBrake = q * segM; break; } }
+      const cornering = cs[idx] < 90;
+      const backmarker = aheadLaps < 0;                          // a car we're lapping
+      const pace = backmarker || closing > 0.7 || car.drsOpen || (car.tow || 0) > 0.4 || (huntingRival && closing > 0.3);
+      const overlapAhead = aheadGap < carLen * 0.67;            // our nose past its rear third
+      if (lappingUs || this.laneBlend < 1) this.attack = null;
+      else {
+        const a = this.attack;
+        if (a && a.target !== ahead) this.attack = null;
+        if (!this.attack && !(this.attackCool > 0) && !cornering && pace && aheadGap < (huntingRival ? 30 : 22)) {
+          if (backmarker || dBrake < 190 || aheadGap < 9) this.attack = { target: ahead, side: null, t: 0 };
+        }
+        if (this.attack) {
+          const at = this.attack;
+          at.t += dt;
+          if (at.side == null) {
+            // inside of the coming corner, unless the defender already covers
+            // it — then the outside / switchback
+            const insideLat = insideSign * edge;
+            // a backmarker moves over for blue flags: go by on the other side
+            if (backmarker) at.side = -(Math.sign(otherLat) || insideSign);
+            else at.side = Math.abs(otherLat - insideLat) < 2.6 ? -insideSign : insideSign;
+          }
+          // abort: not alongside by the time braking starts, the move is over
+          const late = !backmarker && dBrake < Math.max(18, v * 0.35) && !overlapAhead;
+          if (late || at.t > (backmarker ? 20 : 8) || closing < -3) { this.attack = null; this.attackCool = backmarker ? 0.5 : 2.5; }
+          else combatLane = at.side * edge * (at.side === insideSign ? 1 : 0.85);
+        }
       }
-    }
+      // until we're properly alongside, keep the right to stop behind it:
+      // the following brake applies even while offset for a move
+      if (!blocked && !overlapAhead && !(backmarker && latOff > 3.6) && (dBrake < 60 || cornering)) {
+        const eff = Math.max(0, aheadGap - 4);
+        vAllow = Math.min(vAllow, Math.sqrt(ahead.speed * ahead.speed + 2 * 15 * eff));
+      }
+    } else this.attack = null;
 
     // Title rival defending: watches the player in the mirrors from further
     // back and covers the inside before they're alongside (still one move,
@@ -402,6 +451,9 @@ class AIDriver {
       const rg = car.totalDist - this.rivalTarget.totalDist;
       if (rg > 0 && rg < 30 && this.rivalTarget.speed > v - 1) combatLane = insideSign * edge * 0.6;
     }
+    // never defend against a car that is lapping us — that's what blue
+    // flags are for (and it has usually just been waved through)
+    if (behind && behindLaps > 0) behind = null;
     if (behind) {
       const attLat = t.lateral(behind.x, behind.z, behind.trackIdx);
       const overlap = 1 - Math.min(1, behindGap / carLen); // 1 = fully alongside
@@ -429,6 +481,16 @@ class AIDriver {
       combatLane = away * edge * 0.85;
       const gapB = Math.hypot(lp.x - car.x, lp.z - car.z);
       if (gapB < 45) vAllow *= 0.92;          // lift and let it by
+      this.blueSide = away; this.blueBy = lp; this.blueHold = 3;
+    } else if (this.blueHold > 0 && this.blueBy) {
+      // just been lapped: stay on our side until the lapping car is clear
+      // ahead (2+ car lengths), THEN rejoin the line — no swinging back
+      // across its rear wheels
+      const g = roadGap(this.blueBy);
+      if (g > 0 && g < 12) { combatLane = this.blueSide * edge * 0.75; vAllow = Math.min(vAllow, Math.max(10, this.blueBy.speed - 0.5)); }
+      else if (g >= 12 || g < -20) this.blueHold -= dt;
+      if (g >= 12) this.blueHold = Math.min(this.blueHold, 0.6);
+      if (this.blueHold <= 0) this.blueBy = null;
     }
     let targetLane = combatLane != null ? combatLane : baseLane;
     // pit approach (set by main.js): hold the pit-lane side of the track
@@ -444,7 +506,7 @@ class AIDriver {
       const SEP = 3.4;
       for (const o of allCars) {
         if (o === car || o.finished || o.dead || o.inPit) continue;
-        const g = o.totalDist - car.totalDist;
+        const g = roadGap(o);
         if (Math.abs(g) > 6.5) continue;
         if (Math.hypot(o.x - car.x, o.z - car.z) > 12) continue;
         const oLat = t.lateral(o.x, o.z, o.trackIdx);
