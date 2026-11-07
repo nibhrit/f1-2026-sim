@@ -1441,6 +1441,7 @@ function startSession() {
   G.sectorPB = [null,null,null];
   G.pbLapSectors = [null,null,null];
   G.curSectors = [null,null,null];
+  G.curSectorCls = [null,null,null];
   G.curSec = 0;
   G.sectorEntryTime = 0;
   ['sec0','sec1','sec2'].forEach((id,i) => { $(id).textContent = 'S'+(i+1)+' --.-'; $(id).className='sec'; });
@@ -1939,6 +1940,7 @@ function onPlayerLapComplete() {
   G.curCheckpoints = [];
   // start a fresh lap of sectors — bars blank out and start timing again
   G.curSectors = [null,null,null];
+  G.curSectorCls = [null,null,null];
   G.curSec = 0;
   G.sectorEntryTime = G.simTime;
   clearSectorBars();
@@ -1969,6 +1971,8 @@ function finishSector(i, ts) {
   if (G.sectorSB[i] == null || ts < G.sectorSB[i]) { G.sectorSB[i] = ts; cls = 'sb'; }
   else if (pbBefore == null || ts < pbBefore) cls = 'pb';
   else cls = 'slow';
+  if (!G.curSectorCls) G.curSectorCls = [null,null,null];
+  G.curSectorCls[i] = cls;
   const el = $('sec'+i);
   el.textContent = 'S'+(i+1)+' '+ts.toFixed(1);
   el.className = 'sec ' + cls;
@@ -2504,7 +2508,10 @@ function restoreRace(snap) {
     p.lapDist = t.dist[p.trackIdx];
     p.totalDist = cs.totalDist;
     p.lap = cs.lap;
-    p._lastCrossDist = cs.totalDist;   // don't fire a phantom lap on the first step
+    // where this car last crossed the line (saves can be mid-lap now: using
+    // the save point itself made the next real crossing look too soon after
+    // it, so that lap was never counted and the car ran a lap short)
+    p._lastCrossDist = cs.totalDist - p.lapDist;
     p.setTyre(cs.compound);            // resets wear/temp, so restore them after
     p.tyreWearKm = cs.wear; p.tyreTemp = cs.temp;
     car.finished = cs.finished; car.finishTime = cs.finishTime; car.bestLap = cs.bestLap;
@@ -2544,10 +2551,39 @@ function restoreRace(snap) {
   G.bestCheckpoints = pl.bestCheckpoints || null;
   G.refCheckpoints = pl.refCheckpoints || null;
   G.refTime = pl.refTime || null;
-  G.curSectors = [null,null,null];
-  G.curSec = 0;
-  G.sectorEntryTime = G.simTime;
-  if (G.player) G.player.curLapStart = G.simTime; // current lap restarts cleanly
+  const tm = pl.timing;
+  if (tm && G.player) {
+    // BUILD 105: the race is now saved mid-lap (quit / app switch), so the lap
+    // in progress carries on: same lap clock, same sector, same delta. It used
+    // to restart the lap clock on resume — fine when saves only happened on the
+    // line, wrong (lap time, sectors and delta all off) once they didn't.
+    G.player.curLapStart = tm.curLapStart;
+    G.player.lapInvalid = !!tm.lapInvalid;
+    G.curCheckpoints = (tm.curCheckpoints || []).slice();
+    G.curSectors = (tm.curSectors || [null,null,null]).slice();
+    G.curSectorCls = (tm.curSectorCls || [null,null,null]).slice();
+    G.curSec = tm.curSec || 0;
+    G.sectorEntryTime = G.simTime - (tm.sectorAgo || 0);
+    for (let i = 0; i < 3; i++) {
+      const el = $('sec' + i); if (!el) continue;
+      if (G.curSectors[i] != null) { el.textContent = 'S' + (i+1) + ' ' + G.curSectors[i].toFixed(1); el.className = 'sec ' + (G.curSectorCls[i] || 'slow'); }
+      else { el.textContent = 'S' + (i+1) + ' --.-'; el.className = 'sec'; }
+    }
+    if (tm.deltaText) { const d = $('delta-time'); d.textContent = tm.deltaText; d.className = tm.deltaCls || 't-val'; }
+  } else {
+    // older save (made on the line): the lap starts here
+    G.curSectors = [null,null,null];
+    G.curSectorCls = [null,null,null];
+    G.curSec = 0;
+    G.sectorEntryTime = G.simTime;
+    G.curCheckpoints = [];
+    if (G.player) G.player.curLapStart = G.simTime;
+  }
+  if (G.player && G.player.lapTimes && G.player.lapTimes.length) {
+    const lt = G.player.lapTimes[G.player.lapTimes.length - 1];
+    const v = typeof lt === 'number' ? lt : (lt && lt.time);
+    if (v) $('last-time').textContent = fmtTime(v);
+  }
   if (pl.bestLap) $('best-time').textContent = fmtTime(pl.bestLap);
 
   setupRival();
@@ -2604,6 +2640,14 @@ function saveRaceSnapshot() {
       raceFL: G.raceFL ? { time: G.raceFL.time, id: G.raceFL.id } : null,
       player: {
         lapTimes: G.player.lapTimes, bestLap: G.player.bestLap, bestLapTyre: G.player.bestLapTyre,
+        // the lap in progress (saves can now happen mid-lap)
+        timing: {
+          curLapStart: G.player.curLapStart, lapInvalid: !!G.player.lapInvalid,
+          curCheckpoints: G.curCheckpoints || [], curSectors: G.curSectors || [null,null,null],
+          curSectorCls: G.curSectorCls || [null,null,null], curSec: G.curSec || 0,
+          sectorAgo: G.simTime - (G.sectorEntryTime || G.simTime),
+          deltaText: ($('delta-time') || {}).textContent || null, deltaCls: ($('delta-time') || {}).className || null,
+        },
         sectorSB: G.sectorSB, pbLapSectors: G.pbLapSectors, sectorPB: G.sectorPB,
         bestCheckpoints: G.bestCheckpoints, refCheckpoints: G.refCheckpoints, refTime: G.refTime,
       },
@@ -4613,5 +4657,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 104';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 105';
 })();
