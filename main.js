@@ -2023,23 +2023,42 @@ function clearSectorBars() {
   });
 }
 
-// live delta via checkpoint buckets (every ~2% of lap)
+// live delta via checkpoint buckets.
+// BUILD 106: 200 buckets (every 0.5% of the lap) and the reference is
+// INTERPOLATED, so the delta is live — it updates continuously like the F1
+// games' instead of jumping every ~2% and sitting stale in between.
+const CP_N = 200;
+let deltaPaintT = 0;
+function refTimeAt(ref, frac) {
+  // older references (saves from before BUILD 106) have 50 buckets
+  const n = ref.length <= 51 ? 50 : CP_N;
+  const x = frac * n, i0 = Math.floor(x);
+  const r0 = ref[i0]; if (r0 == null) return null;
+  let r1 = ref[i0 + 1];
+  if (r1 == null) { for (let j = i0 + 2; j < Math.min(n, i0 + 6); j++) if (ref[j] != null) { r1 = r0 + (ref[j] - r0) / (j - i0); break; } }
+  return r1 != null ? r0 + (r1 - r0) * (x - i0) : r0;
+}
 function recordCheckpoint() {
   const p = G.player.phys;
   const frac = p.lapDist / G.track.length;
-  const bucket = Math.floor(frac * 50);
-  if (G.curCheckpoints[bucket] == null) {
-    G.curCheckpoints[bucket] = G.simTime - G.player.curLapStart;
-    // prefer the best VALID lap; fall back to the fastest lap of any kind so a
-    // deleted lap doesn't leave you with no delta reference
-    const ref = G.bestCheckpoints || G.refCheckpoints;
-    if (ref && ref[bucket] != null) {
-      const d = G.curCheckpoints[bucket] - ref[bucket];
-      const el = $('delta-time');
-      el.textContent = (d >= 0 ? '+' : '') + d.toFixed(2);
-      el.className = 't-val ' + (d <= 0 ? 'delta-neg' : 'delta-pos');
-    }
-  }
+  const bucket = Math.floor(frac * CP_N);
+  const now = G.simTime - G.player.curLapStart;
+  if (G.curCheckpoints[bucket] == null) G.curCheckpoints[bucket] = now;
+  // prefer the best VALID lap; fall back to the fastest lap of any kind so a
+  // deleted lap doesn't leave you with no delta reference
+  const ref = G.bestCheckpoints || G.refCheckpoints;
+  if (!ref) return;
+  if (G.simTime - deltaPaintT < 0.1 && G.simTime >= deltaPaintT) return;   // ~10 updates a second is plenty
+  deltaPaintT = G.simTime;
+  // a few seconds into a lap only: right after the line the old lap's
+  // lap-time delta stays up (the F1-game convention)
+  if (now < 3) return;
+  const rt = refTimeAt(ref, frac);
+  if (rt == null) return;
+  const d = now - rt;
+  const el = $('delta-time');
+  el.textContent = (d >= 0 ? '+' : '') + d.toFixed(2);
+  el.className = 't-val ' + (d <= 0 ? 'delta-neg' : 'delta-pos');
 }
 
 // ---------- session end ----------
@@ -2560,6 +2579,7 @@ function restoreRace(snap) {
     G.player.curLapStart = tm.curLapStart;
     G.player.lapInvalid = !!tm.lapInvalid;
     G.curCheckpoints = (tm.curCheckpoints || []).slice();
+    if (G.curCheckpoints.length && G.curCheckpoints.length <= 51) G.curCheckpoints = [];   // pre-BUILD-106 resolution
     G.curSectors = (tm.curSectors || [null,null,null]).slice();
     G.curSectorCls = (tm.curSectorCls || [null,null,null]).slice();
     G.curSec = tm.curSec || 0;
@@ -4657,5 +4677,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 105';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 106';
 })();
