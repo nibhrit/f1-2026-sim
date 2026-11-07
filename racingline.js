@@ -146,3 +146,93 @@ function brakeAssistInput(inp) {
   p._brakeAssist = 0;
   return inp;
 }
+
+// ---------- steering assist (touch / tilt) ----------
+// BUILD 104. Tilt is position control: hold the phone at an angle and the
+// wheel stays there. That is hard for anyone who has not driven with it —
+// they steer, overshoot, correct, and weave off the road — while a keyboard
+// player's taps are smoothed into a sensible arc. Steering assist turns the
+// tilt into "where on the road do I want to be": level = follow the racing
+// line, tilt left / right = move across to that side (full tilt = the edge).
+// The game does the steering to get there. LOW blends half-and-half with the
+// raw tilt; OFF is the raw tilt.
+// level: 0 off, 0.5 low, 1 high. Returns the adjusted input.
+// Tilt meaning (HIGH): level = follow the racing line; tilting moves the target
+// toward that EDGE of the road (full tilt = the edge itself), whatever the line
+// is doing — so a steady tilt holds a side for an overtake or a defence.
+// Traffic: if a car ahead is in the way, the target slides to the side you are
+// tilting toward, or to the side with more room.
+function steerAssistInput(inp, level) {
+  const G_ = _G();
+  if (!level || !G_ || !G_.player || !G_.track) return inp;
+  const t = G_.track, p = G_.player.phys, rl = t._raceLine;
+  if (!rl || p.speed < 3 || p.inPit) return inp;
+  const N = t.n, segM = t.length / N, v = p.speed, L = t.length;
+  const edge = t.width / 2 - 1.6;
+  const u = Math.max(-1, Math.min(1, inp.steer));          // + = left = negative lateral
+  const lookM = Math.min(40, Math.max(9, v * 0.42));
+  const kA = (p.trackIdx + Math.ceil(lookM / segM)) % N;
+  const tSide = -Math.sign(u) * edge * 0.85;
+  let lane = rl[kA] + (tSide - rl[kA]) * Math.min(1, Math.abs(u) * 1.1);
+  // ---- traffic: keep out of the car ahead ----
+  const myLat = t.lateral(p.x, p.z, p.trackIdx);
+  let block = null, bGap = 1e9, fGap = 1e9, fV = 0;
+  for (const c of (G_.cars || [])) {
+    const o = c.phys || c;
+    if (o === p || c.retired || c.finished || o.dead || o.inPit || c.pitState) continue;
+    const raw = o.totalDist - p.totalDist, g = ((raw % L) + L + L / 2) % L - L / 2;
+    if (g < 2 || g > Math.max(25, v * 1.5)) continue;
+    const oLat = t.lateral(o.x, o.z, o.trackIdx);
+    if (Math.abs(oLat - lane) < 3.2 && g < bGap) { bGap = g; block = oLat; }
+    // the car actually in front of us right now (for the following brake)
+    if (Math.abs(oLat - myLat) < 3.0 && g < fGap) { fGap = g; fV = o.speed; }
+  }
+  if (block != null) {
+    const room = s => s > 0 ? edge - block : block + edge;          // free road on that side of it
+    let side = Math.abs(u) > 0.15 ? -Math.sign(u) : (room(1) >= room(-1) ? 1 : -1);
+    if (room(side) < 3.4) side = -side;
+    if (room(side) >= 3.4) lane = Math.max(-edge, Math.min(edge, block + side * 3.6));
+    else lane = myLat;                                              // no room: stay in line behind it
+  }
+  lane = Math.max(-edge, Math.min(edge, lane));
+  if (inp.pitLane != null) lane = inp.pitLane;                     // heading for the pit entry
+  // pursuit steering toward that point (the same law the AI drives with)
+  const tgt = t.posAt(kA, lane);
+  let da = Math.atan2(tgt.x - p.x, tgt.z - p.z) - p.heading;
+  while (da > Math.PI) da -= 2 * Math.PI;
+  while (da < -Math.PI) da += 2 * Math.PI;
+  const cap = 0.9 + 0.08 * Math.max(0, Math.min(1, (25 - v) / 10));
+  const auto = Math.max(-cap, Math.min(cap, da * 3.2));
+  // LOW: the assist still does most of the steering, the raw tilt is layered
+  // on top (35%) so you can feel the wheel and push past the line's limits
+  const steer = level >= 1 ? auto : Math.max(-1, Math.min(1, auto * 0.8 + inp.steer * 0.35));
+  // running wide: if the car is drifting out past the edge of the road, the
+  // assist lifts off the throttle (like the AI's own running-wide guard)
+  let throttle = inp.throttle, brake = inp.brake;
+  // following brake: the assist won't drive you into the car in front. If
+  // we're closing on it faster than ~14 m/s^2 could stop us in the room
+  // left (keeping 6 m), lift and brake as much as that needs.
+  if (fGap < 1e9 && v > fV) {
+    const room = Math.max(0.5, fGap - 6);
+    const need = (v * v - fV * fV) / (2 * room);              // m/s^2 to match its speed in time
+    if (need > 4) {
+      throttle = 0;
+      brake = Math.max(brake, Math.min(1, (need - 4) / 14));
+    } else if (need > 2) throttle = Math.min(throttle, 0.4);
+  }
+  if (inp.pitLane == null) {
+    const hw = t.width / 2, latNow = myLat;
+    const k2 = (p.trackIdx + Math.ceil(Math.max(8, v * 0.5) / segM)) % N;
+    const ahead = t.posAt(k2, 0), hx = Math.sin(p.heading), hz = Math.cos(p.heading);
+    // where we'll be in ~0.5 s if we hold this heading, relative to the road there
+    const fx = p.x + hx * v * 0.5, fz = p.z + hz * v * 0.5;
+    const latF = t.lateral(fx, fz, k2);
+    const over = Math.max(Math.abs(latNow), Math.abs(latF)) - (hw - 0.8);
+    if (over > 0 && v > 12) {
+      throttle = Math.min(throttle, Math.max(0, 1 - over / 1.5));
+      // heading well off the road: scrub speed too, or it's a wall
+      if (over > 0.8) brake = Math.max(brake, Math.min(0.8, (over - 0.8) / 2.5));
+    }
+  }
+  return Object.assign({}, inp, { steer, throttle, brake, assisted: true, analog: level >= 1 ? false : inp.analog });
+}

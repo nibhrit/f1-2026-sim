@@ -20,7 +20,7 @@
   const unlock = () => { try { if (typeof AUDIO !== 'undefined') { AUDIO.init(); AUDIO.musicStart && AUDIO.musicStart(); } } catch (e) {} };
   window.addEventListener('touchend', unlock, { passive: true });
   const LS = 'outlap_controls';
-  const cfg = Object.assign({ mode: null, sens: 20, feel: 'balanced', invert: false, autoThrottle: false }, (() => {
+  const cfg = Object.assign({ mode: null, sens: 20, feel: 'balanced', assist: 'high', invert: false, autoThrottle: false }, (() => {
     try { return JSON.parse(localStorage.getItem(LS) || '{}'); } catch (e) { return {}; }
   })());
   // BUILD 96: tilt got more direct; move anyone still on the old 22° default
@@ -28,14 +28,12 @@
   // BUILD 98: the tilt sign is now absolute; an old "invert" was a workaround
   if (cfg.v < 3) { cfg.invert = false; cfg.v = 3; }
   // BUILD 99: smoother steering — wider default range, curved response
-  if (cfg.v < 4) { if (cfg.sens <= 16) cfg.sens = 20; cfg.feel = cfg.feel || 'balanced'; cfg.v = 4; }
+  // BUILD 104: steering assist, on (high) for everyone to start with
+  if (cfg.v < 5) { cfg.assist = 'high'; }
+  if (cfg.v < 4) { if (cfg.sens <= 16) cfg.sens = 20; cfg.feel = cfg.feel || 'balanced'; }
+  cfg.v = Math.max(cfg.v || 0, 5);
   // steering feel: response curve (higher = gentler centre) and filter time
-  const FEEL = {
-    // BUILD 100: every preset a notch calmer (Balanced is the old Smooth+)
-    smooth:   { curve: 2.0,  tau: 0.16 },
-    balanced: { curve: 1.75, tau: 0.11 },
-    direct:   { curve: 1.4,  tau: 0.07 },
-  };
+  // feel presets and the tilt→steer curve live in tiltmath.js
   const save = () => { try { localStorage.setItem(LS, JSON.stringify(cfg)); } catch (e) {} };
   const input = window.OUTLAP_TOUCH_INPUT = { active: false, steer: 0, throttle: 0, brake: 0 };
   const G = () => window.__G;
@@ -97,15 +95,34 @@
     const asks = [DeviceMotionEvent.requestPermission()];
     if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function')
       asks.push(DeviceOrientationEvent.requestPermission().catch(() => 'denied'));
-    return Promise.all(asks).then(r => { if (r[0] === 'granted') listen(); return r[0]; }).catch(() => 'denied');
+    return Promise.all(asks).then(r => { if (r[0] === 'granted') listen(); return r[0]; })
+      .catch(e => (e && e.name === 'NotAllowedError') ? 'retry' : 'denied');   // not a gesture: try again on the next tap
   }
-  // iOS forgets the grant between launches of a home-screen app and only lets
-  // a page ask from a tap — so ask on the FIRST tap anywhere (usually a menu
-  // button), instead of making you open CONTROLS every time.
-  function armTiltOnFirstTap() {
+  // Motion permission (BUILD 104). iPhone/iPad web apps must ask from a tap,
+  // and iOS forgets the answer when a home-screen app is closed — an Apple
+  // rule for web apps (only App Store apps escape it). So:
+  //  * listen straight away: if iOS still holds the grant, tilt just works
+  //  * otherwise ask on EVERY tap until it's answered (a tap iOS doesn't
+  //    count as a gesture used to burn the one and only attempt — that's why
+  //    the prompt sometimes never came)
+  //  * no answer yet when the race starts: the ◀ ▶ buttons stand in, and a
+  //    "TAP TO ENABLE TILT" chip asks again; refused: buttons for this session
+  let permState = 'unknown';                 // unknown | asking | granted | denied
+  window.OUTLAP_TILT_STATE = () => (tiltOK ? 'live' : permState);
+  function askOnTap() {
+    if (tiltOK || permState === 'denied' || permState === 'asking' || permState === 'granted' || cfg.mode !== 'tilt') return;
     if (!needsAsk()) { listen(); return; }
-    const once = () => { document.removeEventListener('touchend', once, true); document.removeEventListener('click', once, true); if (!tiltOK) startTilt(); };
-    document.addEventListener('touchend', once, true); document.addEventListener('click', once, true);
+    permState = 'asking';
+    startTilt().then(r => {
+      permState = r === 'granted' ? 'granted' : (r === 'denied' ? 'denied' : 'unknown');
+      if (permState === 'denied' && typeof window.OUTLAP_TILT_DENIED === 'function') window.OUTLAP_TILT_DENIED();
+    });
+  }
+  function armTiltOnFirstTap() {
+    listen();                                // free on Android; on iOS works if the grant survived
+    if (!needsAsk()) { permState = 'granted'; return; }
+    document.addEventListener('touchend', askOnTap, true);
+    document.addEventListener('click', askOnTap, true);
   }
   function recenter() { if (tiltRaw != null) tiltTrim = Math.abs(tiltRaw) < 12 ? tiltRaw : 0; tiltSm = 0; }
   window.OUTLAP_RECENTER = recenter;
@@ -185,6 +202,9 @@
   .tc-btn.down { background:rgba(255,255,255,.3); }
   #tc-tap { position:absolute; left:50%; top:70%; transform:translate(-50%,-50%); width:calc(var(--vw) * 38); height:calc(var(--vh) * 24); border-radius:20px; display:none;
     background:rgba(255,209,46,.25); border:3px solid #ffd12e; color:#ffd12e; font:900 28px Arial; letter-spacing:3px; align-items:center; justify-content:center; pointer-events:auto; }
+  #tc-perm { position:absolute; left:50%; top:calc(var(--sat) + 70px); transform:translateX(-50%); display:none; align-items:center; justify-content:center;
+    padding:10px 18px; border-radius:22px; background:rgba(255,209,46,.92); color:#111; font:900 12px Arial; letter-spacing:1.5px; pointer-events:auto; white-space:nowrap; }
+  #tc-perm.off { background:rgba(8,12,24,.85); color:#ff8a85; font-weight:700; letter-spacing:.5px; pointer-events:none; }
   #tc-gauge { position:absolute; left:50%; top:calc(var(--sat) + 56px); transform:translateX(-50%); width:180px; height:6px; border-radius:3px; background:rgba(8,12,24,.6); display:none; }
   #tc-gauge div { position:absolute; top:0; bottom:0; background:#6fa0ff; border-radius:3px; }
   #tc-gauge i { position:absolute; left:50%; top:-3px; bottom:-3px; width:2px; background:rgba(255,255,255,.7); }
@@ -208,6 +228,7 @@
   .tc-go { margin-top:6px; padding:12px 28px; border-radius:8px; border:1px solid #6fa0ff; background:linear-gradient(90deg,#1a3a6b,#2f5ca8); color:#fff; font:900 15px Arial; letter-spacing:2px; }
   .tc-feel { padding:6px 10px; border-radius:6px; border:1px solid #2c4270; background:#101a30; font:800 11px Arial; letter-spacing:1px; }
   .tc-feel.sel { border-color:#ffd12e; color:#ffd12e; }
+  .tc-note { font-size:11px; color:#8fa3c8; max-width:520px; min-height:14px; letter-spacing:.3px; }
   #tc-meter { width:220px; height:8px; background:#1a2440; border-radius:4px; position:relative; overflow:hidden; }
   #tc-meter div { position:absolute; top:0; bottom:0; width:6px; left:calc(50% - 3px); background:#ffd12e; border-radius:3px; }
   `;
@@ -235,7 +256,8 @@
       <div class="tc-pedal" id="tc-brake">BRAKE</div>
       <div class="tc-pedal" id="tc-gas">THROTTLE</div>
       <div id="tc-tap">TAP!</div>
-      <div id="tc-gauge"><div></div><i></i></div>`;
+      <div id="tc-gauge"><div></div><i></i></div>
+      <div id="tc-perm"></div>`;
     document.body.appendChild(layer);
     const gauge = $id('tc-gauge'), gaugeBar = gauge.firstChild;
 
@@ -330,39 +352,38 @@
       layer.classList.toggle('on', !!driving && !!cfg.mode);
       input.active = !!driving && !!cfg.mode;
       if (!input.active && held.size) { held.clear(); paint(); }   // never carry a press out of a session
+      // tilt chosen but no motion data yet (permission not answered / refused):
+      // the ◀ ▶ buttons stand in so the car is always drivable
+      const mode = (cfg.mode === 'tilt' && !tiltOK) ? 'buttons' : cfg.mode;
+      const chip = $id('tc-perm');
+      if (input.active && cfg.mode === 'tilt' && !tiltOK) {
+        chip.style.display = 'flex';
+        chip.textContent = permState === 'denied' ? 'MOTION ACCESS OFF — USING BUTTONS (reopen the app to allow tilt)' : 'TAP HERE TO ENABLE TILT STEERING';
+        chip.classList.toggle('off', permState === 'denied');
+      } else chip.style.display = 'none';
       if (input.active) {
-        layer.classList.toggle('mode-buttons', cfg.mode === 'buttons');
-        $id('tc-center').style.display = cfg.mode === 'tilt' ? 'flex' : 'none';
+        layer.classList.toggle('mode-buttons', mode === 'buttons');
+        $id('tc-center').style.display = mode === 'tilt' ? 'flex' : 'none';
         let steer = 0;
-        if (cfg.mode === 'tilt' && tiltRaw != null) {
-          const F = FEEL[cfg.feel] || FEEL.balanced;
-          let d = tiltRaw - tiltTrim;
-          const dz = 0.6;                                       // dead-zone, degrees
-          d = Math.sign(d) * Math.max(0, Math.abs(d) - dz);
-          let x = Math.min(1, Math.abs(d) / Math.max(8, cfg.sens));
-          // curved response: gentle around centre, full lock still at the
-          // same angle. Gets a little gentler still at high speed (fast
-          // corners need small, precise inputs; hairpins are slow anyway).
+        if (mode === 'tilt' && tiltRaw != null) {
           const v = (g.player && g.player.phys && g.player.phys.speed) || 0;
-          const hi = Math.max(0, Math.min(1, (v - 50) / 35));  // 180 → 306 km/h
-          let s = Math.sign(d) * Math.pow(x, F.curve + 0.35 * hi);
-          s = -s;                                               // clockwise = right = negative steer
-          if (cfg.invert) s = -s;
+          const s = tiltShape(tiltRaw - tiltTrim, cfg, v);
           // time-based low-pass: removes jitter, not intent
           const now = ts || performance.now(), dtS = Math.min(0.1, Math.max(0, (now - (loop._t || now)) / 1000));
-          const kf = 1 - Math.exp(-dtS / F.tau);
+          const kf = tiltFilterK(cfg, dtS);
           tiltSm += (s - tiltSm) * kf;
           steer = tiltSm;
           // how far the phone is turned (deg, + clockwise), smoothed — the
           // camera uses it to keep the horizon level in the real world
           tiltDegSm += ((tiltRaw - tiltTrim) - tiltDegSm) * kf;
           input.tilt = cfg.invert ? -tiltDegSm : tiltDegSm;
-        } else if (cfg.mode === 'buttons') {
+        } else if (mode === 'buttons') {
           steer = (isDown('tc-left') ? 1 : 0) - (isDown('tc-right') ? 1 : 0);
         }
         input.steer = steer;
-        input.analog = cfg.mode === 'tilt';
-        if (cfg.mode !== 'tilt') input.tilt = 0;
+        input.analog = mode === 'tilt';
+        input.assist = ({ high: 1, low: 0.5, off: 0 })[cfg.assist] ?? 1;
+        if (mode !== 'tilt') input.tilt = 0;
         // progressive brake pedal: a press starts at 55% and builds to full
         // over ~0.4 s — a tap is a lift-and-dab, holding is a stop. An on/off
         // pedal slammed full braking every time, the "twitchy" feel.
@@ -375,7 +396,7 @@
         $id('tc-tap').style.display = pg ? 'flex' : 'none';
       }
       // steering gauge: shows how much lock you're asking for (fills = full lock)
-      if (input.active && cfg.mode === 'tilt') {
+      if (input.active && mode === 'tilt') {
         gauge.style.display = 'block';
         const f = Math.max(-1, Math.min(1, -input.steer));
         gaugeBar.style.left = (f < 0 ? 50 + f * 50 : 50) + '%'; gaugeBar.style.width = Math.abs(f) * 50 + '%';
@@ -404,6 +425,8 @@
         <div class="tc-opt" data-m="tilt"><b>TILT TO STEER</b><span>Turn the device like a wheel. Smooth, analog steering — recommended.</span></div>
         <div class="tc-opt" data-m="buttons"><b>TOUCH BUTTONS</b><span>◀ ▶ buttons on the left. Works anywhere, no motion sensor needed.</span></div>
       </div>
+      <div class="tc-row" id="tc-assistrow">STEERING ASSIST <span class="tc-feel tc-as" data-a="high">HIGH</span><span class="tc-feel tc-as" data-a="low">LOW</span><span class="tc-feel tc-as" data-a="off">OFF</span></div>
+      <div class="tc-row tc-note" id="tc-assistnote"></div>
       <div class="tc-row" id="tc-feelrow">STEERING FEEL <span class="tc-feel" data-f="smooth">SMOOTH</span><span class="tc-feel" data-f="balanced">BALANCED</span><span class="tc-feel" data-f="direct">DIRECT</span></div>
       <div class="tc-row" id="tc-tiltrow">TILT FOR FULL LOCK <input type="range" id="tc-sens" min="10" max="40" step="1"> <span><span id="tc-sensv"></span>°</span></div>
       <div class="tc-row" id="tc-meterrow">STEERING <div id="tc-meter"><div></div></div></div>
@@ -414,16 +437,25 @@
       $id('tc-tiltrow').style.display = $id('tc-meterrow').style.display = $id('tc-feelrow').style.display = m === 'tilt' ? 'flex' : 'none'; };
     s.querySelectorAll('.tc-opt').forEach(o => o.addEventListener('click', () => {
       sel(o.dataset.m);
-      if (o.dataset.m === 'tilt') startTilt().then(r => { if (r !== 'granted') { $id('tc-meterrow').innerHTML = 'Motion access was refused — use TOUCH BUTTONS, or allow it in Settings.'; } });
+      if (o.dataset.m === 'tilt') { permState = 'asking'; startTilt().then(r => { permState = r === 'granted' ? 'granted' : r === 'denied' ? 'denied' : 'unknown';
+        if (r === 'denied') $id('tc-meterrow').innerHTML = 'Motion access was refused — touch buttons will be used until you reopen the app and allow it.'; }); }
     }));
-    const feelSel = () => s.querySelectorAll('.tc-feel').forEach(f => f.classList.toggle('sel', f.dataset.f === cfg.feel));
-    s.querySelectorAll('.tc-feel').forEach(f => f.addEventListener('click', () => { cfg.feel = f.dataset.f; feelSel(); }));
+    const NOTE = { high: 'Tilt to choose your line — level follows the racing line, tilt moves you across the road. Easiest.',
+                   low: 'Half your tilt, half the assist. Some help, more control.',
+                   off: 'Raw tilt steering — the phone is the wheel. For experienced players.' };
+    const feelSel = () => {
+      s.querySelectorAll('.tc-feel[data-f]').forEach(f => f.classList.toggle('sel', f.dataset.f === cfg.feel));
+      s.querySelectorAll('.tc-as').forEach(f => f.classList.toggle('sel', f.dataset.a === cfg.assist));
+      $id('tc-assistnote').textContent = NOTE[cfg.assist] || '';
+    };
+    s.querySelectorAll('.tc-feel[data-f]').forEach(f => f.addEventListener('click', () => { cfg.feel = f.dataset.f; feelSel(); }));
+    s.querySelectorAll('.tc-as').forEach(f => f.addEventListener('click', () => { cfg.assist = f.dataset.a; feelSel(); }));
     feelSel();
     $id('tc-sens').value = cfg.sens; $id('tc-sensv').textContent = cfg.sens;
     $id('tc-sens').addEventListener('input', e => { cfg.sens = +e.target.value; $id('tc-sensv').textContent = cfg.sens; });
     $id('tc-inv').checked = cfg.invert; $id('tc-inv').addEventListener('change', e => { cfg.invert = e.target.checked; });
     $id('tc-auto').checked = cfg.autoThrottle; $id('tc-auto').addEventListener('change', e => { cfg.autoThrottle = e.target.checked; });
-    $id('tc-ok').addEventListener('click', () => { if (!cfg.mode) sel('tilt'); save(); s.classList.remove('on'); goFullscreen(); });
+    $id('tc-ok').addEventListener('click', () => { if (!cfg.mode) sel('tilt'); save(); s.classList.remove('on'); goFullscreen(); if (cfg.mode === 'tilt') armTiltOnFirstTap(); });
     // live meter while choosing, so you can feel the tilt range
     (function meter() {
       if (s.classList.contains('on') && cfg.mode === 'tilt' && tiltRaw != null) {

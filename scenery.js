@@ -115,10 +115,50 @@ function _scPlan(track) {
     add(_scStandAt(track, 0.965, -_scTurn(track, 0.965), 80));
     add(_scStandAt(track, 0.995, 1, 120));
   }
+  // BUILD 104: a stand is a 60-160 m long box. Only its CENTRE used to be
+  // checked, so at a corner (or where another part of the lap runs close)
+  // its ends stuck out across the road — Silverstone, Spa, Monza. Every
+  // stand's whole footprint must now sit behind the barrier line; if it
+  // doesn't, it is pushed back, shortened, or moved to the other side.
+  P.marks = P.marks.map(m => (m && m.type === 'stand') ? _scFitStand(track, m) : m);
   // drop anything that ended up on the circuit
   P.marks = P.marks.filter(m => m && _scDist(track, m.x, m.z) > hw + (m.type === 'stand' ? 10 : m.type === 'podium' ? 8 : m.type === 'banking' ? 40 : m.r * 0.8 + 10));
   return P;
 }
+// Is a rectangle (centre x,z; long axis along heading h; len x dep) fully
+// clear of the road by 'clear' metres? Samples the whole footprint.
+function _scFootprintClear(track, x, z, h, len, dep, clear) {
+  const ax = Math.sin(h), az = Math.cos(h), bx = Math.cos(h), bz = -Math.sin(h);
+  for (let a = -len / 2; a <= len / 2 + 0.01; a += Math.max(4, len / 24))
+    for (let b = -dep / 2; b <= dep / 2 + 0.01; b += dep / 2) {
+      const px = x + ax * a + bx * b, pz = z + az * a + bz * b;
+      if (_scDist(track, px, pz) < clear) return false;
+      if (typeof inPitComplex === 'function') {
+        const k = track.nearest(px, pz, null);
+        if (inPitComplex(track, k, track.lateral(px, pz, k))) return false;
+      }
+    }
+  return true;
+}
+function _scFitStand(track, m) {
+  const hw = track.width / 2, wall = (track.wallOff || hw + 8);
+  const clear = wall + 3, DEP = 20;                 // seats + roof overhang
+  const k = track.idxAtDist(track.dist[track.nearest(m.x, m.z, null)]);
+  for (const side of [m.side, -m.side]) {
+    for (let push = 0; push <= 48; push += 8) {
+      for (let len = m.len; len >= Math.min(40, m.len); len = Math.round(len * 0.8)) {
+        const off = side * (wall + 14 + push);
+        const p = track.posAt(k, off);
+        // the stand's centre sits DEP/2 behind its front edge
+        if (_scFootprintClear(track, p.x, p.z, m.h, len, DEP, clear))
+          return Object.assign({}, m, { x: p.x, z: p.z, side, len, r: len / 2 });
+        if (len <= 40) break;
+      }
+    }
+  }
+  return null;                                      // nowhere sensible: leave it out
+}
+
 // a covered grandstand facing the track at f, side +1 right / -1 left
 function _scStandAt(track, f, side, len) {
   const hw = track.width / 2, off = (track.wallOff || hw + 8) + 14;

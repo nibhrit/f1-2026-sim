@@ -1233,9 +1233,17 @@ function buildTrackScene(track, scene, themeName) {
         k, side: Math.abs(track.curv[k])>0.004 ? (track.curv[k]>0?-1:1) : 1
       })));
     spots.forEach(({k, side}) => {
-      const off = side*(boff + 26);
-      const p = track.posAt(k, off);
-      if (!clearOfTrack(p.x, p.z, boff+14) || inPitComplex(track, k, off)) return;
+      // whole 60 x 12 m footprint behind the barrier line, not just its centre
+      // (BUILD 104): pushed back further if a corner or another part of the lap
+      // runs close, dropped if there's no room at all
+      const hdg = Math.atan2(track.tx[k], track.tz[k]);
+      let off = null, p = null;
+      for (let push = 0; push <= 32 && off == null; push += 8) {
+        const o = side*(boff + 26 + push), q = track.posAt(k, o);
+        if (inPitComplex(track, k, o)) continue;
+        if (typeof _scFootprintClear !== 'function' || _scFootprintClear(track, q.x, q.z, hdg, 60, 12, boff + 3)) { off = o; p = q; }
+      }
+      if (off == null) return;
       const y0 = terrainY(p.x, p.z);
       const stand = new THREE.Group();
       const base = new THREE.Mesh(new THREE.BoxGeometry(58, 1.8, 11), frameM);

@@ -4485,7 +4485,18 @@ function stepSim(dt) {
       if (G.autopilot) {
         if (!c.autoAi) c.autoAi = new AIDriver(c.phys, G.track, c.driver);
         inp = c.autoAi.compute(dt, physList);
-      } else inp = (typeof brakeAssistInput === 'function') ? brakeAssistInput(playerInput()) : playerInput();
+      } else {
+        inp = playerInput();
+        // touch steering assist (tilt or buttons): see racingline.js
+        const TA = window.OUTLAP_TOUCH_INPUT;
+        if (TA && TA.active && TA.assist && typeof steerAssistInput === 'function') {
+          // boxing this lap (PIT pressed): the assist takes you across to the pit entry
+          const pa = pitApproachTarget(c);
+          if (pa && pa.lane != null) inp.pitLane = pa.lane;
+          inp = steerAssistInput(inp, TA.assist);
+        }
+        if (typeof brakeAssistInput === 'function') inp = brakeAssistInput(inp);
+      }
     }
     else inp = c.ai.compute(dt, physList);
     c.phys.step(dt, inp);
@@ -4602,5 +4613,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 103';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 104';
 })();
