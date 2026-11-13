@@ -975,6 +975,9 @@ function togglePause() {
     // during any qualifying, allow ending the session early (keeping your time)
     const showEndQ = G.mode === 'qualify' && G.raceStarted && !G.qualiFlag;
     $('btn-endq').classList.toggle('hidden', !showEndQ);
+    // a race in progress: offer to stop and take the result as it stands
+    const showEndRace = G.mode === 'race' && G.raceStarted && G.player && !G.player.finished && !G.player.retired;
+    $('btn-endrace').classList.toggle('hidden', !showEndRace);
     showScreen('pause');
   } else if (G.state === 'paused') {
     G.state = 'driving';
@@ -1036,7 +1039,7 @@ function makeCar(driver, track) {
     // the best car on the day at full grip (a Haas runs ~4.5% less grip, which
     // is ~1.5-2% a lap off a McLaren — about the real 2025 qualifying gap).
     const cp = carPace(driver, G.trackDef.id, (G.weather && G.weather.wetness) || 0);
-    phys.gripBonus = Math.min(1, Math.max(0.9, 1 - (1 - cp / CAR_PACE_TOP) * 1.6));
+    phys.gripBonus = carGripFor(cp);
   }
   const car = {
     driver, mesh, phys,
@@ -1051,54 +1054,43 @@ function makeCar(driver, track) {
     // difficulty drives cornering pace, braking depth and top speed
     car.ai.diff = G.difficulty;
     const perf = aiPerf(driver);
-    car.ai.paceMul = perf.paceMul;
     car.ai.buildCornerSpeeds();
+    car.ai.setSkill(perf.skill);
     phys.gripBonus = perf.gripBonus;
   }
   return car;
 }
 
-// AI car performance for this track, weather and difficulty: the fraction of
-// its limit the driver plans to (paceMul) and the car's grip (gripBonus).
-// Shared by the race cars and the driven qualifying laps.
+// AI car performance (BUILD 107). The AI drives the SAME car you would in that
+// team — same grip, brakes, top speed and steering (the player formula below).
+// Difficulty no longer touches the car at all: it sets how well the AI DRIVES
+// it (see aiSkillFromLevel in ai.js: corner commitment, braking depth, exit
+// throttle, line, consistency, mistakes). The slider is tuned as a lap-time gap
+// to the perfect lap a flawless driver could do in that car:
+//   Rookie 0.95 ~6%   Casual 1.02 ~4%   Pro 1.06 ~2%   Elite 1.12 ~1%   Alien 1.20 ~0.3%
+// Each driver's own rating moves them +-~0.7% around that.
+// Constructor spread (BUILD 107): x3.0 — the best car on the day at full grip,
+// the slowest ~10% less, about 2.5% of lap time. Same for YOUR car in that team.
+function carGripFor(cp) { return Math.min(1, Math.max(0.86, 1 - (1 - cp / CAR_PACE_TOP) * 3.0)); }
+const DIFF_GAP = [[0.95, 6.0], [1.02, 4.0], [1.06, 2.0], [1.12, 1.0], [1.20, 0.3]];
+function diffGapPct(d) {
+  if (d <= DIFF_GAP[0][0]) return DIFF_GAP[0][1];
+  for (let i = 1; i < DIFF_GAP.length; i++) {
+    const [d1, g1] = DIFF_GAP[i], [d0, g0] = DIFF_GAP[i - 1];
+    if (d <= d1) return g0 + (g1 - g0) * (d - d0) / (d1 - d0);
+  }
+  return DIFF_GAP[DIFF_GAP.length - 1][1];
+}
+// lap-time gap ~ 7% x (1 - s), measured across circuits (harness/lineopt/level.sh)
+function aiSkillLevel(driver) {
+  const s = 1 - diffGapPct(G.difficulty) / 7.0 + ((driver.skill || 0.93) - 0.93) * 1.5;   // driver ratings: +-~0.7% lap
+  return Math.max(0, Math.min(1, s));
+}
 function aiPerf(driver) {
-    // Car performance: team ranking × this circuit's character × wet ability.
-    const cp = carPace(driver, G.trackDef.id, (G.weather && G.weather.wetness) || 0);
-    // Difficulty must NOT multiply pace on top of grip. gripBonus already
-    // raises what the car can do; multiplying paceMul by G.difficulty as well
-    // meant Elite planned at ~109% of its own limit and scrubbed speed all the
-    // way round — which is why Elite was lapping SLOWER than Pro at Monza and
-    // China despite never leaving the road. paceMul is now purely "what
-    // fraction of the available limit this driver uses", and always under 1.
-    // dt2 is the normalised difficulty (0 at ~Rookie, 1 at old-Elite 1.10) that
-    // scales grip and pace. The slider now runs past 1.10, so the old Math.min(1)
-    // clamp is lifted — at the 1.20 top end dt2 reaches ~1.85, the level the AI
-    // was validated to run clean. Floored slightly below 0 for the easy end.
-    const dt2 = Math.max(-0.25, Math.min(1.85, (G.difficulty - 0.98) / 0.12));
-    // the BUILD 94 shift goes into GRIP only: more car, same planning margin.
-    // (Shifting the planner's pace fraction too ran the Alien field wide at
-    // Austria and Britain — 12 track-limit penalties a race.)
-    const dt2g = Math.max(-0.25, Math.min(2.5, dt2 + AI_PACE_SHIFT));
-    const paceMul = cp * (0.900 + 0.130 * dt2) * (0.990 + driver.skill * 0.010);
-    // Pace alone barely separates the field, because the quick cars end up
-    // pegged at the grip limit either way. Feeding the same figure into grip
-    // is what turns the constructors' table into a real lap-time spread.
-    // (dt2 is computed just above and reused here.)
-    //
-    // The grip range is the difficulty dial, and it's also the realism dial:
-    // whatever sits above 1.0 is corner grip the player's car does not have.
-    // The dial: at 0.24 the Elite field cornered 22% harder than physically
-    // possible for you (felt like cheating); 0.12 was 10% (too soft, no real
-    // fight); 0.18 is 16% — enough grip that Elite is properly quick on
-    // grip-limited circuits without the superhuman feel. Note it barely helps
-    // on power/flow tracks like COTA, where the AI is execution-limited, not
-    // grip-limited.
-    // (Their braking power is ~33 m/s² vs your 35-38 — always was fair.)
-    // The whole ladder moved up a step: what used to be Elite is now Pro.
-    // The grip curve is re-anchored to match, otherwise 1.06 and 1.10 would
-    // both clamp to full grip and Pro/Elite would be identical.
-    const gripBonus = (0.98 + dt2g * 0.24) * (1 - (1 - cp / CAR_PACE_TOP) * 4);
-  return { cp, paceMul, gripBonus };
+  // car: team ranking x this circuit's character x wet ability — identical to the player's car
+  const cp = carPace(driver, G.trackDef.id, (G.weather && G.weather.wetness) || 0);
+  const s = aiSkillLevel(driver);
+  return { cp, gripBonus: carGripFor(cp), level: s, skill: aiSkillFromLevel(s) };
 }
 
 // ---------- weather ----------
@@ -1622,7 +1614,7 @@ function stepQualiSim(budget) {
       const perf = aiPerf(q.driver);
       c.gripBonus = perf.gripBonus;
       const ai = new AIDriver(c, t, q.driver);
-      ai.diff = G.difficulty; ai.paceMul = perf.paceMul; ai.buildCornerSpeeds();
+      ai.diff = G.difficulty; ai.buildCornerSpeeds(); ai.setSkill(Object.assign({}, perf.skill, { mistake: 0 }));
       S.cur = { q, c, ai, T: 0, t0: null };
     }
     const cur = S.cur;
@@ -1706,12 +1698,15 @@ function simulateQualiTimes() {
   // everyone runs the quickest compound the conditions allow, as in real quali
   const wet = G.weather ? G.weather.wetness : 0;
   const qTyre = compoundForCategory(idealCategory(wet), 'soft');
+  const base = lapTime(1);
   return DRIVERS.filter(d=>!d.player).map(d => {
     // same performance model the race AI uses, so the grid you qualify against
     // matches the cars you then race — plus a little driver variability
-    const cp = carPace(d, G.trackDef.id, wet);
-    const paceMul = cp * (0.905 + d.skill * 0.055) * G.difficulty * (1 + AI_PACE_SHIFT * 0.035);
-    return { driver: d, tyre: qTyre, time: lapTime(paceMul) * (1 + Math.random()*0.005) };
+    // BUILD 107: the same model as the race AI — the car's grip (same as
+    // yours) and how well this driver drives it (lap-time gap to perfect)
+    const perf = aiPerf(d);
+    const rel = (1 + (1 - perf.level) * 0.070) / Math.sqrt(perf.gripBonus);
+    return { driver: d, tyre: qTyre, time: base * rel * (1 + Math.random()*0.004) };
   });
 }
 
@@ -1891,6 +1886,8 @@ function fmtTime(s) {
 // banner and takes the FL marker in the timing tower.
 function noteRaceLap(car, lapTime) {
   if (G.mode !== 'race' || !(lapTime > 15)) return;
+  // recent race pace (for "End race now" projections)
+  (car._recent = car._recent || []).push(lapTime); if (car._recent.length > 3) car._recent.shift();
   const fl = G.raceFL;
   if (!fl || lapTime < fl.time - 1e-6) {
     G.raceFL = { time: lapTime, id: car.driver.id };
@@ -2149,6 +2146,63 @@ function endQualifyEarly() {
 }
 
 $('btn-endq').addEventListener('click', endQualifyEarly);
+
+// ---------- End race now (BUILD 107) ----------
+// Stop driving and take the result where the race stands: every car still
+// running — you included — is projected to the flag at its own recent race
+// pace (plus a pit stop if it still owes the mandatory one), lapped cars take
+// the flag on their next crossing after the winner, and the race is classified
+// exactly as a normal finish (penalties included). Instant: nothing is
+// re-simulated.
+function endRaceNow() {
+  if (G.mode !== 'race' || !G.raceStarted || G.endedRace || !G.track) return;
+  const L = G.track.length, total = G.raceLaps * L, now = G.simTime;
+  const PIT_LOSS = 22;
+  const lapPace = c => {
+    if (c._recent && c._recent.length) return c._recent.reduce((a, b) => a + b, 0) / c._recent.length;
+    if (c.phys.totalDist > 200 && now > 10) return L / (c.phys.totalDist / now) * 0.98;   // lap 1: average so far, a touch quicker than the start lap
+    return c.bestLap || L / 55;
+  };
+  const run = G.cars.filter(c => !c.finished && !c.retired);
+  const proj = new Map();
+  for (const c of run) {
+    const lt = lapPace(c), rem = Math.max(0, total - c.phys.totalDist);
+    const owes = mandatoryStopMissed(c) && !c.pitState ? PIT_LOSS : 0;
+    proj.set(c, { lt, t: now + rem / L * lt + owes });
+  }
+  // the winner's time: earliest of anyone already finished or projected
+  let TL = Infinity, winner = null;
+  for (const c of G.cars) if (c.finished && c.finishTime < TL) { TL = c.finishTime; winner = c; }
+  for (const [c, p] of proj) if (p.t < TL) { TL = p.t; winner = c; }
+  for (const [c, p] of proj) {
+    let fin = p.t, laps = G.raceLaps;
+    if (fin > TL + 1e-6) {
+      // still on track when the winner takes the flag: done on the next crossing
+      const distAtTL = c.phys.totalDist + (TL - now) / p.lt * L;
+      const lapsAtTL = Math.floor(distAtTL / L);
+      if (lapsAtTL < G.raceLaps) {
+        laps = lapsAtTL + 1;
+        fin = now + ((laps * L - c.phys.totalDist) / L) * p.lt;
+      }
+    }
+    c.finished = true; c.phys.finished = true; c.finishTime = fin;
+    c.lapsDone = Math.min(G.raceLaps, laps); c.finishDist = c.lapsDone * L;
+  }
+  if (!G.firstFinish || TL < G.firstFinish) { G.firstFinish = TL; if (winner) G.winnerId = winner.driver.id; }
+  if (G.endTimer) { clearTimeout(G.endTimer); G.endTimer = null; }
+  G.raceEndedEarly = true;
+  showScreen(null);
+  G.state = 'driving';
+  endRace();
+}
+(function initEndRaceNow() {
+  const b = $('btn-endrace'); if (!b) return;
+  let armed = 0;
+  b.addEventListener('click', () => {
+    if (Date.now() - armed > 3000) { armed = Date.now(); b.textContent = 'Tap again to end the race'; setTimeout(() => { b.textContent = 'End Race Now — Take the Result'; }, 3000); return; }
+    armed = 0; endRaceNow();
+  });
+})();
 
 // After YOU take the flag, everyone still running finishes on their next
 // crossing. Rather than guess their times, fast-forward the real simulation
@@ -4677,5 +4731,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 106';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 107';
 })();

@@ -3,10 +3,120 @@
 // based speed planning, simple overtaking offsets.
 // ============================================================
 
+// Steering controller tunables (BUILD 107): curvature feed-forward from the
+// racing line + pure-pursuit feedback at a short look-ahead.
+let AI_CTRL = { look: 0.22, lookMin: 6, lookMax: 30, gain: 3.0, preview: 0.10, ffOff: 0, warn: 0.9, brakePreview: 0.25, traffic: 1, sep: 3.9, guardRate: 6 };
+// The car's limit relative to the planner's model, per circuit (BUILD 107).
+// skill = 1 drives exactly at these: the corner speed the tyres hold and the
+// braking the car (with ABS, like yours) can deliver. The physics would let a
+// car carry ~4-6% more into a corner by overdriving and letting the steering
+// assist scrub the excess — the AI deliberately doesn't (in traffic it made
+// cars slide into each other, and it isn't how a real driver takes a corner).
+// Hairpin-heavy circuits leave less room (calibrated offline: lineopt/calib.sh).
+const AI_LIMIT = { corner: 1.0, brake: 1.0,
+  tracks: { monaco: { corner: 0.96 }, japan: { corner: 0.96 }, china: { corner: 0.98 }, usa: { corner: 0.98 } } };
+function aiLimitFor(id) { const o = (AI_LIMIT.tracks[id] || {}); return { corner: o.corner || AI_LIMIT.corner, brake: o.brake || AI_LIMIT.brake }; }
+// Difficulty -> driving skill (BUILD 107). s = 0 is a beginner, 1 the best
+// driver the car allows. Everything is HOW the car is driven; nothing changes
+// the car itself.
+function aiSkillFromLevel(s) {
+  s = Math.max(0, Math.min(1, s));
+  return {
+    corner: 0.90 + 0.10 * s,          // share of the corner limit carried
+    brake: 0.84 + 0.16 * s,           // how deep into the braking zone
+    exit: 0.90 + 0.10 * s,            // how early/hard back on the power
+    line: 0.80 + 0.20 * s,            // how much of the road the line uses
+    sigma: 0.002 + 0.010 * (1 - s),   // lap-to-lap inconsistency
+    mistake: 0.03 * (1 - s) * (1 - s),// chance per braking zone of misjudging it
+  };
+}
 // extra fraction of planned pace the AI gives up per unit of wetness
 let AI_WET_CAUTION = 0.16;
 // fraction of the pace optimism removed in slow corners (tuned by gauntlet)
 let SLOW_CUT = 0.0;
+
+function aiLineSpeeds(track, rl, grip) {
+  const N = track.n; grip = grip || 1;
+    // 4. Corner speeds from the curvature of THAT path. Taking a corner wide
+  //    -> apex -> wide straightens it, so the usable radius is larger and
+  //    the limit speed genuinely higher.
+  const px = new Float64Array(N), pz = new Float64Array(N);
+  for (let i = 0; i < N; i++) {
+    px[i] = track.px[i] + track.nx[i]*rl[i];
+    pz[i] = track.pz[i] + track.nz[i]*rl[i];
+  }
+  const curv = new Float64Array(N);
+  for (let i = 0; i < N; i++) {
+    const a = (i-3+N)%N, b = (i+3)%N;
+    const x1 = px[a], z1 = pz[a], x2 = px[i], z2 = pz[i], x3 = px[b], z3 = pz[b];
+    // curvature through three points = 4*area / (product of side lengths)
+    const area2 = (x2-x1)*(z3-z1) - (z2-z1)*(x3-x1);
+    const d1 = Math.hypot(x2-x1, z2-z1), d2 = Math.hypot(x3-x2, z3-z2), d3 = Math.hypot(x3-x1, z3-z1);
+    curv[i] = (d1*d2*d3 > 1e-6) ? Math.abs(2*area2 / (d1*d2*d3)) : 0;
+  }
+  // light smoothing so a noisy sample can't spike the plan
+  const cSm = new Float64Array(N);
+  for (let i = 0; i < N; i++) {
+    let sum = 0;
+    for (let o = -4; o <= 4; o++) sum += curv[(i+o+N)%N];
+    cSm[i] = sum / 9;
+  }
+  // Must mirror physics.js exactly: latMax = min(53, 17.6 + 0.0104 v²).
+  // Solve v² · c = latMax(v) for v — the speed where the corner demands
+  // precisely the grip available. Done by bisection because latMax itself
+  // depends on v. If these constants drift from the physics the AI plans
+  // corner speeds the car cannot actually hold, and scrubs all the way round.
+  const adf = track.aeroDf || 1;
+  const LAT_CAP = 53 * adf, LAT_MECH = 17.6, LAT_AERO = 0.0104 * adf;
+  const cs = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const c = cSm[i];
+    if (c < 1e-4) { cs[i] = 999; continue; }
+    let lo = 3, hi = 150;
+    for (let k = 0; k < 26; k++) {
+      const m = (lo + hi) / 2;
+      const avail = Math.min(LAT_CAP, LAT_MECH + LAT_AERO * m * m) * grip;
+      // and the steering lock: the line's radius must be one the car can turn
+      const geomOK = typeof steerLockAt !== 'function' || (1 / c) >= 3.2 / Math.tan(steerLockAt(m));
+      if (m * m * c <= avail && geomOK) lo = m; else hi = m;
+    }
+    cs[i] = lo;
+  }
+
+  // signed curvature in HEADING terms (d heading / d distance along the line):
+  // the steering feed-forward. + = heading increasing = steer +.
+  const kap = new Float32Array(N);
+  { const th = new Float64Array(N), sd = new Float64Array(N);
+    for (let i = 0; i < N; i++) { const a = (i - 1 + N) % N, b = (i + 1) % N; th[i] = Math.atan2(px[b] - px[a], pz[b] - pz[a]); }
+    for (let i = 0; i < N; i++) { const j = (i + 1) % N; sd[i] = Math.hypot(px[j] - px[i], pz[j] - pz[i]); }
+    for (let i = 0; i < N; i++) {
+      let d = th[(i + 3) % N] - th[(i - 3 + N) % N]; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
+      let len = 0; for (let o = -3; o < 3; o++) len += sd[(i + o + N) % N];
+      kap[i] = len > 1e-3 ? d / len : 0;
+    }
+    const k2 = Float32Array.from(kap);
+    for (let i = 0; i < N; i++) { let sum = 0; for (let o = -3; o <= 3; o++) sum += k2[(i + o + N) % N]; kap[i] = sum / 7; }
+  }
+  return { rl, cs, kap };
+}
+// Line variants by driving quality q (BUILD 107): 1 = the optimal line, lower =
+// a narrower line that doesn't use all the road (early, tighter apexes — the
+// way a less confident driver goes round). Corner speeds are planned for the
+// line actually driven. Cached per track.
+function aiLineData(track, q, grip) {
+  q = Math.max(0.5, Math.min(1, Math.round((q || 1) * 20) / 20));
+  // grip in 0.5% steps (BUILD 107): the corner speed is SOLVED for the car's
+  // actual grip — a sqrt() scaling of a full-grip plan overstated what a
+  // lower-grip car can carry through fast, downforce-heavy corners, and the
+  // slower teams ran wide at Pouhon every lap
+  const g = Math.max(0.6, Math.min(1.6, Math.round((grip || 1) * 200) / 200));
+  const key = q + '|' + g;
+  const V = track._lineVariants || (track._lineVariants = {});
+  if (V[key]) return V[key];
+  const base = track._raceLine, N = track.n, rl = new Float32Array(N);
+  for (let i = 0; i < N; i++) rl[i] = base[i] * q;
+  return (V[key] = aiLineSpeeds(track, rl, g));
+}
 
 class AIDriver {
   constructor(car, track, driver) {
@@ -17,8 +127,18 @@ class AIDriver {
     // (× G.difficulty in main.js). Still leaves a clean, precise player room to win.
     // fraction of the car's true limit this driver runs at, before difficulty.
     // Base leaves headroom so difficulty ×0.94..×1.06 spans ~87%..~98.5%.
-    this.paceMul = 0.80 + driver.skill * 0.13;
+    this.paceMul = 0.80 + driver.skill * 0.13;   // legacy (pre-BUILD 107); unused by compute()
     this.diff = 1; // difficulty multiplier (main.js sets it from G.difficulty)
+    // BUILD 107: the AI runs the SAME car as you. How fast it goes is purely
+    // how well it drives — these are the skills difficulty turns up or down:
+    //  corner  fraction of the car's corner-speed limit it dares to carry
+    //  brake   fraction of the car's braking capability it plans with (how late)
+    //  exit    how early/hard it gets on the power out of a corner (traction use)
+    //  line    1 = the full optimal line; lower = narrower, earlier apexes
+    //  sigma   lap-to-lap inconsistency (sd of the corner fraction)
+    //  mistake chance per braking zone of getting it wrong (too late / too early)
+    this.skill = { corner: 0.96, brake: 0.92, exit: 1, line: 1, sigma: 0, mistake: 0 };
+    this._lapVar = 1;
     this.launchT = 0; // >0 = launching off the grid, ignore the follow limiter
     // Off the line every car would otherwise snap straight onto the single
     // racing line, which bunches 22 cars into one lane and makes them all lift.
@@ -32,6 +152,8 @@ class AIDriver {
     this.noise = Math.random()*1000;
     this.buildCornerSpeeds();
   }
+
+  setSkill(o) { Object.assign(this.skill, o || {}); this._prof = null; }
 
   // ---- racing line + corner speeds -------------------------------------
   // Both are properties of the LINE, not the centreline. The old version
@@ -58,9 +180,12 @@ class AIDriver {
     // corner into a wide-entry / apex / wide-exit line — the previous
     // "hug the inside then blur it" approach produced a wavy path that was
     // SLOWER than the centreline over 20% of the lap.
-    const rl = new Float32Array(N);
+    // BUILD 107: the pre-computed global line (racelines.js) when there is one;
+    // the old local relaxation below only as a fallback for unknown geometry
+    const pre = (typeof racelineFor === 'function') ? racelineFor(track) : null;
+    const rl = pre || new Float32Array(N);
     const K = 3;                       // neighbour span used for straightening
-    for (let pass = 0; pass < 400; pass++) {
+    if (!pre) for (let pass = 0; pass < 400; pass++) {
       for (let i = 0; i < N; i++) {
         const a = (i-K+N)%N, b = (i+K)%N;
         const ax = track.px[a] + track.nx[a]*rl[a], az = track.pz[a] + track.nz[a]*rl[a];
@@ -73,50 +198,10 @@ class AIDriver {
       }
     }
     track._raceLine = rl;
-
-    // 4. Corner speeds from the curvature of THAT path. Taking a corner wide
-    //    -> apex -> wide straightens it, so the usable radius is larger and
-    //    the limit speed genuinely higher.
-    const px = new Float64Array(N), pz = new Float64Array(N);
-    for (let i = 0; i < N; i++) {
-      px[i] = track.px[i] + track.nx[i]*rl[i];
-      pz[i] = track.pz[i] + track.nz[i]*rl[i];
-    }
-    const curv = new Float64Array(N);
-    for (let i = 0; i < N; i++) {
-      const a = (i-3+N)%N, b = (i+3)%N;
-      const x1 = px[a], z1 = pz[a], x2 = px[i], z2 = pz[i], x3 = px[b], z3 = pz[b];
-      // curvature through three points = 4*area / (product of side lengths)
-      const area2 = (x2-x1)*(z3-z1) - (z2-z1)*(x3-x1);
-      const d1 = Math.hypot(x2-x1, z2-z1), d2 = Math.hypot(x3-x2, z3-z2), d3 = Math.hypot(x3-x1, z3-z1);
-      curv[i] = (d1*d2*d3 > 1e-6) ? Math.abs(2*area2 / (d1*d2*d3)) : 0;
-    }
-    // light smoothing so a noisy sample can't spike the plan
-    const cSm = new Float64Array(N);
-    for (let i = 0; i < N; i++) {
-      let sum = 0;
-      for (let o = -4; o <= 4; o++) sum += curv[(i+o+N)%N];
-      cSm[i] = sum / 9;
-    }
-    // Must mirror physics.js exactly: latMax = min(53, 17.6 + 0.0104 v²).
-    // Solve v² · c = latMax(v) for v — the speed where the corner demands
-    // precisely the grip available. Done by bisection because latMax itself
-    // depends on v. If these constants drift from the physics the AI plans
-    // corner speeds the car cannot actually hold, and scrubs all the way round.
-    const adf = track.aeroDf || 1;
-    const LAT_CAP = 53 * adf, LAT_MECH = 17.6, LAT_AERO = 0.0104 * adf;
-    const cs = new Float32Array(N);
-    for (let i = 0; i < N; i++) {
-      const c = cSm[i];
-      if (c < 1e-4) { cs[i] = 999; continue; }
-      let lo = 3, hi = 100;
-      for (let k = 0; k < 26; k++) {
-        const m = (lo + hi) / 2;
-        const avail = Math.min(LAT_CAP, LAT_MECH + LAT_AERO * m * m);
-        if (m * m * c <= avail) lo = m; else hi = m;
-      }
-      cs[i] = lo;
-    }
+    const LS = aiLineSpeeds(track, rl);
+    const cs = LS.cs;
+    track._lineKappa = LS.kap;
+    track._lineVariants = { '1|1': LS };
     track._cornerSpeed = cs;
     track._csKey = 'line';
   }
@@ -129,13 +214,13 @@ class AIDriver {
   // Cached per (pace, decel, traction); recomputed only when grip shifts.
   speedProfile(pace, brakeFac, tractionMul) {
     const t = this.track, N = t.n, seg = t.length / N;
-    const cs = t._cornerSpeed;
+    const cs = this._cs || t._cornerSpeed;
     // Quantise the inputs into coarse buckets so the O(N) rebuild fires only
     // when grip really shifts (a few times a lap at most), not every frame.
     // brakeFac / tractionMul / pace all move slowly (grip, tyre temp, wetness);
     // the profile itself is a global plan, so nothing here may depend on the
     // car's instantaneous speed or the key would churn every frame.
-    const key = (Math.round(pace * 80) * 1e6) + (Math.round(brakeFac * 200) * 1e3) + Math.round(tractionMul * 40);
+    const key = (Math.round(pace * 400) * 1e7) + (Math.round(brakeFac * 200) * 1e4) + Math.round(tractionMul * 40) * 10 + (this._csQ || 0) * 1e-6;
     if (this._prof && this._profKey === key) return this._prof;
     this._profKey = key;
     const v = this._prof && this._prof.length === N ? this._prof : new Float64Array(N);
@@ -147,17 +232,28 @@ class AIDriver {
     // T14, Monaco). Below ~40 m/s the optimism is taken back out, fully by 20.
     for (let i = 0; i < N; i++) {
       const slow = Math.max(0, Math.min(1, (40 - cs[i]) / 20));
-      v[i] = Math.min(92, cs[i] * pace * (1 - SLOW_CUT * slow));
+      v[i] = Math.min(115, cs[i] * pace * (1 - SLOW_CUT * slow));
     }
     // backward pass: never carry more speed than we can brake off for what's
     // ahead. Braking capability is downforce-limited, so it rises with speed at
     // each point (18 m/s^2 low, up to 58 flat out) — computed per segment from
     // the profile's own speed, then scaled by the slow grip/skill/diff factor.
+    const bDf = 0.005 * (t.aeroDf || 1), cDrag = 0.0006 * (t.aeroDrag || 1);
     for (let s = 0; s < 2; s++)
       for (let i = N - 1; i >= 0; i--) {
         const j = (i + 1) % N;
-        const dec = brakeGripAt(v[i], this.track.aeroDf) * brakeFac;
-        const cap = Math.sqrt(v[j] * v[j] + 2 * dec * seg);
+        // + aero drag and rolling resistance, which slow the car on top of the
+        // brakes (BUILD 107: the plan used to ignore them — ~5 m/s^2 at 300 km/h)
+        // evaluated at the speed the car would actually have here (from the
+        // point ahead) — not at v[i], which before this pass is still the raw
+        // corner limit (on a straight: 150 m/s) and overstated both the
+        // downforce braking and the drag (BUILD 107)
+        // (inlined brakeGripAt + drag: this loop runs N×2 per re-plan)
+        const vj = v[j], vj2 = vj * vj;
+        const d0 = Math.min(58, 15 + bDf * vj2) * brakeFac + cDrag * vj2 + 0.4;
+        const u2 = vj2 + 2 * d0 * seg;
+        const dec = Math.min(58, 15 + bDf * u2) * brakeFac + cDrag * u2 + 0.4;
+        const cap = Math.sqrt(vj2 + 2 * dec * seg);
         if (cap < v[i]) v[i] = cap;
       }
     // forward pass: never demand more speed than the engine can build from the
@@ -183,7 +279,7 @@ class AIDriver {
         // cars off at Austria's fast corners, at every difficulty.
         const circle = Math.sqrt(Math.max(0, 1 - latFrac * latFrac));
         const tractive = Math.min((8.6 + 0.22 * Math.min(u, 25)) * tractionMul, 470 / Math.max(u, 10));
-        const acc = tractive * circle - (0.0006 * (this.track.aeroDrag || 1) * u * u + 0.4);
+        const acc = tractive * circle - (cDrag * u * u + 0.4);
         const cap = Math.sqrt(Math.max(1, u * u + 2 * Math.max(0.3, acc) * seg));
         if (cap < v[i]) v[i] = cap;
       }
@@ -226,7 +322,20 @@ class AIDriver {
     // 1.05: the global velocity profile plans a hair more conservatively than
     // the old per-frame scan (it never carries speed it can't justify), so a
     // small corner-cap lift restores hotlap pace without any off-track cost.
-    const pace = this.paceMul * caution * Math.sqrt(gripFac * (car.tempMul || 1) * (car.tyreMul || 1) * (typeof effGripBonus === 'function' ? effGripBonus(car.gripBonus) : (car.gripBonus || 1))) * 1.05;
+    const sk = this.skill;
+    // the line this driver drives (and corner speeds planned for it)
+    const dmgMul = (1 - Math.min(0.55, (car.dmgWing || 0) * 0.30 + (car.dmgFloor || 0) * 0.28)) * (1 - (car.puncture || 0) * 0.45);
+    const gripNow = dmgMul * gripFac * (car.tempMul || 1) * (car.tyreMul || 1) * (typeof effGripBonus === 'function' ? effGripBonus(car.gripBonus) : (car.gripBonus || 1));
+    // plan for falling grip at once, rising grip only once it has really moved
+    if (this._planGrip == null || gripNow < this._planGrip * 0.997 || gripNow > this._planGrip * 1.01) this._planGrip = gripNow;
+    const LD = (typeof aiLineData === 'function' && t._raceLine) ? aiLineData(t, sk.line, this._planGrip) : null;
+    if (LD) { this._cs = LD.cs; this._csQ = Math.round(sk.line * 20) * 1000 + Math.round(this._planGrip * 200); }
+    // corner speed = the car's real limit (its actual grip right now: tyres,
+    // temperature, wet) x how much of it this driver dares to use
+    const LIM = this._lim || (this._lim = aiLimitFor(t.def && t.def.id));
+    // (corner speeds above are already solved for the grip; pace is how much of
+    // that the driver carries. Without a pre-built line, fall back to scaling.)
+    const pace = sk.corner * LIM.corner * (AI_CTRL.limScale || 1) * (this._lapVar || 1) * caution * (LD ? 1 : Math.sqrt(gripNow));
 
     // ---- speed planning: scan braking distance ahead ----
     // Braking is the AI's main pace limiter. The car can physically brake at
@@ -244,14 +353,50 @@ class AIDriver {
     // in the wet the planner never assumes more than 95% of it — otherwise it
     // plans braking the car can't deliver and overshoots corners in the rain.
     const wetLong = 0.35 + 0.65 * gripFac;
-    let brakeFac = (0.62 + this.driver.skill * 0.20) *
-                   Math.min(1.12, Math.pow(this.diff, 2)) * wetLong * 1.15;
-    if (wetness > 0.05) brakeFac = Math.min(brakeFac, wetLong * 0.95);
+    // braking: the car's real capability (ABS on, like yours) x how deep this
+    // driver dares to brake
+    const ABS_EFF = (car.assists && car.assists.absEff) || 0.94;
+    let brakeFac = sk.brake * LIM.brake * (AI_CTRL.brakeLimScale || 1) * ABS_EFF * wetLong;
+    if (wetness > 0.05) brakeFac = Math.min(brakeFac, wetLong * 0.95 * ABS_EFF);
     // Precomputed velocity profile: the target speed at every point of the lap,
     // solved once (corner cap -> braking -> acceleration) instead of scanned
     // every frame. tractionMul feeds the wet traction drop into the forward pass.
-    const tractionMul = 0.55 + 0.45 * gripFac;
-    const prof = this.speedProfile(pace, brakeFac, tractionMul);
+    const tractionMul = (0.55 + 0.45 * gripFac) * sk.exit;
+    // Plan with a STEADY grip estimate. Tyre temperature moves all the time;
+    // re-planning the whole lap at every flicker made the braking plan jump
+    // mid-braking-zone (a corner suddenly 2% slower = brake NOW), asking for
+    // more deceleration than the car has — the China T14 / Canada hairpin
+    // overshoots. Re-plan only when the grip has really moved (>1.2%).
+    // (asymmetric: grip falling — worn or cooling tyres — is planned for at
+    // once; only rises wait for a real change. Planning on stale, higher grip
+    // ran worn-tyre cars wide at Pouhon lap after lap.)
+    if (this._planPace == null || pace < this._planPace * 0.996 || pace > this._planPace * 1.012) this._planPace = pace;
+    if (this._planBrake == null || brakeFac < this._planBrake * 0.996 || brakeFac > this._planBrake * 1.012) this._planBrake = brakeFac;
+    if (this._planTr == null || Math.abs(tractionMul - this._planTr) > 0.02 * this._planTr) this._planTr = tractionMul;
+    // consistency: a new lap, a slightly different commitment (sigma)
+    if (car.lap !== this._lvLap) {
+      this._lvLap = car.lap;
+      let g = 0; for (let q = 0; q < 6; q++) g += Math.random(); g = (g - 3) / 0.7071;   // ~N(0,1)
+      // one-sided: an off lap is SLOWER than the driver's best, never beyond
+      // the car's limit (a +1.5% lap at Pouhon put cars on the grass)
+      this._lapVar = 1 - Math.min(2.5, Math.abs(g)) * (sk.sigma || 0);
+    }
+    // mistakes: arriving at a braking zone, a less skilled driver sometimes
+    // gets it wrong — brakes too late (runs wide, locks up) or too early
+    let pm = 1, bm = 1;
+    if (this._mist && this._mist.t > 0) { this._mist.t -= dt; pm = this._mist.pm; bm = this._mist.bm; }
+    else if (sk.mistake > 0 && !AI_CTRL.noMistake && this.laneBlend >= 1 && this._prof) {
+      const ahead = this._prof[(idx + Math.ceil(Math.max(30, v * 1.2) / (t.length / N))) % N];
+      const braking = ahead < v - 8;
+      if (braking && !this._inBz) {
+        this._inBz = true;
+        if (Math.random() < sk.mistake) {
+          this._mist = Math.random() < 0.6 ? { t: 3.5, pm: 1.03, bm: 1.10, kind: 'late' } : { t: 3.0, pm: 0.96, bm: 0.85, kind: 'early' };
+          pm = this._mist.pm; bm = this._mist.bm; this.mistakes = (this.mistakes || 0) + 1;
+        }
+      } else if (!braking) this._inBz = false;
+    }
+    const prof = this.speedProfile(this._planPace * pm, this._planBrake * bm, this._planTr);
     // aim a touch ahead so the car reacts to the corner it's arriving at, not
     // the one under its wheels — the equivalent of the old exit-release logic.
     // The backward pass already guarantees prof[idx] is a speed we can brake off
@@ -285,8 +430,8 @@ class AIDriver {
     // Top speed. DRS and the tow both raise the ceiling, otherwise the AI
     // would sit in another car's wake at its own still-air top speed and
     // never complete a pass the physics is already handing it.
-    vAllow = Math.min(vAllow, (80 + this.driver.skill * 8 + (this.diff - 1) * 30) * Math.cbrt(1 / (t.aeroDrag || 1))
-      * (0.88 + 0.12 * gripFac) + (car.drsOpen ? 8 : 0) + (car.tow || 0) * 6);
+    // (BUILD 107: no separate AI top-speed figure any more — the physics' power
+    // and drag decide top speed for the AI exactly as for you)
 
     // ---- base lane = racing line (clean air) ----
     // Look-ahead distance for the pursuit target. A long peek made the car cut
@@ -297,7 +442,8 @@ class AIDriver {
     const lookM = Math.min(40, Math.max(9, v * 0.40));
     const kAhead = (idx + Math.ceil(lookM / (t.length/N))) % N;
     const edge = t.width/2 - 1.6;
-    const rl = t._raceLine;
+    const lineEdge0 = t.width / 2 - 0.5;
+    const rl = (LD && LD.rl) || t._raceLine;
     let baseLane = rl ? rl[kAhead] : this.laneOffset;
     if (this.laneBlend < 1) {
       // 12 s to come fully onto the racing line
@@ -408,7 +554,7 @@ class AIDriver {
       // distance to the next braking zone (where the plan sheds 8+ m/s)
       let dBrake = 1e9;
       for (let q = 1; q * segM < 220; q += 2) { if (prof[(idx + q) % N] < v - 8) { dBrake = q * segM; break; } }
-      const cornering = cs[idx] < 90;
+      const cornering = cs[idx] < 90 || (this._latDem || 0) > 10;
       const backmarker = aheadLaps < 0;                          // a car we're lapping
       const pace = backmarker || closing > 0.7 || car.drsOpen || (car.tow || 0) > 0.4 || (huntingRival && closing > 0.3);
       const overlapAhead = aheadGap < carLen * 0.67;            // our nose past its rear third
@@ -433,7 +579,7 @@ class AIDriver {
           // abort: not alongside by the time braking starts, the move is over
           const late = !backmarker && dBrake < Math.max(18, v * 0.35) && !overlapAhead;
           if (late || at.t > (backmarker ? 20 : 8) || closing < -3) { this.attack = null; this.attackCool = backmarker ? 0.5 : 2.5; }
-          else combatLane = at.side * edge * (at.side === insideSign ? 1 : 0.85);
+          else if (!((this._latDem || 0) > 10 && !overlapAhead)) combatLane = at.side * edge * (at.side === insideSign ? 1 : 0.85);
         }
       }
       // until we're properly alongside, keep the right to stop behind it:
@@ -493,6 +639,7 @@ class AIDriver {
       if (this.blueHold <= 0) this.blueBy = null;
     }
     let targetLane = combatLane != null ? combatLane : baseLane;
+    this._dbgCombat = combatLane;
     // pit approach (set by main.js): hold the pit-lane side of the track
     if (this.laneOverride != null) targetLane = this.laneOverride;
     targetLane = Math.max(-edge, Math.min(edge, targetLane));
@@ -503,14 +650,18 @@ class AIDriver {
     // on the road, back out of it instead of squeezing.
     if (this.laneOverride == null) {
       const myLat = t.lateral(car.x, car.z, car.trackIdx);
-      const SEP = 3.4;
+      const SEP = AI_CTRL.sep || 3.4;
       for (const o of allCars) {
         if (o === car || o.finished || o.dead || o.inPit) continue;
         const g = roadGap(o);
         if (Math.abs(g) > 6.5) continue;
         if (Math.hypot(o.x - car.x, o.z - car.z) > 12) continue;
         const oLat = t.lateral(o.x, o.z, o.trackIdx);
+        // a car alongside: steer by the absolute lane until it's clear (the
+        // line's own swing across the road must not carry us into it)
+        if (Math.abs(g) < 5.5 && Math.abs(myLat - oLat) < SEP + 1.2) this._guard = 0.6;
         if (Math.abs(targetLane - oLat) >= SEP) continue;
+        this._guard = 0.6;
         const side = Math.sign(myLat - oLat) || (myLat >= 0 ? 1 : -1);
         const want = oLat + side * SEP;
         if (Math.abs(want) <= edge + 0.4) targetLane = want;
@@ -522,7 +673,61 @@ class AIDriver {
       }
     }
     this.laneOffsetNow = this.laneOffsetNow == null ? targetLane : this.laneOffsetNow;
-    this.laneOffsetNow += (targetLane - this.laneOffsetNow) * Math.min(1, 3*dt);
+    // (moving across for the pit entry at speed: gently — with the AI on the
+    // same grip as you, a 6 m dart at 220 km/h slid it off at Parabolica)
+    const laneRate = this.laneOverride != null && v > 40 ? 1.4 : (this._guard > 0 ? (AI_CTRL.guardRate || 3) : 3);
+    this.laneOffsetNow += (targetLane - this.laneOffsetNow) * Math.min(1, laneRate * dt);
+    // the deliberate offset from the racing line (a move, a defence, room for a
+    // car alongside), smoothed on its own — so it carries along the line's
+    // shape without picking up the lag of following the line itself
+    // (bounded: holding a lane while the line swings 7 m across the road for
+    // the next corner stretched it to the far side, and the car followed it
+    // off — Les Combes on lap 1. Without a car alongside, rejoin the line briskly.)
+    { // through corners keep close to the line (a car alongside is given room
+      // by the speed plan below, not by leaving the line for the far side);
+      // the big lane changes for a move happen on the straights
+      // a "bend" by how hard the line is turning at this speed — flat-out
+      // sweepers (Eau Rouge, Pouhon, 130R) count, not just slow corners
+      const kapL = (LD && LD.kap) || t._lineKappa;
+      let latDem = 0;
+      if (kapL) for (let q = 0; q <= 3; q++) { const kk = (idx + Math.round(q * (kAhead - idx + N) % N / 3)) % N; latDem = Math.max(latDem, v * v * Math.abs(kapL[kk])); }
+      this._latDem = latDem;
+      const maxRel = latDem > 14 ? 1.2 : latDem > 6 ? 2.2 : 3.5;
+      const want = Math.max(-maxRel, Math.min(maxRel, rl ? targetLane - rl[kAhead] : 0));
+      const rr = this._guard > 0 ? (AI_CTRL.guardRate || 3) : (combatLane != null ? 3 : 5);
+      this._relOff = this._relOff == null ? want : this._relOff + (want - this._relOff) * Math.min(1, rr * dt); }
+    // Off the racing line in a corner (alongside another car, a move, a
+    // defence) the car is on a different radius — on the inside of a hairpin a
+    // much TIGHTER one. Plan the speed for the lane actually being driven, a
+    // second or so ahead, with the braking to get there (BUILD 107: a car
+    // squeezed onto the inside used to carry racing-line speed, run wide and
+    // lean on the car outside it).
+    if (rl && Math.abs(this._relOff || 0) > 0.6) {
+      const segQ = t.length / N, span = Math.ceil(Math.max(40, v * 1.4) / segQ);
+      const latK = 17.6, aeroK = 0.0104 * (t.aeroDf || 1), capL = 53 * (t.aeroDf || 1);
+      const gScale = (this._planGrip || 1) * caution * caution;               // the car's grip right now
+      const dec = brakeGripAt(Math.max(v, 1), t.aeroDf) * 0.85 * (car.assists && car.assists.absEff || 0.94);
+      for (let q = 0; q < span; q += 3) {
+        const k = (idx + q) % N, kc = t.curv[k];
+        if (Math.abs(kc) < 2e-3) continue;
+        const laneK = Math.max(-lineEdge0, Math.min(lineEdge0, rl[k] + this._relOff));
+        const R = 1 / Math.abs(kc) - laneK * Math.sign(kc);
+        const Rl = 1 / Math.abs(kc) - rl[k] * Math.sign(kc);
+        if (R >= Rl - 0.3) continue;                      // not tighter than the line there
+        // closed form of v²/R = min(capL, latK + aeroK·v²)·g (bisection only
+        // when the steering lock, not grip, is the limit — hairpins)
+        const g2 = gScale * sk.corner * sk.corner, Rm = Math.max(1, R);
+        const den = 1 / Rm - aeroK * g2;
+        let lo = Math.min(100, Math.sqrt(capL * g2 * Rm), den > 1e-9 ? Math.sqrt(latK * g2 / den) : 100);
+        if (typeof steerLockAt === 'function' && R < 3.2 / Math.tan(steerLockAt(lo))) {
+          let a = 3, b = lo;
+          for (let it = 0; it < 12; it++) { const m = (a + b) / 2; if (R >= 3.2 / Math.tan(steerLockAt(m))) a = m; else b = m; }
+          lo = a;
+        }
+        const cap = Math.sqrt(lo * lo + 2 * dec * q * segQ);
+        if (cap < vAllow) vAllow = cap;
+      }
+    }
     // Off-line penalty: the velocity profile's corner speeds assume the racing
     // line. A car diving down the inside or running a defensive line through a
     // corner is on a tighter radius and must carry less speed, or it runs wide
@@ -543,7 +748,9 @@ class AIDriver {
     // white line so it self-corrects before it runs out of track.
     {
       const latNow = Math.abs(t.lateral(car.x, car.z, car.trackIdx));
-      const warn = t.width/2 - 1.2;
+      // (BUILD 107: the line now uses the full width — the outside wheels on
+      // the kerb — so the guard starts just past the white line, not 1.2 m inside it)
+      const warn = t.width/2 + AI_CTRL.warn;
       if (latNow > warn) {
         const over = Math.min(1, (latNow - warn) / 1.6);
         vAllow = Math.min(vAllow, Math.max(14, v * (1 - 0.30 * over)));
@@ -557,22 +764,71 @@ class AIDriver {
     // pit approach speed cap (set by main.js): arrive at the pit entry slowly
     if (this.speedCap != null) vAllow = Math.min(vAllow, this.speedCap);
 
-    // ---- steering: pure pursuit toward the chosen lane ----
-    const lane = Math.max(-edge, Math.min(edge, this.laneOffsetNow));
-    const target = t.posAt(kAhead, lane);
+    // ---- steering ----
+    // BUILD 107: curvature FEED-FORWARD from the racing line (turn the wheel as
+    // much as the line bends, scaled by what full lock gives right now — the
+    // grip the driver feels) plus pure-pursuit FEEDBACK at a short look-ahead
+    // to correct the error. The old pure pursuit alone needed a long look-ahead
+    // to be stable, which cut every corner (early apex, 1-2 m wide on exit), and
+    // its 88% steer cap meant it could never use the car's full grip.
+    // the racing line may use the road out to the kerbs; the pit approach keeps
+    // the old margin (the pit-entry wall is right there)
+    const lineEdge = this.laneOverride != null ? edge : t.width / 2 - 0.5;
+    const lane = Math.max(-lineEdge, Math.min(lineEdge, this.laneOffsetNow));
+    const segL = t.length / N;
+    const onLine = combatLane == null && this.laneOverride == null && this.laneBlend >= 1;
+    const lookFB = Math.min(AI_CTRL.lookMax, Math.max(AI_CTRL.lookMin, v * AI_CTRL.look));
+    const kFB = (idx + Math.ceil(lookFB / segL)) % N;
+    // aim at the chosen lane, carried along the SHAPE of the line: the offset
+    // from the racing line we want (zero on the line; the side guard, a move,
+    // a defence or the pit approach shift it) applied at the feedback point
+    const relOff = this._relOff || 0;
+    if (this._guard > 0) this._guard -= dt;
+    const guarded = this._guard > 0;
+    const laneFB = rl && this.laneOverride == null && !guarded ? Math.max(-lineEdge, Math.min(lineEdge, rl[kFB] + relOff)) : lane;
+    const target = t.posAt(kFB, laneFB);
     const dx = target.x - car.x, dz = target.z - car.z;
     const targetAng = Math.atan2(dx, dz);
     let da = targetAng - car.heading;
     while (da > Math.PI) da -= 2*Math.PI;
     while (da < -Math.PI) da += 2*Math.PI;
-    // steer maps to a FRACTION of available grip, so anything past ~0.91
-    // makes the physics scrub speed. Cap below that: the AI now rides the
-    // limit instead of constantly over-demanding it and bleeding speed.
-    // ...but at hairpin speeds the scrub hardly matters and the cap was the
-    // limit: 0.88 couldn't turn a car tighter than ~7m at 12 m/s, and the line
-    // through China T14 needs ~6.5m. Blend up to 0.98 below ~25 m/s.
-    const STEER_CAP = 0.88 + 0.10 * Math.max(0, Math.min(1, (25 - v) / 10));
-    let steer = Math.max(-STEER_CAP, Math.min(STEER_CAP, da * 3.4));
+    let ff = 0;
+    const kap = LD ? LD.kap : t._lineKappa;
+    if (kap && car._yawCap > 1e-3 && v > 3) {
+      const kFF = (idx + Math.ceil(Math.max(1, v * AI_CTRL.preview) / segL)) % N;
+      ff = (v * kap[kFF]) / car._yawCap * (this.laneOverride == null && !guarded ? 1 : AI_CTRL.ffOff);
+    }
+    let steer = Math.max(-1, Math.min(1, ff + da * AI_CTRL.gain));
+    // In traffic — a car alongside, racing for position, the grid fan-out or
+    // the pit approach — steer the calm way: aim at the chosen lane a long way
+    // ahead (pure pursuit, no line feed-forward) so the car holds its lane and
+    // gives room instead of following the racing line's swing across the road.
+    if (AI_CTRL.traffic && (AI_CTRL.forceTraffic || guarded || combatLane != null || this.laneBlend < 1 || this.laneOverride != null)) {
+      const lookT = Math.min(40, Math.max(9, v * 0.40));
+      const kT = (idx + Math.ceil(lookT / segL)) % N;
+      const tgt = t.posAt(kT, lane);
+      let d2 = Math.atan2(tgt.x - car.x, tgt.z - car.z) - car.heading;
+      while (d2 > Math.PI) d2 -= 2*Math.PI;
+      while (d2 < -Math.PI) d2 += 2*Math.PI;
+      let cap = 0.92 + 0.08 * Math.max(0, Math.min(1, (25 - v) / 10));
+      // BUILD 107: in a fast sweeper add the turn the lane itself needs
+      // (feed-forward from the centreline's curvature at this offset). Pursuit
+      // alone steered about half what Pouhon or Eau Rouge needs at 270 km/h and
+      // ran the car wide off the road. Slow corners and straights: unchanged.
+      const w = Math.max(0, Math.min(1, ((this._latDem || 0) - 6) / 8)) * (AI_CTRL.ffT != null ? AI_CTRL.ffT : 1);
+      if (w > 0 && t.curv && car._yawCap > 1e-3 && v > 3) {
+        const kM = (idx + Math.ceil(lookT * 0.5 / segL)) % N;
+        const kc = t.curv[kM], den = 1 - lane * kc;
+        if (den > 0.2) {
+          const kapLane = -kc / den;
+          d2 -= w * lookT * kapLane * 0.5;              // the angle pursuit sees when ON the lane
+          steer = w * (v * kapLane) / car._yawCap + d2 * 3.4;
+          cap += (1 - cap) * w;
+        } else steer = d2 * 3.4;
+      } else steer = d2 * 3.4;
+      steer = Math.max(-cap, Math.min(cap, steer));
+    }
+    if (AI_CTRL.debug) this._dbg = { ff, da, vAllow, kapNow: kap ? kap[idx] : 0 };
 
     // small human wobble
     this.noise += dt;
@@ -587,6 +843,30 @@ class AIDriver {
     else if (margin > 0) throttle = 0.65;   // feathering at the limit
     else if (margin > -0.6) throttle = 0.2; // hold speed through the corner
     else brake = Math.min(1, -margin * 0.45);
+    // BUILD 107: brake FEED-FORWARD. Braking only in proportion to the speed
+    // error meant the car needed ~2 m/s too much speed before the pedal was
+    // fully in, so it trailed its own braking plan by 20-30 km/h all the way
+    // into a hairpin and ran wide (the old AI hid that by planning 15% more
+    // braking than the car had). Now the pedal goes in for the deceleration the
+    // plan asks for a moment ahead (the pedal takes ~0.17 s to build).
+    {
+      const segB = t.length / N;
+      const look = Math.max(2, v * AI_CTRL.brakePreview);
+      const kB = (idx + Math.ceil(look / segB)) % N;
+      const vB = Math.min(prof[kB], vAllow);
+      const need = (v * v - vB * vB) / (2 * look);                 // m/s^2 the plan wants
+      const drag = 0.0006 * (t.aeroDrag || 1) * v * v + 0.4;          // what lifting alone gives
+      if (need > drag + 0.5 && !AI_CTRL.noBrakeFF) {
+        const cap = brakeGripAt(Math.max(v, 1), t.aeroDf) * (car.gripBonus || 1) * ((car.assists && car.assists.absEff) || 0.94);
+        let b = Math.min(1, (need - drag) / Math.max(1, cap) + Math.max(0, -margin) * 0.6);
+        // friction circle: mid-corner the tyres are busy turning — brake only
+        // with what's left (a driver modulates; slamming the pedal on a corner
+        // exit for the pit-lane limit sent cars off at Parabolica)
+        const latU = Math.min(1, car._latUse || 0);
+        b = Math.min(b, Math.max(0.15, Math.sqrt(Math.max(0, 1 - latU * latU))));
+        if (b > brake) { brake = b; throttle = 0; }
+      }
+    }
 
     // Off-track recovery. Previously this just eased the throttle, so a car
     // that ran wide kept travelling at speed across the grass — at China that

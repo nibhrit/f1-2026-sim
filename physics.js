@@ -24,7 +24,12 @@ let WET_BONUS_FADE = 0.6;
 // circle 0.6: the AI's planner brakes into turn-in a little; at full circle
 // strength it ran wide (Japan/Monaco/Qatar off-track, +2-8 s/lap). 0.6 costs
 // it ~0.1-0.3 s and keeps every difficulty clean.
-const AI_ASSISTS = { abs: true, steer: true, absEff: 1, circle: 0.6 };
+// BUILD 107: identical to the player's assisted car (ABS efficiency 0.94 like
+// yours — it used to be 1.0, i.e. 6% more braking than you could ever get).
+const AI_ASSISTS = { abs: true, steer: true, absEff: 0.94, circle: 0.6 };
+// front-wheel lock available at speed v (rad): high-speed values unchanged,
+// extra lock below ~110 km/h for hairpins (BUILD 107)
+function steerLockAt(v) { return 0.28 / (1 + v * 0.012) + 0.12 * Math.max(0, 1 - v / 30); }
 // Braking grip vs speed (m/s^2), fitted to real F1 data at Baku (Brembo):
 // Turn 1 334 -> 125 km/h in 1.85 s, Turn 3 315 -> 99 km/h in 2.0 s, ~110 m.
 // Downforce makes it ~5.9 g at 330 km/h, ~3.1 g at 200, ~1.9 g at 100. The old
@@ -346,17 +351,23 @@ class CarPhysics {
     let yawRate = 0;
     if (this.speed > 0.3) {
       const maxYawGrip = latAvail / Math.max(this.speed, 1);
-      const maxYawGeom = this.speed * Math.tan(0.28 / (1 + v * 0.012)) / 3.2; // full-lock geometry, wheelbase 3.2
+      // full-lock geometry, wheelbase 3.2. BUILD 107: more lock at hairpin speeds
+      // (below ~110 km/h): the old 0.28 rad gave a 12.3 m minimum radius, so
+      // NO car — player or AI — could follow a real racing line through the
+      // tightest hairpins (Monaco, Bahrain T1, China T14, COTA T1) and had to
+      // swing to the outside. Now ~10 m at hairpin speed, like a real F1 car.
+      const maxYawGeom = this.speed * Math.tan(steerLockAt(v)) / 3.2;
       if (A.steer) {
         // steering assist: the key asks for a FRACTION of the grip available,
         // so you can't over-drive the fronts — but braking still shrinks it
         // Full key = exactly the grip limit for the player, so a flat-out
         // corner costs no speed: the car turns as hard as the tyres allow and
         // that's it. (It used to ask for 110%, scrubbing speed and making the
-        // engine note dip every time you steered.) The AI's controller was
-        // tuned against the 110% ceiling, so it keeps it.
-        const ask = A === AI_ASSISTS ? 1.1 : 1.0;
-        const yawCap = Math.min(maxYawGrip * ask, maxYawGeom);
+        // engine note dip every time you steered.)
+        // BUILD 107: the AI gets exactly the same steering as you (it used to
+        // ask for 110% of the grip).
+        const yawCap = Math.min(maxYawGrip, maxYawGeom);
+        this._yawCap = yawCap;              // what full lock gives right now (the AI "feels" this, as you do)
         yawRate = this.steer * yawCap;
         const use = Math.abs(yawRate) / maxYawGrip;
         if (use > 1) {
