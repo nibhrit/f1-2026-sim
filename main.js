@@ -1508,6 +1508,11 @@ function startSession() {
           if (G.raceLaps > 20) {
             const lo = Math.ceil(G.raceLaps*0.35), hi = Math.floor(G.raceLaps*0.65);
             car.pitLap = lo + Math.floor(Math.random()*(hi - lo + 1));
+            // BUILD 108: never plan to run a set past where it falls away
+            // (softs used to run 10 laps on dead tyres to a random mid-race
+            // stop), and fit something for the second stint that lasts it
+            car.pitLap = Math.max(2, Math.min(car.pitLap, Math.floor(compoundLifeLaps(start) * (0.9 + 0.2 * Math.random()))));
+            if (compoundLifeLaps(car.pitCompound) < G.raceLaps - car.pitLap) car.pitCompound = aiCompoundFor(G.raceLaps - car.pitLap, start);
             // long races: ~45% of the field plans a two-stopper
             if (G.raceLaps >= 35 && Math.random() < 0.45) {
               const lo2 = Math.ceil(G.raceLaps*0.60), hi2 = Math.floor(G.raceLaps*0.82);
@@ -3469,6 +3474,37 @@ function suggestBoxTyre(c) {
   return (boxMustChange(c) && slick === c.phys.compound) ? (slick === 'hard' ? 'medium' : 'hard') : slick;
 }
 
+// BUILD 108: AI tyre strategy from how long each compound really lasts on
+// this track. Laps until a compound has lost ~0.08 grip (a clear pace drop —
+// ~3 s/lap), from its wear rate and the lap length.
+function compoundLifeLaps(name) {
+  const cw = COMPOUNDS[name];
+  if (!cw || !G.track) return 99;
+  return Math.max(2, 0.08 / cw.wearPerKm / (G.track.length / 1000));
+}
+// the softest dry compound that lasts `laps` (else the hardest), never `avoid`
+function aiCompoundFor(laps, avoid) {
+  for (const n of ['soft', 'medium', 'hard']) if (n !== avoid && compoundLifeLaps(n) >= laps) return n;
+  return avoid === 'hard' ? 'medium' : 'hard';
+}
+// Box now? Only when the tyres are finished AND fresh ones would win back
+// more than the stop costs (~22 s + a lap on cold tyres) over the laps left —
+// the call a real strategist makes. (Lap time moves ~0.3% per 1% of grip.)
+function aiWearStopDue(c) {
+  if (!/^(soft|medium|hard)$/.test(c.phys.compound) || c.phys.tyreLife > 0.15) return false;
+  const lapsLeft = G.raceLaps - c.phys.lap;
+  if (lapsLeft < 3) return false;
+  const owes = G.raceLaps > 20 && !c.pitted && !c.usedWet;
+  const nx = COMPOUNDS[aiCompoundFor(lapsLeft, owes ? c.phys.compound : null)];
+  const lapKm = G.track.length / 1000, lapT = c.bestLap || 90;
+  let gain = 0;
+  for (let k = 0; k < lapsLeft; k++) {
+    const gNew = Math.max(0.90, nx.grip - nx.wearPerKm * lapKm * (k + 0.5));
+    gain += Math.max(0, gNew - c.phys.tyreMul) * 0.3 * lapT;
+  }
+  return gain > 24;
+}
+
 function armPit(c) {
   c.pitArmed = true;
   // too late to get across to the pit side and slow down safely this lap?
@@ -4540,7 +4576,16 @@ function stepSim(dt) {
       if (pitsOpen && c.ai && !c.pitArmed && !c.pitted && c.pitLap && c.phys.lap >= c.pitLap) armPit(c);
       // a dry-race AI that somehow hasn't stopped by 3 laps from the end must
       // still make its mandatory stop (it would otherwise be disqualified)
-      if (pitsOpen && c.ai && !c.pitArmed && !c.pitted && !c.usedWet && c.phys.lap >= G.raceLaps - 3) { c.pitCompound = c.pitCompound || 'medium'; armPit(c); }
+      if (pitsOpen && c.ai && !c.pitArmed && !c.pitted && !c.usedWet && G.raceLaps > 20 && c.phys.lap >= G.raceLaps - 3) { c.pitCompound = c.pitCompound || 'medium'; armPit(c); }
+      // BUILD 108: worn out with too many laps left — box now (any race length;
+      // races of 20 laps or fewer had every AI stop 3 laps from the end)
+      if (pitsOpen && c.ai && !c.pitArmed && aiWearStopDue(c)) {
+        const owes = G.raceLaps > 20 && !c.pitted && !c.usedWet;
+        const left = G.raceLaps - c.phys.lap;
+        c.pitCompound = aiCompoundFor(left, owes ? c.phys.compound : null);
+        if (c.pitted && c.pitLap2 && !c.pitted2) c.pitted2 = true;   // this IS the second stop
+        armPit(c);
+      }
       // planned second stop for AI two-stoppers in long races
       if (pitsOpen && c.ai && !c.pitArmed && c.pitted && !c.pitted2 && c.pitLap2 && c.phys.lap === c.pitLap2) {
         armPit(c); c.pitted2 = true;
@@ -4731,5 +4776,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 107';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 108';
 })();

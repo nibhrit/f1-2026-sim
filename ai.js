@@ -390,8 +390,14 @@ class AIDriver {
       const braking = ahead < v - 8;
       if (braking && !this._inBz) {
         this._inBz = true;
-        if (Math.random() < sk.mistake) {
-          this._mist = Math.random() < 0.6 ? { t: 3.5, pm: 1.03, bm: 1.10, kind: 'late' } : { t: 3.0, pm: 0.96, bm: 0.85, kind: 'early' };
+        // (BUILD 108: rarer for the best but never zero, twice as likely with a
+        // car filling the mirrors; a late one now really goes PAST the limit —
+        // it was relative to the driver's own margin, so a rookie's "mistake"
+        // was a better corner than usual)
+        if (Math.random() < (sk.mistake + 0.0003) * (this._pressured ? 2 : 1)) {
+          this._mist = Math.random() < 0.6
+            ? { t: 3.5, pm: 1.015 / (sk.corner || 1), bm: 1.06 / (sk.brake || 1), kind: 'late' }
+            : { t: 3.0, pm: 0.96, bm: 0.85, kind: 'early' };
           pm = this._mist.pm; bm = this._mist.bm; this.mistakes = (this.mistakes || 0) + 1;
         }
       } else if (!braking) this._inBz = false;
@@ -600,10 +606,13 @@ class AIDriver {
     // never defend against a car that is lapping us — that's what blue
     // flags are for (and it has usually just been waved through)
     if (behind && behindLaps > 0) behind = null;
+    this._pressured = !!(behind && behindGap < 15);
     if (behind) {
       const attLat = t.lateral(behind.x, behind.z, behind.trackIdx);
       const overlap = 1 - Math.min(1, behindGap / carLen); // 1 = fully alongside
-      const attSide = Math.sign(attLat) || 1;
+      // (BUILD 108: his side of ME — was his side of the road, so with both
+      // cars on the same half "leaving room" could steer into him)
+      const attSide = Math.sign(attLat - myLatF) || 1;
       if (overlap >= 0.5) {
         // FIA: a car >=50% alongside is entitled to room — do not squeeze it off
         if (combatLane == null) combatLane = baseLane;
