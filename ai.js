@@ -501,8 +501,13 @@ class AIDriver {
     // second rule is for braking zones: the car ahead may be braking far harder
     // than 17 m/s^2 (5-6 g into turn 1), so plan to be able to stop in the room
     // it leaves — our stopping distance <= its stopping distance + the gap.
-    if (laneAhead) {
-      const minGap = 7;
+    // going round a slow car (BUILD 109): once our centre is a car's width to
+    // its side we're past its bodywork — stop following it; while still moving
+    // out, follow closer so the car keeps the rolling speed it needs to steer out
+    const dodgeCar = this._dodge ? this._dodge.car : null;
+    const dodgeClear = o => o === dodgeCar && Math.abs(t.lateral(o.x, o.z, o.trackIdx) - myLatF) > 2.7;
+    if (laneAhead && !dodgeClear(laneAhead)) {
+      const minGap = laneAhead === dodgeCar ? 5.8 : 7;
       const eff = Math.max(0, laneGap - minGap);
       vAllow = Math.min(vAllow, Math.sqrt(laneAhead.speed * laneAhead.speed + 2 * 17 * eff));
       const aL = laneAhead.decelNow || 0;
@@ -512,6 +517,74 @@ class AIDriver {
         vAllow = Math.min(vAllow, Math.sqrt(2 * aF * room));
       }
     }
+
+    // ---- a much slower car in our lane: go round it (BUILD 109) ----
+    // Someone bogs down off the line, or a car is crawling (damage, a spin):
+    // that's an obstacle, not a duel. A real driver jinks out from behind it
+    // straight away — the attack logic below waits for a straight and a
+    // braking zone (and is off for the grid fan-out), so the car directly
+    // behind a bad starter used to sit there while the other column streamed by.
+    // the lane with the most room round car `oc` (on side `side` if given):
+    // a three-wide gap between the grid columns counts — that's where real
+    // drivers go. null = no gap a car fits through.
+    const dodgeLane = (oc, gapAhead, side) => {
+      const oLat = t.lateral(oc.x, oc.z, oc.trackIdx);
+      const nearLat = [oLat];
+      for (const o of allCars) {
+        if (o === car || o === oc || o.finished || o.dead || o.inPit) continue;
+        const g = roadGap(o);
+        if (g > -10 && g < gapAhead + 15) nearLat.push(t.lateral(o.x, o.z, o.trackIdx));
+      }
+      let best = null, bestScore = -1e9;
+      for (let cand = -edge - 0.4; cand <= edge + 0.4; cand += 0.25) {
+        if (side && Math.sign(cand - oLat) !== side) continue;
+        let clear = 1e9;
+        for (const l of nearLat) clear = Math.min(clear, Math.abs(l - cand));
+        if (clear < 2.9) continue;
+        const score = Math.min(clear, 5) - 0.35 * Math.abs(cand - myLatF);
+        if (score > bestScore) { bestScore = score; best = cand; }
+      }
+      return best;
+    };
+    if (this._dodge) {
+      const d = this._dodge; d.t -= dt;
+      const g = roadGap(d.car);
+      // (held until we're past it — dropping it alongside swung the car back
+      // onto its line and into the slow car)
+      if ((d.t <= 0 && (g > 12 || g < -6)) || g < -6 || g > 70 || d.car.finished || d.car.dead) this._dodge = null;
+      else {
+        // keep to a gap that's really there as the cars around move: same
+        // side, re-picked every frame; none left = tuck back in behind it
+        const oL = t.lateral(d.car.x, d.car.z, d.car.trackIdx);
+        const lane = dodgeLane(d.car, Math.max(0, g), Math.sign(d.lane - oL) || 1);
+        if (lane != null) d.lane = lane;
+        else if (g > 6) this._dodge = null;   // (alongside already: hold the lane we have)
+      }
+    }
+    if (!AI_CTRL.noDodge && !this._dodge && laneAhead && this.laneOverride == null && laneGap < Math.max(30, v * 1.6)) {
+      // "much slower" = well below the pace of the cars around it (off the
+      // grid everyone is slow at first; a bad starter is slow RELATIVE to the
+      // field), or, with nobody else near, well below what the road allows
+      let sum = 0, n = 0;
+      for (const o of allCars) {
+        if (o === car || o === laneAhead || o.finished || o.dead || o.inPit) continue;
+        const g = roadGap(o);
+        if (g > -30 && g < 40) { sum += o.speed; n++; }
+      }
+      const ref = n >= 2 ? sum / n : prof[laneAhead.trackIdx];
+      const vs = laneAhead.speed;
+      // (off the grid — the fan-out — a car clearly down on the cars around
+      // it is already one to go round: everyone else is accelerating)
+      const launch = this.laneBlend < 1;
+      // (and always well below what the road allows where IT is — a car
+      // slowing for a hairpin in a lap-1 queue is racing, not an obstacle)
+      const roadOK = vs < 0.7 * prof[laneAhead.trackIdx] - 1;
+      if (roadOK && (vs < 0.7 * ref - 1 || (launch && vs < 0.8 * ref - 0.5 && v > vs - 1)) && (laneAhead.decelNow || 0) < 8) {
+        const best = dodgeLane(laneAhead, laneGap, 0);
+        if (best != null) this._dodge = { lane: best, car: laneAhead, t: 4 };
+      }
+    }
+    if (this._dodge) combatLane = Math.max(-edge, Math.min(edge, this._dodge.lane));
 
     if (ahead) {
       const otherLat = t.lateral(ahead.x, ahead.z, ahead.trackIdx);
@@ -534,9 +607,9 @@ class AIDriver {
       // off early on a straight and only bites hard when we're genuinely closing
       // too fast. Using the 3-D distance (not just along-track progress) so it
       // holds through corners where the two differ.
-      const blocked = latOff < 3.0;
+      const blocked = latOff < (ahead === dodgeCar ? 2.7 : 3.0);
       if (blocked) {
-        const minGap = 7;                        // ~1.5 car lengths of buffer
+        const minGap = ahead === dodgeCar ? 5.8 : 7;   // ~1.5 car lengths of buffer
         const eff = Math.max(0, aheadGap - minGap);
         const DEC = 17;                          // firm, comfortably achievable
         const maxApproach = Math.sqrt(ahead.speed * ahead.speed + 2 * DEC * eff);
@@ -590,7 +663,7 @@ class AIDriver {
       }
       // until we're properly alongside, keep the right to stop behind it:
       // the following brake applies even while offset for a move
-      if (!blocked && !overlapAhead && !(backmarker && latOff > 3.6) && (dBrake < 60 || cornering)) {
+      if (!blocked && !overlapAhead && !(backmarker && latOff > 3.6) && (dBrake < 60 || cornering) && !(this._dodge && this._dodge.car === ahead)) {
         const eff = Math.max(0, aheadGap - 4);
         vAllow = Math.min(vAllow, Math.sqrt(ahead.speed * ahead.speed + 2 * 15 * eff));
       }
@@ -617,7 +690,7 @@ class AIDriver {
         // FIA: a car >=50% alongside is entitled to room — do not squeeze it off
         if (combatLane == null) combatLane = baseLane;
         combatLane -= attSide * 0.7; // yield a little space on the attacker's side
-      } else if (overlap > (this.rivalTarget && behind === this.rivalTarget ? 0.05 : 0.2)) {
+      } else if (!this._dodge && this.laneBlend >= 1 && overlap > (this.rivalTarget && behind === this.rivalTarget ? 0.05 : 0.2)) {
         combatLane = insideSign * edge * 0.6; // one move: cover the inside (earlier vs the rival)
       }
     }
@@ -652,6 +725,21 @@ class AIDriver {
     // pit approach (set by main.js): hold the pit-lane side of the track
     if (this.laneOverride != null) targetLane = this.laneOverride;
     targetLane = Math.max(-edge, Math.min(edge, targetLane));
+    // Don't cut back across the nose of a much slower car ahead (BUILD 109): a
+    // car beside a bad starter's lane, heading back to its line, swung right
+    // into it. Stay on our side of it until we're past.
+    if (this.laneOverride == null && !AI_CTRL.noCutBack) {
+      for (const o of allCars) {
+        if (o === car || o.finished || o.dead || o.inPit) continue;
+        const g = roadGap(o);
+        if (g <= 4 || g > 40) continue;
+        if (!((this.laneBlend < 1 && o.speed < v - 3) || o.speed < 0.7 * prof[o.trackIdx] - 1)) continue;
+        const oLat = t.lateral(o.x, o.z, o.trackIdx), dMe = myLatF - oLat;
+        if (Math.abs(dMe) < 2.0) continue;          // behind it: following / going round handle that
+        if (Math.abs(targetLane - oLat) < 2.9 || Math.sign(targetLane - oLat) !== Math.sign(dMe))
+          targetLane = Math.max(-edge - 0.4, Math.min(edge + 0.4, oLat + Math.sign(dMe) * 2.9));
+      }
+    }
     // Side guard. Whatever line it wants (racing line, a dive, the fan-out off
     // the grid), a car must not move across into one that is alongside it —
     // that is how a three-wide turn 1 became a train of contacts. Hold at least
@@ -659,7 +747,13 @@ class AIDriver {
     // on the road, back out of it instead of squeezing.
     if (this.laneOverride == null) {
       const myLat = t.lateral(car.x, car.z, car.trackIdx);
-      const SEP = AI_CTRL.sep || 3.4;
+      // (three-wide past a bad starter: real drivers squeeze to ~1 m apart)
+      const SEP = this._dodge ? Math.min(3.0, AI_CTRL.sep || 3.4) : (AI_CTRL.sep || 3.4);
+      // (BUILD 109: every car alongside bounds the lane at once — one at a
+      // time, the last car checked won, and a car three-wide between two
+      // others was pushed into one of them)
+      let lo = -edge - 0.4, hi = edge + 0.4, loT = lo, hiT = hi, anyNear = false;
+      const near = [];
       for (const o of allCars) {
         if (o === car || o.finished || o.dead || o.inPit) continue;
         const g = roadGap(o);
@@ -669,15 +763,20 @@ class AIDriver {
         // a car alongside: steer by the absolute lane until it's clear (the
         // line's own swing across the road must not carry us into it)
         if (Math.abs(g) < 5.5 && Math.abs(myLat - oLat) < SEP + 1.2) this._guard = 0.6;
-        if (Math.abs(targetLane - oLat) >= SEP) continue;
+        if (Math.abs(targetLane - oLat) < SEP) anyNear = true;
+        const side = (this._dodge && this._dodge.car === o ? Math.sign(this._dodge.lane - oLat) : 0) || Math.sign(myLat - oLat) || (myLat >= 0 ? 1 : -1);
+        if (side > 0) { lo = Math.max(lo, oLat + SEP); loT = Math.max(loT, oLat + 2.9); }
+        else { hi = Math.min(hi, oLat - SEP); hiT = Math.min(hiT, oLat - 2.9); }
+        near.push({ o, g });
+      }
+      if (anyNear || targetLane < lo || targetLane > hi) {
         this._guard = 0.6;
-        const side = Math.sign(myLat - oLat) || (myLat >= 0 ? 1 : -1);
-        const want = oLat + side * SEP;
-        if (Math.abs(want) <= edge + 0.4) targetLane = want;
+        if (lo <= hi) targetLane = Math.max(lo, Math.min(hi, targetLane));
+        else if ((this._dodge || this.laneBlend < 1) && loT <= hiT) targetLane = (loT + hiT) / 2;   // three-wide, tight
         else {
           // boxed in: stay put and drop back rather than squeeze through
           targetLane = myLat;
-          if (g > -1) vAllow = Math.min(vAllow, Math.max(10, o.speed - 1.5));
+          for (const n of near) if (n.g > -1) vAllow = Math.min(vAllow, Math.max(10, n.o.speed - 1.5));
         }
       }
     }
@@ -813,7 +912,8 @@ class AIDriver {
     // ahead (pure pursuit, no line feed-forward) so the car holds its lane and
     // gives room instead of following the racing line's swing across the road.
     if (AI_CTRL.traffic && (AI_CTRL.forceTraffic || guarded || combatLane != null || this.laneBlend < 1 || this.laneOverride != null)) {
-      const lookT = Math.min(40, Math.max(9, v * 0.40));
+      // (jinking out from behind a slow car: a short look, a sharp turn)
+      const lookT = Math.min(40, Math.max(this._dodge && v < 25 ? 4 : 9, v * 0.40));
       const kT = (idx + Math.ceil(lookT / segL)) % N;
       const tgt = t.posAt(kT, lane);
       let d2 = Math.atan2(tgt.x - car.x, tgt.z - car.z) - car.heading;
