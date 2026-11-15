@@ -287,7 +287,8 @@ class CarPhysics {
         }
         // traction limit: only heavy steering at very low speed costs drive
         if (v < 16 && Math.abs(this.steer) > 0.5) engine *= 0.85;
-        accel += engine * (onGrass ? 0.40 : 1) * (1 - this.puncture * 0.35);
+        // (BUILD 111: a mechanical failure fades the power to nothing)
+        accel += engine * (onGrass ? 0.40 : 1) * (1 - this.puncture * 0.35) * (1 - (this.powerCut || 0));
       }
     }
     // Brakes. Downforce-limited grip: savage at speed, much weaker once slow.

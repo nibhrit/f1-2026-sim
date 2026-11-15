@@ -767,12 +767,13 @@ const RACE_PREFS_KEY = 'outlap_race_prefs';
 const racePrefs = (() => {
   let p = {}; try { p = JSON.parse(localStorage.getItem(RACE_PREFS_KEY) || '{}'); } catch (e) {}
   return { difficulty: (p.difficulty >= 0.95 && p.difficulty <= 1.20) ? p.difficulty : 1.06,
-           raceDist: ['short', 'half', 'full'].includes(p.raceDist) ? p.raceDist : 'short' };
+           raceDist: ['short', 'half', 'full'].includes(p.raceDist) ? p.raceDist : 'short',
+           incidents: ['off', 'realistic', 'chaos'].includes(p.incidents) ? p.incidents : 'realistic' };
 })();
 function saveRacePrefs() { try { localStorage.setItem(RACE_PREFS_KEY, JSON.stringify(racePrefs)); } catch (e) {} }
 function diffText(d) { return diffTier(d) + ' · ' + Math.round((d - 0.95) / (1.20 - 0.95) * 100) + '%'; }
 // the settings every new session uses (a resumed race keeps its own)
-function applyRacePrefs() { G.difficulty = racePrefs.difficulty; G.raceDist = racePrefs.raceDist; }
+function applyRacePrefs() { G.difficulty = racePrefs.difficulty; G.raceDist = racePrefs.raceDist; G.incidents = racePrefs.incidents; }
 function syncDiffUI() {
   [['diff-slider', 'diff-label'], ['st-diff', 'st-diff-label']].forEach(([sid, lid]) => {
     const sl = document.getElementById(sid), lb = document.getElementById(lid);
@@ -781,6 +782,12 @@ function syncDiffUI() {
   });
 }
 function setRaceDist(d) { racePrefs.raceDist = d; G.raceDist = d; saveRacePrefs(); syncDistButtons(); }
+// BUILD 111: incidents (mechanical failures, VSC, safety car, red flags)
+function setIncidents(k) { racePrefs.incidents = k; G.incidents = k; saveRacePrefs(); syncIncButtons(); }
+function syncIncButtons() {
+  document.querySelectorAll('#inc-row [data-inc], #st-inc-row [data-inc]').forEach(x =>
+    x.classList.toggle('selected', x.dataset.inc === racePrefs.incidents));
+}
 (function initRacePrefs() {
   ['diff-slider', 'st-diff'].forEach(id => {
     const sl = document.getElementById(id); if (!sl) return;
@@ -792,6 +799,9 @@ function setRaceDist(d) { racePrefs.raceDist = d; G.raceDist = d; saveRacePrefs(
   applyRacePrefs();
   syncDiffUI();
   syncDistButtons();
+  syncIncButtons();
+  document.querySelectorAll('#inc-row [data-inc], #st-inc-row [data-inc]').forEach(b =>
+    b.addEventListener('click', () => setIncidents(b.dataset.inc)));
 })();
 // race distance selectors (main menu + season standings)
 document.querySelectorAll('#dist-row [data-dist], #st-dist-row [data-dist]').forEach(b => {
@@ -2170,6 +2180,16 @@ function endRaceNow() {
     if (c.phys.totalDist > 200 && now > 10) return L / (c.phys.totalDist / now) * 0.98;   // lap 1: average so far, a touch quicker than the start lap
     return c.bestLap || L / 55;
   };
+  // (BUILD 111) a car already failing, or one whose failure was coming before
+  // the flag, doesn't make it: it's out
+  for (const c of G.cars) {
+    if (c.finished || c.retired) continue;
+    const plan = c.failPlan && c.failPlan.at < total ? c.failPlan.type : null;
+    if (c.failing || plan) {
+      c.retired = true; c.phys.dead = true; c.phys.speed = 0; c.retireAt = now; c._rcSeen = true;
+      c.retireReason = (typeof rcFailName === 'function') ? rcFailName(c.failing ? c.failing.type : plan) : 'mechanical failure';
+    }
+  }
   const run = G.cars.filter(c => !c.finished && !c.retired);
   const proj = new Map();
   for (const c of run) {
@@ -2685,6 +2705,9 @@ function restoreRace(snap) {
   if (pl.bestLap) $('best-time').textContent = fmtTime(pl.bestLap);
 
   setupRival();
+  // race control: the neutralisation (if any), failures still to come
+  G.incidents = snap.incidents || G.incidents || 'realistic';
+  if (typeof rcRestore === 'function') rcRestore(G, snap.rc, snap.rcCars);
   // straight back to green — no countdown, no tyre picker
   G.countdown = null;
   G.raceStarted = true;
@@ -2736,6 +2759,9 @@ function saveRaceSnapshot() {
         boxCall: c.boxCall || null,
       })),
       raceFL: G.raceFL ? { time: G.raceFL.time, id: G.raceFL.id } : null,
+      incidents: G.incidents || 'realistic',
+      rc: typeof rcSnapshot === 'function' ? rcSnapshot(G) : null,
+      rcCars: typeof rcCarSnapshot === 'function' ? Object.fromEntries(G.cars.map(c => [c.driver.id, rcCarSnapshot(c)])) : null,
       player: {
         lapTimes: G.player.lapTimes, bestLap: G.player.bestLap, bestLapTyre: G.player.bestLapTyre,
         // the lap in progress (saves can now happen mid-lap)
@@ -3564,7 +3590,7 @@ function updatePitApproach(c) {
   // visible to the AI around it: a car slowing for the pit entry isn't an
   // obstacle to swerve round (BUILD 110)
   c.phys.pitBound = !!(c.pitArmed && !c.pitState && (c.pitArmLap == null || c.phys.lap >= c.pitArmLap));
-  if (!c.ai) return;
+  if (!c.ai || c.failing) return;          // (a failing car: race control is pulling it over)
   const a = pitApproachTarget(c);
   c.ai.laneOverride = a ? a.lane : null;
   c.ai.speedCap = a ? a.vCap : null;
@@ -3823,6 +3849,7 @@ function updateCountdown(dt) {
           c.ai.gridLane = null;
         }
       });
+      if (typeof rcInit === 'function') rcInit(G);   // BUILD 111: race control
       AUDIO.beep(880, 0.5, 0.16);
       showBanner("LIGHTS OUT AND AWAY WE GO!", 2.2, '#2ecc71');
       if (G.rivalCar) {
@@ -4361,11 +4388,12 @@ function updateDRS() {
   const L = t.length;
   const raceMode = G.mode === 'race';
   const rainedOff = G.weather && G.weather.wetness > 0.55; // race director call
+  const rcOff = raceMode && typeof rcDrsBlocked === 'function' && rcDrsBlocked(G);   // VSC / SC
   for (const c of G.cars) {
     const p = c.phys;
-    if (c.finished || c.retired || c.pitState || rainedOff) {
+    if (c.finished || c.retired || c.pitState || rainedOff || rcOff) {
       p.drsOpen = false; c.drsArmed = -1; c.drsShut = -1;
-      if (c.driver.player) { G.playerDrsState = 0; G.drsInfo = rainedOff ? 'DRS DISABLED — WET' : ''; }
+      if (c.driver.player) { G.playerDrsState = 0; G.drsInfo = rainedOff ? 'DRS DISABLED — WET' : rcOff ? 'DRS DISABLED' : ''; }
       continue;
     }
     if (c.drsArmed == null) { c.drsArmed = -1; c.drsShut = -1; }
@@ -4435,9 +4463,10 @@ function checkRetirements() {
       c.retired = true;
       c.phys.speed = 0;
       c.retireAt = G.simTime;
-      stewardMsg('RETIREMENT: ' + c.driver.id + ' — terminal damage', 'coll');
+      const why = c.retireReason || 'terminal damage';
+      stewardMsg('RETIREMENT: ' + c.driver.id + ' — ' + why.toLowerCase(), 'coll');
       if (c.driver.player) {
-        showBanner('RACE OVER — TERMINAL DAMAGE', 4, '#ff5c5c');
+        showBanner('RACE OVER — ' + why.toUpperCase(), 4, '#ff5c5c');
         // your race is done: let the rest play out on paper and go to results
         if (!G.endTimer) G.endTimer = setTimeout(() => { simulateRemainder(); endRace(); }, 4000);
       }
@@ -4557,6 +4586,7 @@ function stepSim(dt) {
   updateSlipstream();
   updateDRS();
   checkRetirements();
+  if (started && typeof rcStep === 'function') rcStep(G, dt);
   updateBlueFlags(dt);
   // qualifying clock: count down; drop the chequered flag at zero
   if (started && G.mode === 'qualify') {
@@ -4592,7 +4622,7 @@ function stepSim(dt) {
         forcePitComplete(c);
         continue;
       }
-      if (c.finished || c.pitState) continue;
+      if (c.finished || c.pitState || c.failing) continue;
       if (G.mode !== 'race' && c.ai) continue; // no AI stops outside a race
       if (/^(inter|wet)$/.test(c.phys.compound)) c.usedWet = true;   // waives the mandatory stop
       if (pitsOpen && c.ai && !c.pitArmed && !c.pitted && c.pitLap && c.phys.lap >= c.pitLap) armPit(c);
@@ -4800,5 +4830,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 110';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 111';
 })();

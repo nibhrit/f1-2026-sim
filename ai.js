@@ -611,7 +611,7 @@ class AIDriver {
       const launch = this.laneBlend < 1;
       // (and always well below what the road allows where IT is — a car
       // slowing for a hairpin in a lap-1 queue is racing, not an obstacle)
-      const roadOK = vs < 0.7 * prof[laneAhead.trackIdx] - 1;
+      const roadOK = vs < 0.7 * prof[laneAhead.trackIdx] - 1 && !(this.rcNeutral && vs > 0.5 * (this.rcCap || v));
       if (roadOK && !laneAhead.pitBound && (vs < 0.7 * ref - 1 || (launch && vs < 0.8 * ref - 0.5 && v > vs - 1)) && (laneAhead.decelNow || 0) < 8) {
         const best = dodgeLane(laneAhead, laneGap, 0);
         if (best != null) this._dodge = { lane: best, car: laneAhead, t: 4 };
@@ -670,7 +670,7 @@ class AIDriver {
       const backmarker = aheadLaps < 0;                          // a car we're lapping
       const pace = backmarker || closing > 0.7 || car.drsOpen || (car.tow || 0) > 0.4 || (huntingRival && closing > 0.3);
       const overlapAhead = aheadGap < carLen * 0.67;            // our nose past its rear third
-      if (lappingUs || this.laneBlend < 1) this.attack = null;
+      if (lappingUs || this.laneBlend < 1 || this.rcNeutral) this.attack = null;
       else {
         const a = this.attack;
         if (a && a.target !== ahead) this.attack = null;
@@ -778,6 +778,7 @@ class AIDriver {
         const g = roadGap(o);
         if (g <= 4 || g > 40) continue;
         if (!((this.laneBlend < 1 && o.speed < v - 3) || o.speed < 0.7 * prof[o.trackIdx] - 1)) continue;
+        if (this.rcNeutral && o.speed > 0.5 * (this.rcCap || v)) continue;
         const oLat = t.lateral(o.x, o.z, o.trackIdx), dMe = myLatF - oLat;
         if (Math.abs(dMe) < 2.0) continue;          // behind it: following / going round handle that
         if (Math.abs(targetLane - oLat) < 2.9 || Math.sign(targetLane - oLat) !== Math.sign(dMe))
@@ -922,6 +923,13 @@ class AIDriver {
 
     // pit approach speed cap (set by main.js): arrive at the pit entry slowly
     if (this.speedCap != null) vAllow = Math.min(vAllow, this.speedCap);
+    // Race Control (BUILD 111): VSC / safety car pace
+    if (this.rcCap != null) vAllow = Math.min(vAllow, this.rcCap);
+    // no overtaking while neutralised: the car ahead (any lane) sets the pace
+    // once we've caught it — unless it's in trouble or heading into the pits
+    if (this.rcNeutral && ahead && !ahead.pitBound && !ahead.inPit && ahead.speed > 0.5 * (this.rcCap || v)) {
+      vAllow = Math.min(vAllow, Math.sqrt(ahead.speed * ahead.speed + 2 * 6 * Math.max(0, aheadGap - 9)));
+    }
 
     // ---- steering ----
     // BUILD 107: curvature FEED-FORWARD from the racing line (turn the wheel as
