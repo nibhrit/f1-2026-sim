@@ -612,7 +612,7 @@ class AIDriver {
       // (and always well below what the road allows where IT is — a car
       // slowing for a hairpin in a lap-1 queue is racing, not an obstacle)
       const roadOK = vs < 0.7 * prof[laneAhead.trackIdx] - 1 && !(this.rcNeutral && vs > 0.5 * (this.rcCap || v));
-      if (roadOK && !laneAhead.pitBound && (vs < 0.7 * ref - 1 || (launch && vs < 0.8 * ref - 0.5 && v > vs - 1)) && (laneAhead.decelNow || 0) < 8) {
+      if ((roadOK || (this.rcUnlap && vs < v + 1)) && !laneAhead.pitBound && (this.rcUnlap || vs < 0.7 * ref - 1 || (launch && vs < 0.8 * ref - 0.5 && v > vs - 1)) && (laneAhead.decelNow || 0) < 8) {
         const best = dodgeLane(laneAhead, laneGap, 0);
         if (best != null) this._dodge = { lane: best, car: laneAhead, t: 4 };
       }

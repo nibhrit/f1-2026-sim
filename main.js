@@ -4609,6 +4609,7 @@ function stepSim(dt) {
   // cars in the pit are ghosts: other cars' AI ignores them entirely
   const physList = [];
   for (const c of G.cars) if (!c.pitState) physList.push(c.phys);
+  if (G.rc && G.rc.sc) physList.push(G.rc.sc.phys);     // the safety car: everyone sees it
 
   // pit arming / zone entry (zone = last 300m before the start/finish line).
   // Weather stops work at any race length; the mandatory strategy stop only
@@ -4829,6 +4830,7 @@ setInterval(() => {
 }, 100);
 
 window.__G = G; // debug handle
+G.__scene = scene;   // (race control adds the safety car to it)
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 111';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 112';
 })();
