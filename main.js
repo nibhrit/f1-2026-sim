@@ -3840,19 +3840,21 @@ function updateCountdown(dt) {
       lightsEl.style.display = 'none';
       G.countdown = null;
       G.raceStarted = true;
-      G.simTime = 0;
+      const redRestart = !!(G.rc && G.rc.redRestart);   // BUILD 113: standing restart after a red flag
+      if (!redRestart) G.simTime = 0;
       G.cars.forEach(c => {
-        c.curLapStart = 0; c._lapStart = 0;
+        c.curLapStart = redRestart ? G.simTime : 0; c._lapStart = redRestart ? G.simTime : 0;
         if (c.ai) {
           c.ai.launchT = 6;      // everyone launches hard off the line
           c.ai.laneBlend = 0;    // and holds its grid lane before fanning out
           c.ai.gridLane = null;
         }
       });
-      if (typeof rcInit === 'function') rcInit(G);   // BUILD 111: race control
+      if (redRestart) { if (typeof rcRedLightsOut === 'function') rcRedLightsOut(G); }
+      else if (typeof rcInit === 'function') rcInit(G);   // BUILD 111: race control
       AUDIO.beep(880, 0.5, 0.16);
       showBanner("LIGHTS OUT AND AWAY WE GO!", 2.2, '#2ecc71');
-      if (G.rivalCar) {
+      if (G.rivalCar && !redRestart) {
         const d = G.rivalStart.me - G.rivalStart.rv, rid = G.rivalCar.driver.id;
         radio('TITLE RIVAL: ' + rid + (d === 0 ? ' — LEVEL ON POINTS' : d > 0 ? ' — ' + d + ' PTS BEHIND YOU' : ' — ' + (-d) + ' PTS AHEAD OF YOU'));
       }
@@ -4580,6 +4582,8 @@ function updateBlueFlags(dt) {
 }
 
 function stepSim(dt) {
+  // red flag: the race is frozen until it resumes
+  if (G.rc && G.rc.mode === 'red' && G.mode === 'race') { if (typeof rcRedTick === 'function') rcRedTick(G, dt); return; }
   updateCountdown(dt);
   const started = G.raceStarted;
   if (started) G.simTime += dt;
@@ -4831,6 +4835,8 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 G.__scene = scene;   // (race control adds the safety car to it)
+// race control (racecontrol.js) lives outside this closure: its way in
+G.__hooks = { showBanner, stewardMsg, radio, addPenalty, armPit, aiCompoundFor };
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 112';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 113';
 })();

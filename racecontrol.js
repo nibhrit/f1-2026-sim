@@ -29,8 +29,21 @@ function rcLevel(G) {
   return RC_LEVELS[k] != null ? RC_LEVELS[k] : 1;
 }
 function rcNeutral(G) { return !!(G.rc && G.rc.mode !== 'green'); }
-function rcRcMsg(text, kind) { if (typeof stewardMsg === 'function') stewardMsg(text, kind || 'limits'); }
-function rcBanner(text, secs, col) { if (typeof showBanner === 'function') showBanner(text, secs, col); }
+// main.js runs inside its own closure: its functions reach race control as
+// hooks on G (G.__hooks); the test harness has them in scope directly
+let rcG = null;
+function rcFn(name) {
+  const h = rcG && rcG.__hooks && rcG.__hooks[name];
+  if (h) return h;
+  try { const f = { stewardMsg: typeof stewardMsg === 'function' ? stewardMsg : null, showBanner: typeof showBanner === 'function' ? showBanner : null,
+    radio: typeof radio === 'function' ? radio : null, addPenalty: typeof addPenalty === 'function' ? addPenalty : null,
+    armPit: typeof armPit === 'function' ? armPit : null, aiCompoundFor: typeof aiCompoundFor === 'function' ? aiCompoundFor : null }[name];
+    return f || null; } catch (e) { return null; }
+}
+function rcRcMsg(text, kind) { const f = rcFn('stewardMsg'); if (f) f(text, kind || 'limits'); }
+function rcBanner(text, secs, col) { const f = rcFn('showBanner'); if (f) f(text, secs, col); }
+function rcRadio(text) { const f = rcFn('radio'); if (f) f(text); }
+function rcPenalty(car, secs, why) { const f = rcFn('addPenalty'); if (f) f(car, secs, why); }
 
 // a full-grip race-pace speed profile of the circuit, cached on the track: the
 // VSC reference runs at RC_VSC_PACE of it
@@ -47,6 +60,7 @@ function rcIdxAt(t, dist) { const L = t.length; return t.idxAtDist(((dist % L) +
 
 // ---- race start: who (if anyone) will have a failure, and where ----
 function rcInit(G) {
+  rcG = G;
   G.rc = { mode: 'green', t: 0, timer: 0, vscCount: 0, scCount: 0, drsOffUntilLap: 0, incidents: [] };
   for (const c of G.cars) { c.failPlan = null; c.failing = null; c.rcGhost = null; c._rcSeen = !!c.retired; }
   const lvl = rcLevel(G);
@@ -66,6 +80,7 @@ function rcFailName(id) { const f = RC_FAILS.find(x => x.id === id); return f ? 
 
 // ---- every step of a race ----
 function rcStep(G, dt) {
+  rcG = G;
   if (!G.rc || G.mode !== 'race' || !G.raceStarted || !G.track) return;
   const rc = G.rc, t = G.track;
   rc.t += dt;
@@ -79,7 +94,7 @@ function rcStep(G, dt) {
       rcRcMsg(c.driver.id + ' — ' + nm + ', slowing', 'coll');
       if (c.driver.player) {
         rcBanner(nm + ' — PULL OVER', 4, '#ff5c5c');
-        if (typeof radio === 'function') radio('We have lost the car. ' + nm.toLowerCase() + '. Pull over safely.');
+        rcRadio('We have lost the car. ' + nm.toLowerCase() + '. Pull over safely.');
       }
     }
     if (c.failing) {
@@ -106,6 +121,13 @@ function rcStep(G, dt) {
       if (imp > 16 && !c.retired && rcLevel(G) && rc.mode === 'green' && Math.random() < 0.3 * rcLevel(G)) rcDebris(G, c);
       c._rcImp = imp;
     }
+  }
+
+  // torrential rain: red flag (once), restart behind the safety car
+  const wetNow = typeof TRACK_WETNESS !== 'undefined' ? TRACK_WETNESS : 0;
+  if (wetNow >= 0.95 && !rc.rainRed && rcLevel(G) && rc.mode !== 'red') {
+    rc.rainRed = true;
+    if (Math.random() < 0.5 * rcLevel(G)) { rcRedFlag(G, 'TORRENTIAL RAIN'); return; }
   }
 
   // 3. neutralisation lifecycle
@@ -138,6 +160,13 @@ function rcIncident(G, c) {
   if (leader && leader.phys.lap >= G.raceLaps) { rcRcMsg('YELLOW FLAG — ' + c.driver.id + ' stopped'); return; }
   // a car stopped in a safe spot off the road is often only local yellows;
   // one on (or at the edge of) the road needs marshals on track: VSC
+  // a second car stopping on the road moments after the first (a multi-car
+  // crash), or a big impact with the barriers: red flag
+  const recent = rc.incidents.filter(x => rc.t - x.at < 12 && x.onTrack).length;
+  const lvl = rcLevel(G);
+  if (onTrack && ((recent >= 2 && Math.random() < 0.5 * lvl) || ((p.lastImpact || 0) > 32 && Math.random() < 0.3 * lvl))) {
+    rcRedFlag(G, recent >= 2 ? 'MULTI-CAR INCIDENT' : 'BARRIER REPAIRS'); return;
+  }
   const r = Math.random();
   if (!onTrack) {
     if (r < 0.4) { rcRcMsg('YELLOW FLAG — ' + c.driver.id + ' stopped off the track'); return; }
@@ -157,6 +186,7 @@ function rcDebris(G, c) {
 }
 
 function rcDeployVSC(G, dur) {
+  rcG = G;
   const rc = G.rc;
   if (rc.mode === 'vsc') { rc.timer = Math.max(rc.timer, dur); return; }
   if (rc.mode === 'sc' || rc.mode === 'scIn' || rc.mode === 'restart') { if (rc.mode !== 'restart') { rc.timer = Math.max(rc.timer, dur); rc.mode = 'sc'; } return; }
@@ -169,6 +199,7 @@ function rcDeployVSC(G, dur) {
 }
 
 function rcGreen(G) {
+  rcG = G;
   const rc = G.rc;
   rc.mode = 'green'; rc.timer = 0;
   for (const c of G.cars) {
@@ -220,7 +251,7 @@ function rcPlayerChecks(G, dt) {
   if (st.sec != null && sec !== st.sec && !grace && (pl.rcDelta || 0) < -0.15) {
     st.warned++;
     if (st.warned === 1) rcBanner('SLOW DOWN: STAY ABOVE THE MINIMUM TIME', 2.6, '#ff8a85');
-    else if (typeof addPenalty === 'function') addPenalty(pl, 5, 'exceeding the ' + (rc.mode === 'vsc' || rc.mode === 'vscEnding' ? 'VSC' : 'safety car') + ' minimum time');
+    else rcPenalty(pl, 5, 'exceeding the ' + (rc.mode === 'vsc' || rc.mode === 'vscEnding' ? 'VSC' : 'safety car') + ' minimum time');
   }
   st.sec = sec;
   // overtaking: a car that was just ahead of you on the road is now behind,
@@ -244,7 +275,7 @@ function rcPlayerChecks(G, dt) {
     st.passT -= dt;
     if (g > 0 || st.pass.retired || st.pass.pitState) st.pass = null;          // given back
     else if (st.passT <= 0) {
-      if (typeof addPenalty === 'function') addPenalty(pl, 5, rc.mode === 'vsc' || rc.mode === 'vscEnding' ? 'overtaking under the VSC' : 'overtaking under the safety car');
+      rcPenalty(pl, 5, rc.mode === 'vsc' || rc.mode === 'vscEnding' ? 'overtaking under the VSC' : 'overtaking under the safety car');
       st.pass = null;
     }
   }
@@ -253,6 +284,7 @@ function rcPlayerChecks(G, dt) {
 // a neutralisation makes a stop cheaper (everyone else is slow): the pit wall
 // brings in the cars whose window is open or whose tyres are going off
 function rcCheapStops(G, kind) {
+  rcG = G;
   if (G.mode !== 'race') return;
   const pitsOpen = G.raceLaps > 20;
   for (const c of G.cars) {
@@ -267,16 +299,17 @@ function rcCheapStops(G, kind) {
     else if (owes && c.phys.lap >= G.raceLaps * 0.25) want = 0.45;
     else if (life < 0.5) want = 0.6;
     if (!want || Math.random() >= want) continue;
-    c.pitCompound = (typeof aiCompoundFor === 'function') ? aiCompoundFor(left, owes ? c.phys.compound : null) : 'medium';
+    const acf = rcFn('aiCompoundFor');
+    c.pitCompound = acf ? acf(left, owes ? c.phys.compound : null) : 'medium';
     if (c.pitted && c.pitLap2 && !c.pitted2) c.pitted2 = true;
     c.rcStop = kind;
-    if (typeof armPit === 'function') armPit(c);
+    const ap = rcFn('armPit'); if (ap) ap(c);
   }
   const pl = G.player;
-  if (pl && !pl.finished && !pl.retired && !pl.pitState && typeof radio === 'function') {
+  if (pl && !pl.finished && !pl.retired && !pl.pitState) {
     const owes = pitsOpen && !pl.pitted && !pl.usedWet;
     if ((owes && pl.phys.lap >= G.raceLaps * 0.25) || pl.phys.tyreLife < 0.5)
-      radio((kind === 'vsc' ? 'VSC' : 'Safety car') + ' — a cheap stop if you box this lap.');
+      rcRadio((kind === 'vsc' ? 'VSC' : 'Safety car') + ' — a cheap stop if you box this lap.');
   }
 }
 
@@ -307,6 +340,7 @@ function rcHud(G) {
   el.style.background = ending ? '#2a2a10' : '#3b3200';
   el.style.color = '#ffd12e';
   el.style.border = '2px solid #ffd12e';
+  if (rc.mode === 'red' || rc.mode === 'redGrid') { el.style.display = 'none'; return; }
   let txt = { vsc: 'VIRTUAL SAFETY CAR', vscEnding: 'VSC ENDING', sc: 'SAFETY CAR', scIn: 'SAFETY CAR IN THIS LAP', restart: 'RESTART — NO OVERTAKING UNTIL THE LINE' }[rc.mode] || rc.mode.toUpperCase();
   if (rc.mode === 'restart' && pl && pl.rcGo) { el.style.display = 'none'; return; }
   if (pl && pl.rcUnlap && !pl.rcPastSC) txt += '<div style="font-size:12px;letter-spacing:1px;margin-top:2px;color:#5dff9b">UNLAP: OVERTAKE THE SAFETY CAR</div>';
@@ -325,17 +359,21 @@ function rcSnapshot(G) {
   return { mode: rc.mode, timer: rc.timer, t: rc.t, vscCount: rc.vscCount, scCount: rc.scCount || 0,
            drsOffUntilLap: rc.drsOffUntilLap || 0, since: rc.since || 0, incidents: rc.incidents.slice(-20),
            wasSC: !!rc.wasSC, scLaps: rc.scLaps || 0, unlapMsg: !!rc.unlapMsg, unlapDone: !!rc.unlapDone, goAt: rc.goAt != null ? rc.goAt : null,
-           sc: rc.sc ? { d: rc.sc.phys.totalDist } : null };
+           sc: rc.sc ? { d: rc.sc.phys.totalDist } : null,
+           redOrder: rc.redOrder || null, redWhy: rc.redWhy || null, redRolling: !!rc.redRolling, redCount: rc.redCount || 0, rainRed: !!rc.rainRed };
 }
 function rcCarSnapshot(c) {
   return { failPlan: c.failPlan || null, failing: c.failing || null, rcGhost: c.rcGhost != null ? c.rcGhost : null, rcSeen: !!c._rcSeen, retireReason: c.retireReason || null,
            rcUnlap: !!c.rcUnlap, rcPastSC: !!c.rcPastSC };
 }
 function rcRestore(G, snap, carsSnap) {
+  rcG = G;
   G.rc = { mode: 'green', t: 0, timer: 0, vscCount: 0, scCount: 0, drsOffUntilLap: 0, incidents: [] };
   if (snap) Object.assign(G.rc, snap, { incidents: (snap.incidents || []).slice(), sc: null });
   if (snap && snap.sc && (snap.mode === 'sc' || snap.mode === 'scIn')) rcScSpawn(G, snap.sc.d);
   if (G.rc.mode === 'restart') rcGreen(G);              // (a restart in progress resumes as green)
+  if (G.rc.mode === 'redGrid') { G.rc.mode = 'red'; G.rc.redT = 0; }   // back to the red-flag screen
+  if (G.rc.mode === 'red') G.rc.redT = 0;
   if (carsSnap) for (const c of G.cars) {
     const s = carsSnap[c.driver.id];
     if (!s) { c._rcSeen = !!c.retired; continue; }
@@ -362,6 +400,7 @@ function rcRoadGap(t, a, b) {     // metres a is ahead of b along the road (-L/2
 }
 
 function rcDeploySC(G, dur) {
+  rcG = G;
   const rc = G.rc, t = G.track;
   if (rc.mode === 'sc' || rc.mode === 'scIn') { rc.timer = Math.max(rc.timer, dur); rc.mode = 'sc'; return; }
   if (rc.mode === 'restart') return;      // let this restart happen
@@ -446,7 +485,7 @@ function rcScStep(G, dt) {
       if (lapped.length) {
         for (const c of lapped) c.rcUnlap = true;
         rcBanner('LAPPED CARS MAY NOW OVERTAKE', 3, '#ffd12e'); rcRcMsg('RACE CONTROL: LAPPED CARS MAY NOW OVERTAKE');
-        if (G.player && G.player.rcUnlap && typeof radio === 'function') radio('You are a lap down — you may overtake the safety car and unlap yourself.');
+        if (G.player && G.player.rcUnlap) rcRadio('You are a lap down — you may overtake the safety car and unlap yourself.');
       } else rc.unlapDone = true;
     }
     if (rc.unlapMsg && !rc.unlapDone) {
@@ -537,4 +576,135 @@ function rcScStep(G, dt) {
     if (G.cars.every(c => c.finished || c.retired || c.pitState || c.rcGo) || rc.timer > 25) { rc.went = false; rcGreen(G); }
   }
   rcPlayerChecks(G, dt);
+}
+
+
+// ===================== RED FLAG (BUILD 113) =====================
+// RED FLAG -> every car into the pit lane; the session is suspended. Teams may
+// change tyres (the new compound counts toward the two-compound rule) and
+// repair damage. The race resumes from a standing start on the grid in the
+// order at the red flag — or, if the track is wet, behind the safety car.
+function rcRedFlag(G, why) {
+  rcG = G;
+  const rc = G.rc, t = G.track, L = t.length;
+  if (rc.mode === 'red' || rc.mode === 'redGrid') return;
+  rcScRemove(G);
+  rc.mode = 'red'; rc.redWhy = why || 'TRACK BLOCKED'; rc.redCount = (rc.redCount || 0) + 1; rc.wasSC = true;
+  rc.redT = 0; rc.redAuto = 30;
+  rc.redRolling = (typeof TRACK_WETNESS !== 'undefined' ? TRACK_WETNESS : 0) > 0.6;
+  // classification at the red flag: race distance, retired cars out
+  const order = G.cars.filter(c => !c.retired && !c.finished).sort((a, b) => b.phys.totalDist - a.phys.totalDist);
+  rc.redOrder = order.map(c => ({ id: c.driver.id, laps: Math.max(0, Math.floor(c.phys.totalDist / L)) }));
+  for (const c of G.cars) { c.rcGhost = null; c.rcUnlap = false; c.rcGo = false; c.rcQueued = false; c.rcPastSC = false; }
+  rcBanner('RED FLAG — ' + rc.redWhy, 3.5, '#ff4040');
+  rcRcMsg('RACE CONTROL: RED FLAG — ' + rc.redWhy + '. All cars to the pit lane.', 'coll');
+  rcRadio('Red flag. Box, box — we can change tyres and fix the car.');
+}
+
+// what a team fits for the rest of the race under a red flag
+function rcRedTyre(G, c) {
+  const L = G.track.length;
+  const lapsLeft = Math.max(1, G.raceLaps - Math.floor(c.phys.totalDist / L));
+  const wet = typeof TRACK_WETNESS !== 'undefined' ? TRACK_WETNESS : 0;
+  if (wet > 0.74) return 'wet';
+  if (wet > 0.17) return 'inter';
+  const owes = G.raceLaps > 20 && !c.pitted && !c.usedWet;
+  const acf = rcFn('aiCompoundFor');
+  return acf ? acf(lapsLeft, owes ? c.phys.compound : null) : 'medium';
+}
+
+// called every step while the red flag is out (the race is frozen)
+function rcRedTick(G, dt) {
+  rcG = G;
+  const rc = G.rc;
+  rc.redT += dt;
+  rcRedOverlay(G);
+  if (G.__rcAutoResume !== false && rc.redT >= rc.redAuto) rcRedResume(G, null);
+}
+
+function rcRedResume(G, playerTyre) {
+  rcG = G;
+  const rc = G.rc, t = G.track, L = t.length;
+  if (rc.mode !== 'red') return;
+  const byId = Object.fromEntries(G.cars.map(c => [c.driver.id, c]));
+  let i = 0;
+  for (const e of rc.redOrder) {
+    const c = byId[e.id];
+    if (!c || c.retired || c.finished) continue;
+    const slot = gridSlot(t, i++);
+    const p = c.phys;
+    p.placeAt(slot.x, slot.z, slot.angle);
+    p.speed = 0; p.trackIdx = slot.idx; p.lapDist = t.dist[slot.idx];
+    p.lap = e.laps;
+    p.totalDist = e.laps * L - (L - t.dist[slot.idx]);
+    p._lastCrossDist = p.totalDist - p.lapDist;
+    p.inPit = false; p.dmgWing = 0; p.dmgFloor = 0; p.puncture = 0; p.flatSpot = 0; p.powerCut = 0;
+    c.pitState = null; c.pitArmed = false; c.pitArmLap = null; c.boxCall = null;
+    // free tyre change (tyre blankets: they go out warm)
+    const want = (c.driver.player && playerTyre) ? playerTyre : rcRedTyre(G, c);
+    const before = p.compound;
+    p.setTyre(want); p.tyreTemp = 0.72;
+    if (want !== before && !/^(inter|wet)$/.test(want)) c.pitted = true;   // a different compound: rule satisfied
+    if (/^(inter|wet)$/.test(want)) c.usedWet = true;
+    for (const a of [c.ai, c.autoAi]) if (a) {
+      a.laneBlend = 0; a.gridLane = null; a.launchT = 6; a.laneOffsetNow = null; a._relOff = 0;
+      a.rcCap = null; a.rcNeutral = false; a.rcUnlap = false; a.speedCap = null; a.laneOverride = null;
+      a._dodge = null; a._pitOut = null; a.attack = null; a._prof = null; a._profKey = null;
+    }
+    c._rcLap0 = null; c.rcDelta = null;
+  }
+  rcRedOverlay(G, true);
+  if (rc.redRolling) {
+    // wet: everyone behind the safety car from the grid, then a rolling restart
+    rc.mode = 'green';
+    rcDeploySC(G, 25);
+    rcBanner('RESUMING BEHIND THE SAFETY CAR', 3, '#ffd12e');
+  } else {
+    // standing start: the start lights again (main.js runs the countdown)
+    rc.mode = 'redGrid'; rc.redRestart = true;
+    G.raceStarted = false;
+    G.countdown = { phase: 0, t: 2.0 };
+    rcBanner('STANDING RESTART', 2.5, '#ffd12e');
+  }
+  rcRcMsg('RACE CONTROL: RACE RESUMING' + (rc.redRolling ? ' BEHIND THE SAFETY CAR' : ' — STANDING START'));
+}
+
+// main.js: lights out after a red flag — racing again
+function rcRedLightsOut(G) {
+  rcG = G;
+  const rc = G.rc;
+  rc.redRestart = false; rc.mode = 'green';
+  const lead = Math.max(...G.cars.filter(c => !c.retired).map(c => c.phys.lap));
+  rc.drsOffUntilLap = lead + 2;
+}
+
+function rcRedOverlay(G, hide) {
+  if (typeof document === 'undefined') return;
+  let el = document.getElementById('rc-red');
+  if (hide) { if (el) el.style.display = 'none'; return; }
+  const rc = G.rc;
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'rc-red';
+    el.style.cssText = 'position:fixed;inset:0;z-index:60;background:rgba(10,4,6,.86);color:#f2f4fa;display:flex;align-items:center;justify-content:center;font:14px system-ui,sans-serif;';
+    document.body.appendChild(el);
+    el.addEventListener('click', ev => {
+      const b = ev.target.closest('[data-rcty]'); if (b) { rc._pick = b.dataset.rcty; rcRedOverlay(G); return; }
+      if (ev.target.closest('#rc-red-go')) rcRedResume(G, rc._pick || null);
+    });
+  }
+  el.style.display = 'flex';
+  const pl = G.player;
+  const wet = typeof TRACK_WETNESS !== 'undefined' ? TRACK_WETNESS : 0;
+  const opts = wet > 0.17 ? ['inter', 'wet'] : ['soft', 'medium', 'hard'];
+  if (!rc._pick && pl) rc._pick = rcRedTyre(G, pl);
+  const rows = rc.redOrder.slice(0, 22).map((e, i) => '<div style="display:flex;gap:10px;' + (pl && e.id === pl.driver.id ? 'color:#ffd12e;font-weight:700' : '') + '"><span style="width:22px;text-align:right">' + (i + 1) + '</span><span>' + e.id + '</span></div>').join('');
+  const left = Math.max(0, Math.ceil(rc.redAuto - rc.redT));
+  el.innerHTML = '<div style="background:#160a0d;border:2px solid #ff4040;border-radius:12px;padding:16px 22px;max-width:520px;width:92%;max-height:86vh;overflow:auto">'
+    + '<div style="color:#ff4040;font-weight:800;letter-spacing:3px;font-size:20px">RED FLAG</div>'
+    + '<div style="opacity:.85;margin:4px 0 10px">' + rc.redWhy + ' — the race is suspended. Free tyre change and repairs. Resumes ' + (rc.redRolling ? 'behind the safety car' : 'with a standing start') + ' in this order.</div>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 18px;font-size:13px;margin-bottom:12px">' + rows + '</div>'
+    + (pl && !pl.retired ? '<div style="letter-spacing:2px;font-size:11px;color:#9fb0d0;margin-bottom:6px">YOUR TYRES FOR THE RESTART</div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
+      + opts.map(o => '<button data-rcty="' + o + '" class="btn small' + (rc._pick === o ? ' selected' : '') + '">' + o.toUpperCase() + '</button>').join('') + '</div>' : '')
+    + '<button id="rc-red-go" class="btn accent">RESUME (' + left + ')</button></div>';
 }
