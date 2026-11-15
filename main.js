@@ -1513,13 +1513,17 @@ function startSession() {
         else if (cat === 1) { car.phys.setTyre('inter'); car.pitCompound = idealCategory(late) === 2 ? 'wet' : 'medium'; }
         else {
           const r = Math.random();
-          const start = r < 0.4 ? 'soft' : r < 0.8 ? 'medium' : 'hard';
+          // BUILD 114: the pit wall's character — aggressive teams like softs
+          const ag = typeof teamAggr === 'function' ? teamAggr(d.team) : 0.5;
+          const pS = 0.25 + 0.3 * ag;
+          const start = r < pS ? 'soft' : r < pS + 0.42 ? 'medium' : 'hard';
           car.phys.setTyre(start);
           const others = ['soft','medium','hard'].filter(n => n !== start);
           car.pitCompound = others[Math.floor(Math.random()*others.length)];
           if (G.raceLaps > 20) {
             const lo = Math.ceil(G.raceLaps*0.35), hi = Math.floor(G.raceLaps*0.65);
-            car.pitLap = lo + Math.floor(Math.random()*(hi - lo + 1));
+            // (aggressive pit walls stop early in the window: the undercut)
+            car.pitLap = lo + Math.floor(Math.pow(Math.random(), 0.6 + 0.9 * ag) * (hi - lo + 1));
             // BUILD 108: never plan to run a set past where it falls away
             // (softs used to run 10 laps on dead tyres to a random mid-race
             // stop), and fit something for the second stint that lasts it
@@ -3550,6 +3554,48 @@ function aiWearStopDue(c) {
   return gain > 24;
 }
 
+// BUILD 114: a car has just dived into the pit lane. The cars racing it on
+// the road (and your engineer) react — the undercut and its cover.
+function pitEvent(c) {
+  if (G.mode !== 'race' || !G.track) return;
+  const ev = { c, t: G.simTime, seen: new Set() };
+  G.__pitEv = (G.__pitEv || []).filter(e => G.simTime - e.t < 20);
+  G.__pitEv.push(ev);
+  const pl = G.player;
+  if (pl && c !== pl && !pl.pitState && !pl.pitArmed && !pl.finished && !pl.retired) {
+    const L = G.track.length, raw = c.phys.totalDist - pl.phys.totalDist;
+    const g = ((raw % L) + L + L / 2) % L - L / 2;
+    const left = G.raceLaps - pl.phys.lap;
+    const owes = G.raceLaps > 20 && !pl.pitted && !pl.usedWet;
+    if (Math.abs(g) < Math.max(40, pl.phys.speed * 2.5) && left >= 4 && (owes || pl.phys.tyreLife < 0.6) && !/^(inter|wet)$/.test(c.phys.compound))
+      radio(c.driver.id + (g > 0 ? ' ahead' : ' behind') + ' has pitted — box this lap to cover the undercut?');
+  }
+}
+// an AI car racing the one that just pitted covers it, or not, by character
+function aiUndercutCheck(c) {
+  if (!G.__pitEv || !G.__pitEv.length || c.failing) return;
+  const L = G.track.length, left = G.raceLaps - c.phys.lap;
+  if (left < 4 || /^(inter|wet)$/.test(c.phys.compound)) return;
+  const owes = G.raceLaps > 20 && !c.pitted && !c.usedWet;
+  const windowOpen = (owes && c.phys.lap >= (c.pitLap || G.raceLaps) - 6) || c.phys.tyreLife < 0.55;
+  if (!windowOpen) return;
+  for (const ev of G.__pitEv) {
+    if (ev.c === c || ev.seen.has(c) || G.simTime - ev.t > 6) continue;
+    ev.seen.add(c);
+    const raw = ev.c.phys.totalDist - c.phys.totalDist, g = ((raw % L) + L + L / 2) % L - L / 2;
+    if (Math.abs(g) > Math.max(45, c.phys.speed * 2.2)) continue;      // not racing it
+    if (ev.c.driver.team === c.driver.team) continue;                  // not against the team-mate
+    const ag = typeof teamAggr === 'function' ? teamAggr(c.driver.team) : 0.5;
+    if (Math.random() < 0.25 + 0.55 * ag) {
+      c.pitCompound = aiCompoundFor(left, owes ? c.phys.compound : null);
+      if (c.pitted && c.pitLap2 && !c.pitted2) c.pitted2 = true;
+      c.rcStop = 'cover';
+      armPit(c);
+      return;
+    }
+  }
+}
+
 function armPit(c) {
   c.pitArmed = true;
   // too late to get across to the pit side and slow down safely this lap?
@@ -4583,7 +4629,7 @@ function updateBlueFlags(dt) {
 
 function stepSim(dt) {
   // red flag: the race is frozen until it resumes
-  if (G.rc && G.rc.mode === 'red' && G.mode === 'race') { if (typeof rcRedTick === 'function') rcRedTick(G, dt); return; }
+  if (G.rc && G.rc.mode === 'red' && G.mode === 'race') { checkRetirements(); if (typeof rcRedTick === 'function') rcRedTick(G, dt); return; }
   updateCountdown(dt);
   const started = G.raceStarted;
   if (started) G.simTime += dt;
@@ -4648,6 +4694,7 @@ function stepSim(dt) {
         armPit(c); c.pitted2 = true;
       }
       if (c.ai && !c.pitArmed) weatherPitCheck(c);
+      if (pitsOpen && c.ai && !c.pitArmed) aiUndercutCheck(c);
       updatePitApproach(c);
       // the pit-lane machine takes over AT the pit entry (it used to start 40m
       // past it, so cars had already missed the entry when it kicked in)
@@ -4661,7 +4708,7 @@ function stepSim(dt) {
         const latP = G.track.lateral(c.phys.x, c.phys.z, c.phys.trackIdx);
         if (sP < pg.sEntryEnd && latP < -(G.track.width / 2 + 1.0)) {
           c.pitArmed = true; c.pitArmLap = null;
-          c.pitState = 'entering'; c.pitLaneStart = G.simTime;
+          c.pitState = 'entering'; c.pitLaneStart = G.simTime; pitEvent(c);
           if (c.driveThrough) showBanner('PIT ENTRY — DRIVE-THROUGH', 2.0, '#ff8a85');
           else {
             if (!c.boxCall) c.boxCall = suggestBoxTyre(c);
@@ -4675,6 +4722,7 @@ function stepSim(dt) {
         if (c.ai) { c.ai.laneOverride = null; c.ai.speedCap = null; }
         c.pitState = 'entering';
         c.pitLaneStart = G.simTime; // start the pit-lane clock
+        pitEvent(c);
         if (c.driver.player) showBanner('IN PIT', 1.6, '#6fa0ff');
       }
     }
@@ -4838,5 +4886,5 @@ G.__scene = scene;   // (race control adds the safety car to it)
 // race control (racecontrol.js) lives outside this closure: its way in
 G.__hooks = { showBanner, stewardMsg, radio, addPenalty, armPit, aiCompoundFor };
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 113';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 114';
 })();

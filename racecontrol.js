@@ -11,6 +11,15 @@
 // Every function takes G explicitly — other scripts must not use a bare G.
 
 const RC_LEVELS = { off: 0, realistic: 1, chaos: 3 };
+// BUILD 114: each pit wall's character. aggr = how readily it gambles (softs,
+// early stops, undercuts, cheap stops under a safety car); the rest prefer
+// track position and long stints. Invented tendencies, not real teams' data.
+const TEAM_STRAT = {
+  redbull: { aggr: 0.75 }, ferrari: { aggr: 0.55 }, mercedes: { aggr: 0.45 }, mclaren: { aggr: 0.65 },
+  aston: { aggr: 0.4 }, alpine: { aggr: 0.6 }, williams: { aggr: 0.35 }, audi: { aggr: 0.3 },
+  racingbulls: { aggr: 0.7 }, haas: { aggr: 0.5 }, cadillac: { aggr: 0.4 },
+};
+function teamAggr(team) { const t = TEAM_STRAT[team]; return t ? t.aggr : 0.5; }
 const RC_VSC_PACE = 0.70;        // reference ghost speed, share of race pace
 const RC_SECTORS = 10;           // light-panel (marshalling) sectors per lap
 const RC_FAILS = [
@@ -298,6 +307,12 @@ function rcCheapStops(G, kind) {
     if (owes && c.phys.lap >= (c.pitLap || G.raceLaps) - 6) want = 0.85;
     else if (owes && c.phys.lap >= G.raceLaps * 0.25) want = 0.45;
     else if (life < 0.5) want = 0.6;
+    const ag = teamAggr(c.driver.team);
+    want = Math.min(0.95, want * (0.7 + 0.6 * ag));
+    // the team-mate is already coming in: a cautious pit wall keeps this car
+    // out for track position unless its tyres are going
+    const mate = G.cars.find(o => o !== c && o.driver.team === c.driver.team);
+    if (mate && mate.pitArmed && mate.rcStop === kind && ag < 0.55 && life > 0.4) continue;
     if (!want || Math.random() >= want) continue;
     const acf = rcFn('aiCompoundFor');
     c.pitCompound = acf ? acf(left, owes ? c.phys.compound : null) : 'medium';
@@ -323,9 +338,13 @@ function rcDrsBlocked(G) {
 }
 
 // ---- HUD: the light panel + your VSC delta ----
+let rcHudKey = null, rcHudEl = null;
 function rcHud(G) {
   if (typeof document === 'undefined') return;
-  let el = document.getElementById('rc-panel');
+  // (cheap when nothing changed: this runs every physics step)
+  const rc0 = G.rc;
+  if ((!rc0 || rc0.mode === 'green' || G.mode !== 'race') && rcHudKey === 'off') return;
+  let el = rcHudEl && rcHudEl.isConnected ? rcHudEl : (rcHudEl = document.getElementById('rc-panel'));
   if (!el) {
     el = document.createElement('div');
     el.id = 'rc-panel';
@@ -334,21 +353,24 @@ function rcHud(G) {
     document.body.appendChild(el);
   }
   const rc = G.rc, pl = G.player;
-  if (!rc || rc.mode === 'green' || G.mode !== 'race') { el.style.display = 'none'; return; }
-  el.style.display = 'block';
+  if (!rc || rc.mode === 'green' || G.mode !== 'race') { el.style.display = 'none'; rcHudKey = 'off'; return; }
   const ending = rc.mode === 'vscEnding' || rc.mode === 'scIn';
-  el.style.background = ending ? '#2a2a10' : '#3b3200';
-  el.style.color = '#ffd12e';
-  el.style.border = '2px solid #ffd12e';
-  if (rc.mode === 'red' || rc.mode === 'redGrid') { el.style.display = 'none'; return; }
+  if (rc.mode === 'red' || rc.mode === 'redGrid') { if (rcHudKey !== 'red') { el.style.display = 'none'; rcHudKey = 'red'; } return; }
   let txt = { vsc: 'VIRTUAL SAFETY CAR', vscEnding: 'VSC ENDING', sc: 'SAFETY CAR', scIn: 'SAFETY CAR IN THIS LAP', restart: 'RESTART — NO OVERTAKING UNTIL THE LINE' }[rc.mode] || rc.mode.toUpperCase();
-  if (rc.mode === 'restart' && pl && pl.rcGo) { el.style.display = 'none'; return; }
+  if (rc.mode === 'restart' && pl && pl.rcGo) { if (rcHudKey !== 'go') { el.style.display = 'none'; rcHudKey = 'go'; } return; }
   if (pl && pl.rcUnlap && !pl.rcPastSC) txt += '<div style="font-size:12px;letter-spacing:1px;margin-top:2px;color:#5dff9b">UNLAP: OVERTAKE THE SAFETY CAR</div>';
   else if (pl && (rc.mode === 'sc' || rc.mode === 'scIn') && pl.rcQueued && pl.rcGap < 1e8) txt += '<div style="font-size:12px;letter-spacing:1px;margin-top:2px;color:#cdd8f0">GAP AHEAD ' + Math.round(pl.rcGap) + ' m</div>';
   if (pl && !pl.pitState && pl.rcDelta != null && !pl.retired && !pl.finished) {
     const d = pl.rcDelta;
     txt += '<div style="font-size:12px;letter-spacing:1px;margin-top:2px;color:' + (d >= 0 ? '#5dff9b' : '#ff6b6b') + '">DELTA ' + (d >= 0 ? '+' : '') + d.toFixed(1) + '</div>';
   }
+  const key = txt + ending;
+  if (key === rcHudKey) return;
+  rcHudKey = key;
+  el.style.background = ending ? '#2a2a10' : '#3b3200';
+  el.style.color = '#ffd12e';
+  el.style.border = '2px solid #ffd12e';
+  el.style.display = 'block';
   el.innerHTML = txt;
 }
 
@@ -681,7 +703,7 @@ function rcRedLightsOut(G) {
 function rcRedOverlay(G, hide) {
   if (typeof document === 'undefined') return;
   let el = document.getElementById('rc-red');
-  if (hide) { if (el) el.style.display = 'none'; return; }
+  if (hide) { if (el) { el.style.display = 'none'; el._k = null; } return; }
   const rc = G.rc;
   if (!el) {
     el = document.createElement('div');
@@ -693,13 +715,16 @@ function rcRedOverlay(G, hide) {
       if (ev.target.closest('#rc-red-go')) rcRedResume(G, rc._pick || null);
     });
   }
-  el.style.display = 'flex';
+  if (el.style.display !== 'flex') el.style.display = 'flex';
   const pl = G.player;
   const wet = typeof TRACK_WETNESS !== 'undefined' ? TRACK_WETNESS : 0;
   const opts = wet > 0.17 ? ['inter', 'wet'] : ['soft', 'medium', 'hard'];
   if (!rc._pick && pl) rc._pick = rcRedTyre(G, pl);
   const rows = rc.redOrder.slice(0, 22).map((e, i) => '<div style="display:flex;gap:10px;' + (pl && e.id === pl.driver.id ? 'color:#ffd12e;font-weight:700' : '') + '"><span style="width:22px;text-align:right">' + (i + 1) + '</span><span>' + e.id + '</span></div>').join('');
   const left = Math.max(0, Math.ceil(rc.redAuto - rc.redT));
+  const rkey = left + '|' + rc._pick + '|' + rc.redOrder.length;
+  if (el._k === rkey) return;
+  el._k = rkey;
   el.innerHTML = '<div style="background:#160a0d;border:2px solid #ff4040;border-radius:12px;padding:16px 22px;max-width:520px;width:92%;max-height:86vh;overflow:auto">'
     + '<div style="color:#ff4040;font-weight:800;letter-spacing:3px;font-size:20px">RED FLAG</div>'
     + '<div style="opacity:.85;margin:4px 0 10px">' + rc.redWhy + ' — the race is suspended. Free tyre change and repairs. Resumes ' + (rc.redRolling ? 'behind the safety car' : 'with a standing start') + ' in this order.</div>'
