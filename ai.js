@@ -13,25 +13,50 @@ let AI_CTRL = { look: 0.22, lookMin: 6, lookMax: 30, gain: 3.0, preview: 0.10, f
 // assist scrub the excess — the AI deliberately doesn't (in traffic it made
 // cars slide into each other, and it isn't how a real driver takes a corner).
 // Hairpin-heavy circuits leave less room (calibrated offline: lineopt/calib.sh).
-const AI_LIMIT = { corner: 1.0, brake: 1.0,
-  tracks: { monaco: { corner: 0.96 }, japan: { corner: 0.96 }, china: { corner: 0.98 }, usa: { corner: 0.98 } } };
-function aiLimitFor(id) { const o = (AI_LIMIT.tracks[id] || {}); return { corner: o.corner || AI_LIMIT.corner, brake: o.brake || AI_LIMIT.brake }; }
+// BUILD 110: where each circuit's REAL limit is, found by pushing one car
+// harder and harder in clean air until it first left the road (harness
+// lineopt/sweep.sh + rsweep.sh: three cars of different grip, dry and full
+// wet, all had to stay clean), less a 2% margin. The planner's own
+// grip model is cautious — a driver who leans on the tyres (as you do) is
+// 3-10% a lap quicker — so this is a multiplier on it: [dry, wet].
+const AI_EDGE = {"abudhabi":[1.117,1.039],"australia":[1.2,1.129],"austria":[1.117,1.117],"azerbaijan":[1.156,1.078],"bahrain":[1.2,1.11],"belgium":[1.121,0.997],"brazil":[1.162,1.156],"britain":[1.078,1.078],"canada":[1.078,1.078],"china":[1.078,0.997],"hungary":[1.2,1.078],"italy":[1.039,1.035],"japan":[1.035,1.073],"madrid":[1.176,1.078],"mexico":[1.162,1.078],"miami":[1.064,1.121],"monaco":[1.0,0.96],"netherlands":[1.039,1.078],"qatar":[1.117,1.039],"saudi":[1.156,1.078],"singapore":[1.2,1.156],"spain":[1.176,1.117],"usa":[1.039,1.035],"vegas":[1.176,1.11]};
+// racing close (a car within ~1 s ahead, alongside or right behind) a driver
+// leaves some of that margin back — full attack in clean air only
+let AI_TRAFFIC_KEEP = 0.5;
+let AI_GRIP_LO = 0.70;
+// in a wet RACE (traffic, spray, cold tyres after a stop) only part of the
+// clean-air wet margin is safe to use
+let AI_WET_EDGE_KEEP = 0.5;
+function aiLimitFor(id, wet, traffic, carGrip) {
+  const e = AI_EDGE[id] || [1.08, 1.06];
+  const k = Math.max(0, Math.min(1, (wet || 0) / 0.85));
+  const wk = AI_CTRL.wetEdgeKeep != null ? AI_CTRL.wetEdgeKeep : AI_WET_EDGE_KEEP;
+  let c = e[0] + (1 + (e[1] - 1) * wk - e[0]) * k;
+  if (traffic) c = 1 + (c - 1) * AI_TRAFFIC_KEEP;
+  // the margin found above is for a car with real grip: one far down on the
+  // field's (a weak car in the rain, cold or worn tyres, damage) has less to
+  // lean on, and leaning on it the same put it off the road lap after lap
+  if (carGrip != null) c = 1 + (c - 1) * Math.max(0, Math.min(1, (carGrip - AI_GRIP_LO) / (0.95 - AI_GRIP_LO)));
+  return { corner: c, brake: 1 + 0.8 * (c - 1) };
+}
 // Difficulty -> driving skill (BUILD 107). s = 0 is a beginner, 1 the best
 // driver the car allows. Everything is HOW the car is driven; nothing changes
 // the car itself.
 function aiSkillFromLevel(s) {
-  s = Math.max(0, Math.min(1, s));
+  // (BUILD 110: up to 1.03 — the very best at the top setting carry a touch
+  // more than the measured edge: "slightly beyond" a perfect lap)
+  const sc = Math.max(0, Math.min(1.03, s)), s1 = Math.min(1, sc);
   return {
-    corner: 0.90 + 0.10 * s,          // share of the corner limit carried
-    brake: 0.84 + 0.16 * s,           // how deep into the braking zone
-    exit: 0.90 + 0.10 * s,            // how early/hard back on the power
-    line: 0.80 + 0.20 * s,            // how much of the road the line uses
-    sigma: 0.002 + 0.010 * (1 - s),   // lap-to-lap inconsistency
-    mistake: 0.03 * (1 - s) * (1 - s),// chance per braking zone of misjudging it
+    corner: 0.90 + 0.10 * sc,         // share of the corner limit carried
+    brake: 0.84 + 0.16 * sc,          // how deep into the braking zone
+    exit: 0.90 + 0.10 * sc,           // how early/hard back on the power
+    line: 0.80 + 0.20 * s1,           // how much of the road the line uses
+    sigma: 0.002 + 0.010 * (1 - s1),  // lap-to-lap inconsistency
+    mistake: 0.03 * (1 - s1) * (1 - s1),// chance per braking zone of misjudging it
   };
 }
 // extra fraction of planned pace the AI gives up per unit of wetness
-let AI_WET_CAUTION = 0.16;
+let AI_WET_CAUTION = 0.05;   // BUILD 110: was 0.16 — a flat 16% corner-speed handicap in the rain (6-8% a lap)
 // fraction of the pace optimism removed in slow corners (tuned by gauntlet)
 let SLOW_CUT = 0.0;
 
@@ -287,6 +312,9 @@ class AIDriver {
     return v;
   }
 
+  // called by the game as the car leaves the pit lane
+  onPitExit() { this._pitOut = { side: null, d: 0 }; }
+
   compute(dt, allCars) {
     const car = this.car, t = this.track;
     // stuck recovery — but never teleport onto another car. resetToTrack snaps
@@ -318,7 +346,7 @@ class AIDriver {
     // plan with the grip that's actually available: wet AND tyre temperature
     // (latMax scales linearly, so corner speed scales with the square root)
     // wet also makes drivers tentative beyond the raw grip loss
-    const caution = 1 - AI_WET_CAUTION * wetness;
+    const caution = 1 - (AI_CTRL.wetCaution != null ? AI_CTRL.wetCaution : AI_WET_CAUTION) * wetness;
     // 1.05: the global velocity profile plans a hair more conservatively than
     // the old per-frame scan (it never carries speed it can't justify), so a
     // small corner-cap lift restores hotlap pace without any off-track cost.
@@ -332,7 +360,9 @@ class AIDriver {
     if (LD) { this._cs = LD.cs; this._csQ = Math.round(sk.line * 20) * 1000 + Math.round(this._planGrip * 200); }
     // corner speed = the car's real limit (its actual grip right now: tyres,
     // temperature, wet) x how much of it this driver dares to use
-    const LIM = this._lim || (this._lim = aiLimitFor(t.def && t.def.id));
+    // (traffic: decided last frame, held ~1.5 s so the plan doesn't flicker)
+    if (this._trafT > 0) this._trafT -= dt;
+    const LIM = aiLimitFor(t.def && t.def.id, wetness, this._trafT > 0 || this.laneBlend < 1, this._planGrip / Math.max(0.05, gripFac));
     // (corner speeds above are already solved for the grip; pace is how much of
     // that the driver carries. Without a pre-built line, fall back to scaling.)
     const pace = sk.corner * LIM.corner * (AI_CTRL.limScale || 1) * (this._lapVar || 1) * caution * (LD ? 1 : Math.sqrt(gripNow));
@@ -357,7 +387,7 @@ class AIDriver {
     // driver dares to brake
     const ABS_EFF = (car.assists && car.assists.absEff) || 0.94;
     let brakeFac = sk.brake * LIM.brake * (AI_CTRL.brakeLimScale || 1) * ABS_EFF * wetLong;
-    if (wetness > 0.05) brakeFac = Math.min(brakeFac, wetLong * 0.95 * ABS_EFF);
+    if (wetness > 0.05) brakeFac = Math.min(brakeFac, wetLong * 0.95 * ABS_EFF * LIM.brake * (AI_CTRL.brakeLimScale || 1));
     // Precomputed velocity profile: the target speed at every point of the lap,
     // solved once (corner cap -> braking -> acceleration) instead of scanned
     // every frame. tractionMul feeds the wet traction drop into the forward pass.
@@ -561,7 +591,10 @@ class AIDriver {
         else if (g > 6) this._dodge = null;   // (alongside already: hold the lane we have)
       }
     }
-    if (!AI_CTRL.noDodge && !this._dodge && laneAhead && this.laneOverride == null && laneGap < Math.max(30, v * 1.6)) {
+    // (not mid-corner: swerving round a car that's just rejoined from the pits
+    // in the middle of a wet turn-1 complex put cars off — wait for the road
+    // to straighten; the grid start is on a straight anyway)
+    if (!AI_CTRL.noDodge && !this._dodge && laneAhead && this.laneOverride == null && laneGap < Math.max(30, v * 1.6) && ((this._latDem || 0) < 5 || v < 12)) {
       // "much slower" = well below the pace of the cars around it (off the
       // grid everyone is slow at first; a bad starter is slow RELATIVE to the
       // field), or, with nobody else near, well below what the road allows
@@ -579,7 +612,7 @@ class AIDriver {
       // (and always well below what the road allows where IT is — a car
       // slowing for a hairpin in a lap-1 queue is racing, not an obstacle)
       const roadOK = vs < 0.7 * prof[laneAhead.trackIdx] - 1;
-      if (roadOK && (vs < 0.7 * ref - 1 || (launch && vs < 0.8 * ref - 0.5 && v > vs - 1)) && (laneAhead.decelNow || 0) < 8) {
+      if (roadOK && !laneAhead.pitBound && (vs < 0.7 * ref - 1 || (launch && vs < 0.8 * ref - 0.5 && v > vs - 1)) && (laneAhead.decelNow || 0) < 8) {
         const best = dodgeLane(laneAhead, laneGap, 0);
         if (best != null) this._dodge = { lane: best, car: laneAhead, t: 4 };
       }
@@ -680,6 +713,7 @@ class AIDriver {
     // flags are for (and it has usually just been waved through)
     if (behind && behindLaps > 0) behind = null;
     this._pressured = !!(behind && behindGap < 15);
+    if ((ahead && aheadGap < Math.max(20, v * 1.0)) || (behind && behindGap < 8) || this._guard > 0) this._trafT = 1.5;
     if (behind) {
       const attLat = t.lateral(behind.x, behind.z, behind.trackIdx);
       const overlap = 1 - Math.min(1, behindGap / carLen); // 1 = fully alongside
@@ -719,6 +753,16 @@ class AIDriver {
       else if (g >= 12 || g < -20) this.blueHold -= dt;
       if (g >= 12) this.blueHold = Math.min(this.blueHold, 0.6);
       if (this.blueHold <= 0) this.blueBy = null;
+    }
+    // Rejoining from the pit lane (BUILD 110): stay on the pit-exit side of
+    // the road until the next corner is done — F1's pit-exit line. Swinging
+    // straight across to the racing line had cars crossing the whole track
+    // into turn 1 (Singapore) and sliding off in the wet.
+    if (this._pitOut && this._pitOut.side == null) this._pitOut.side = Math.sign(myLatF) || 1;
+    if (this._pitOut) {
+      this._pitOut.d += v * dt;
+      if (this._pitOut.d > 450 || (this._pitOut.d > 150 && (this._latDem || 0) < 3 && Math.abs(t.curv[kAhead]) < 0.003)) this._pitOut = null;
+      else if (combatLane == null) combatLane = this._pitOut.side * edge * 0.85;
     }
     let targetLane = combatLane != null ? combatLane : baseLane;
     this._dbgCombat = combatLane;
@@ -775,7 +819,7 @@ class AIDriver {
         else if ((this._dodge || this.laneBlend < 1) && loT <= hiT) targetLane = (loT + hiT) / 2;   // three-wide, tight
         else {
           // boxed in: stay put and drop back rather than squeeze through
-          targetLane = myLat;
+          targetLane = Math.max(-edge - 0.4, Math.min(edge + 0.4, myLat));   // (never hold a lane off the road)
           for (const n of near) if (n.g > -1) vAllow = Math.min(vAllow, Math.max(10, n.o.speed - 1.5));
         }
       }
@@ -810,7 +854,14 @@ class AIDriver {
     // second or so ahead, with the braking to get there (BUILD 107: a car
     // squeezed onto the inside used to carry racing-line speed, run wide and
     // lean on the car outside it).
-    if (rl && Math.abs(this._relOff || 0) > 0.6) {
+    // (BUILD 110: plan for where the car IS, not just where it's heading — a
+    // car still 4 m off the line from an abandoned move, or squeezed wide,
+    // used to brake for the line's corner speed and run off in the wet)
+    const offNow = rl ? myLatF - rl[idx] : 0;
+    // (a metre of ordinary tracking error is not a different line)
+    const offX = Math.sign(offNow) * Math.max(0, Math.abs(offNow) - (1.2 - 0.9 * Math.min(1, wetness / 0.6)));
+    const relPlan = Math.abs(offX) > Math.abs(this._relOff || 0) ? offX : (this._relOff || 0);
+    if (rl && Math.abs(relPlan) > 0.6) {
       const segQ = t.length / N, span = Math.ceil(Math.max(40, v * 1.4) / segQ);
       const latK = 17.6, aeroK = 0.0104 * (t.aeroDf || 1), capL = 53 * (t.aeroDf || 1);
       const gScale = (this._planGrip || 1) * caution * caution;               // the car's grip right now
@@ -818,7 +869,7 @@ class AIDriver {
       for (let q = 0; q < span; q += 3) {
         const k = (idx + q) % N, kc = t.curv[k];
         if (Math.abs(kc) < 2e-3) continue;
-        const laneK = Math.max(-lineEdge0, Math.min(lineEdge0, rl[k] + this._relOff));
+        const laneK = Math.max(-lineEdge0, Math.min(lineEdge0, rl[k] + relPlan));
         const R = 1 / Math.abs(kc) - laneK * Math.sign(kc);
         const Rl = 1 / Math.abs(kc) - rl[k] * Math.sign(kc);
         if (R >= Rl - 0.3) continue;                      // not tighter than the line there

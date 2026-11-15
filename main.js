@@ -1067,12 +1067,14 @@ function makeCar(driver, track) {
 // it (see aiSkillFromLevel in ai.js: corner commitment, braking depth, exit
 // throttle, line, consistency, mistakes). The slider is tuned as a lap-time gap
 // to the perfect lap a flawless driver could do in that car:
-//   Rookie 0.95 ~6%   Casual 1.02 ~4%   Pro 1.06 ~2%   Elite 1.12 ~1%   Alien 1.20 ~0.3%
+//   Rookie 0.95 ~6%   Casual 1.02 ~4%   Pro 1.06 ~2%   Elite 1.12 ~1%   Alien 1.20 0% (the limit)
 // Each driver's own rating moves them +-~0.7% around that.
 // Constructor spread (BUILD 107): x3.0 — the best car on the day at full grip,
 // the slowest ~10% less, about 2.5% of lap time. Same for YOUR car in that team.
 function carGripFor(cp) { return Math.min(1, Math.max(0.86, 1 - (1 - cp / CAR_PACE_TOP) * 3.0)); }
-const DIFF_GAP = [[0.95, 6.0], [1.02, 4.0], [1.06, 2.0], [1.12, 1.0], [1.20, 0.3]];
+// BUILD 110: the gap is now to the circuit's REAL limit (ai.js AI_EDGE), and
+// the top of the slider is that limit itself — the best drivers go a hair past
+const DIFF_GAP = [[0.95, 6.0], [1.02, 4.0], [1.06, 2.0], [1.12, 1.0], [1.20, 0.0]];
 function diffGapPct(d) {
   if (d <= DIFF_GAP[0][0]) return DIFF_GAP[0][1];
   for (let i = 1; i < DIFF_GAP.length; i++) {
@@ -1084,7 +1086,7 @@ function diffGapPct(d) {
 // lap-time gap ~ 7% x (1 - s), measured across circuits (harness/lineopt/level.sh)
 function aiSkillLevel(driver) {
   const s = 1 - diffGapPct(G.difficulty) / 7.0 + ((driver.skill || 0.93) - 0.93) * 1.5;   // driver ratings: +-~0.7% lap
-  return Math.max(0, Math.min(1, s));
+  return Math.max(0, Math.min(1.03, s));
 }
 function aiPerf(driver) {
   // car: team ranking x this circuit's character x wet ability — identical to the player's car
@@ -2457,12 +2459,29 @@ function startConfetti() {
 }
 function stopConfetti() { confettiActive = false; }
 
+// BUILD 110: your best lap against the fastest AI lap of the session, so the
+// difficulty can be judged (and tuned) by a number rather than a feeling
+function paceCheckText() {
+  const pl = G.player;
+  if (!pl || !pl.bestLap || !G.cars) return '';
+  let ai = null;
+  if (G.mode === 'qualify' && G.qualiAITimes) {
+    for (const q of G.qualiAITimes) if (q.time && (!ai || q.time < ai.t)) ai = { t: q.time, id: q.driver.id };
+  } else {
+    for (const c of G.cars) if (c !== pl && c.bestLap && (!ai || c.bestLap < ai.t)) ai = { t: c.bestLap, id: c.driver.id };
+  }
+  if (!ai) return '';
+  const pct = (pl.bestLap / ai.t - 1) * 100;
+  return 'PACE CHECK  ·  your best ' + fmtTime(pl.bestLap) + '  ·  fastest AI ' + fmtTime(ai.t) + ' (' + ai.id + ')  ·  '
+    + (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%  ·  AI ' + diffText(G.difficulty);
+}
 function showResults(title, rows, nextLabel) {
   G.state = 'results';
   hud.classList.remove('active');
   AUDIO.musicDuck(false); // session over — music returns
   $('results-title').textContent = title.split(' — ')[0] + ' Results';
   $('results-sub').textContent = title.split(' — ')[1] || '';
+  { const pc = $('results-pace'); if (pc) pc.textContent = paceCheckText(); }
   const tbl = $('results-table');
   tbl.innerHTML = '';
   rows.forEach(r => {
@@ -3542,6 +3561,9 @@ function pitApproachTarget(c) {
   return { lane: straight ? -(g.edgeOff - 0.6) : null, vCap: Math.sqrt(PIT_ENTRY_V * PIT_ENTRY_V + 2 * dec * toEntry) };
 }
 function updatePitApproach(c) {
+  // visible to the AI around it: a car slowing for the pit entry isn't an
+  // obstacle to swerve round (BUILD 110)
+  c.phys.pitBound = !!(c.pitArmed && !c.pitState && (c.pitArmLap == null || c.phys.lap >= c.pitArmLap));
   if (!c.ai) return;
   const a = pitApproachTarget(c);
   c.ai.laneOverride = a ? a.lane : null;
@@ -4676,6 +4698,7 @@ function stepSim(dt) {
         // penalty served: no tyres, no stop, does not count as the mandatory stop
         c.driveThrough = false; c.driveThroughServed = true;
         c.pitState = null; c.pitArmed = false; c.pitArmLap = null; c.phys.inPit = false;
+        if (c.ai && c.ai.onPitExit) c.ai.onPitExit();
         if (c.driver.player) showBanner('PENALTY SERVED', 2, '#ffd12e');
         continue;
       }
@@ -4705,6 +4728,7 @@ function stepSim(dt) {
       c.phys.setTyre(next);
       c.pitCompound = (c.pitPlan && c.pitPlan.length) ? c.pitPlan[0] : removed;
       c.pitted = true; c.pitState = null; c.pitArmed = false; c.pitArmLap = null; c.phys.inPit = false;
+      if (c.ai && c.ai.onPitExit) c.ai.onPitExit();
       if (c.driver.player) {
         const lane = c.pitLaneStart != null ? (G.simTime - c.pitLaneStart) : 0;
         showBanner('OUT — ' + c.phys.compound.toUpperCase() + 'S · PIT LANE ' + lane.toFixed(1) + 's', 2.4, '#2ecc71');
@@ -4776,5 +4800,5 @@ setInterval(() => {
 
 window.__G = G; // debug handle
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 109';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 110';
 })();
