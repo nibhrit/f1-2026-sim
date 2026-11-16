@@ -113,6 +113,7 @@ const AUDIO = (() => {
   }
 
   function init() {
+    primeSay();
     if (ctx) return;
     try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) { return; }
     noiseBuf = makeNoise();
@@ -418,6 +419,7 @@ const AUDIO = (() => {
 
   function toggleMute() {
     muted = !muted;
+    if (muted) shutUp();
     if (ctx && master) master.gain.value = muted ? 0 : volume;
     if (musicEl && !musicGain) musicEl.muted = muted;
     savePrefs();
@@ -432,6 +434,7 @@ const AUDIO = (() => {
   function background(hidden) {
     try {
       if (hidden) {
+        shutUp();
         wasPlaying = !!(musicEl && !musicEl.paused);
         if (musicEl) musicEl.pause();
         if (ctx && ctx.state === 'running') ctx.suspend();
@@ -447,5 +450,39 @@ const AUDIO = (() => {
     window.addEventListener('pageshow', () => { if (!document.hidden) background(false); });
   }
 
-  return { init, update, beep, crash, whoosh, toggleMute, setMusic, get musicOn(){return musicOn;}, musicStart, musicDuck, background, get muted(){return muted;} };
+  // ---- race engineer voice (BUILD 115) ----
+  // Spoken radio: the browser's own speech voice, after a radio click. Follows
+  // the SOUND switch. Phones only allow speech after a tap, so the first
+  // init() (always from a tap) primes it with a silent utterance.
+  let voice = null, sayPrimed = false;
+  const synth = () => (typeof window !== 'undefined' && window.speechSynthesis && typeof window.SpeechSynthesisUtterance === 'function') ? window.speechSynthesis : null;
+  function pickVoice() {
+    const sy = synth(); if (!sy) return null;
+    const vs = sy.getVoices() || [];
+    if (!vs.length) return null;
+    const en = vs.filter(v => /^en/i.test(v.lang));
+    return en.find(v => /en-GB/i.test(v.lang) && /male|daniel|arthur|george/i.test(v.name)) || en.find(v => /en-GB/i.test(v.lang)) || en[0] || vs[0];
+  }
+  function primeSay() {
+    const sy = synth(); if (!sy || sayPrimed) return;
+    sayPrimed = true;
+    try { const u = new window.SpeechSynthesisUtterance(' '); u.volume = 0; sy.speak(u); } catch (e) {}
+  }
+  function say(text) {
+    const sy = synth();
+    if (!sy || muted || !text || (typeof document !== 'undefined' && document.hidden)) return false;
+    try {
+      if (!voice) voice = pickVoice();
+      const u = new window.SpeechSynthesisUtterance(String(text));
+      if (voice) u.voice = voice;
+      u.rate = 1.12; u.pitch = 0.95; u.volume = 1;
+      if (sy.pending) sy.cancel();          // the newest call matters most
+      beep(1250, 0.05, 0.08);               // radio click
+      sy.speak(u);
+      return true;
+    } catch (e) { return false; }
+  }
+  function shutUp() { const sy = synth(); if (sy) { try { sy.cancel(); } catch (e) {} } }
+
+  return { say, shutUp, primeSay, init, update, beep, crash, whoosh, toggleMute, setMusic, get musicOn(){return musicOn;}, musicStart, musicDuck, background, get muted(){return muted;} };
 })();

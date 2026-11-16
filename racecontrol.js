@@ -51,7 +51,10 @@ function rcFn(name) {
 }
 function rcRcMsg(text, kind) { const f = rcFn('stewardMsg'); if (f) f(text, kind || 'limits'); }
 function rcBanner(text, secs, col) { const f = rcFn('showBanner'); if (f) f(text, secs, col); }
-function rcRadio(text) { const f = rcFn('radio'); if (f) f(text); }
+function rcRadio(text) { const f = rcFn('radio'); if (f) f(text); rcSay(text); }
+// the race engineer, out loud (AUDIO.say via the hook; silent in the harness)
+function rcSay(text) { const f = rcG && rcG.__hooks && rcG.__hooks.say; if (f && rcG.player && !rcG.player.retired) f(String(text).replace(/—/g, ',')); }
+function rcPick(a) { return a[Math.floor(Math.random() * a.length)]; }
 function rcPenalty(car, secs, why) { const f = rcFn('addPenalty'); if (f) f(car, secs, why); }
 
 // a full-grip race-pace speed profile of the circuit, cached on the track: the
@@ -145,6 +148,7 @@ function rcStep(G, dt) {
     if (rc.timer <= 0) {
       rc.mode = 'vscEnding'; rc.timer = 10 + Math.random() * 5;
       rcBanner('VSC ENDING', 2.5, '#ffd12e'); rcRcMsg('RACE CONTROL: VSC ENDING');
+      rcSay(rcPick(['V S C ending. Get ready.', 'V S C ending, be ready to go on green.']));
     }
   } else if (rc.mode === 'vscEnding') {
     rc.timer -= dt;
@@ -189,6 +193,7 @@ function rcIncident(G, c) {
 }
 function rcDebris(G, c) {
   rcRcMsg('RACE CONTROL: DEBRIS ON TRACK after contact involving ' + c.driver.id);
+  rcSay('Debris on track.');
   G.rc.incidents.push({ id: c.driver.id, lapDist: Math.round(c.phys.lapDist), onTrack: true, at: +G.rc.t.toFixed(1), why: 'debris' });
   if (Math.random() < 0.55) rcDeployVSC(G, 30 + Math.random() * 30);
   else rcDeploySC(G, 60 + Math.random() * 50);
@@ -204,12 +209,14 @@ function rcDeployVSC(G, dur) {
   rc.pl = { warned: 0, sec: null, pass: null, passT: 0 };
   rcBanner('VIRTUAL SAFETY CAR', 3, '#ffd12e');
   rcRcMsg('RACE CONTROL: VSC DEPLOYED');
+  rcSay(rcPick(['Virtual safety car. Virtual safety car. Stay positive on the delta, no overtaking.', 'V S C deployed. Slow down, keep the delta positive.', 'Virtual safety car. Watch your delta.']));
   rcCheapStops(G, 'vsc');
 }
 
 function rcGreen(G) {
   rcG = G;
   const rc = G.rc;
+  rc.mode0 = rc.mode;
   rc.mode = 'green'; rc.timer = 0;
   for (const c of G.cars) {
     c.rcGhost = null; c.rcUnlap = false; c.rcGo = false; c.rcQueued = false; c.rcPastSC = false; c._rcLap0 = null; c.rcDelta = null;
@@ -219,6 +226,7 @@ function rcGreen(G) {
   const lead = Math.max(...G.cars.filter(c => !c.retired).map(c => c.phys.lap));
   rc.drsOffUntilLap = lead + (rc.wasSC ? 2 : 1);  // DRS back 2 laps after an SC restart, 1 after a VSC
   rc.wasSC = false;
+  if (rc.mode0 !== 'restart') rcSay(rcPick(['Green flag. Push now.', 'Track is clear. Green, green, green.']));
   rcBanner('GREEN FLAG', 2, '#2ecc71'); rcRcMsg('RACE CONTROL: TRACK CLEAR — GREEN FLAG');
 }
 
@@ -414,6 +422,12 @@ function rcRestore(G, snap, carsSnap) {
 // lane at the end of the lap, the leader controls the pace and nobody may
 // overtake until they cross the control line. DRS back two laps later.
 const RC_SC_PACE = 0.60;          // safety car speed, share of race pace
+// BUILD 115: the pack must actually form. Cars catching the queue run to a
+// much quicker delta than the safety car (which crawls until they're all
+// there), so a 40 s field closes up in about a lap instead of never.
+const RC_SC_WAIT = 0.46;          // safety car while the field is still catching up
+const RC_SC_CATCH = 0.86;         // catching cars' reference pace (the SC delta)
+const RC_SC_GAP = 11;             // queue spacing, m
 
 function rcRunning(G) { return G.cars.filter(c => !c.finished && !c.retired && !c.pitState && !c.failing); }
 function rcRoadGap(t, a, b) {     // metres a is ahead of b along the road (-L/2..L/2)
@@ -428,6 +442,7 @@ function rcDeploySC(G, dur) {
   if (rc.mode === 'restart') return;      // let this restart happen
   rc.mode = 'sc'; rc.timer = dur; rc.scCount = (rc.scCount || 0) + 1; rc.since = rc.t; rc.wasSC = true;
   rc.scLaps = 0; rc.unlapDone = false; rc.unlapMsg = false; rc.scInT = 0;
+  rc.bunched = false; rc.bunchMsg = false; rc.lightsOut = false; rc.went = false; rc.goAt = null; rc.goDist = null; rc.hang = null;
   for (const c of G.cars) { c.rcGhost = null; c.rcUnlap = false; c.rcGo = false; c.rcQueued = false; }
   rc.pl = { warned: 0, sec: null, pass: null, passT: 0 };
   // the safety car comes out ahead of the leader
@@ -436,6 +451,7 @@ function rcDeploySC(G, dur) {
   rcScSpawn(G, lead ? lead.phys.totalDist + 260 : 0);
   rcBanner('SAFETY CAR DEPLOYED', 3.2, '#ffd12e');
   rcRcMsg('RACE CONTROL: SAFETY CAR DEPLOYED');
+  rcSay(rcPick(['Safety car. Safety car. Slow down, catch the queue on the delta. No overtaking.', 'Safety car deployed. Keep the delta positive and close up to the pack.', 'Safety car is out. Bring it back to the queue, no overtaking.']));
   rcCheapStops(G, 'sc');
 }
 
@@ -482,10 +498,12 @@ function rcScStep(G, dt) {
   // ---- the safety car itself ----
   if (sc) {
     const ph = sc.phys;
-    const vSC = rcRefSpeed(t, ph.trackIdx) / RC_VSC_PACE * RC_SC_PACE;
+    // crawls until the field has bunched up behind it; lights out on its
+    // last lap -> it pulls away to the pit lane while the leader hangs back
+    const vSC = rcRefSpeed(t, ph.trackIdx) / RC_VSC_PACE * (rc.lightsOut ? 0.92 : rc.bunched ? RC_SC_PACE : RC_SC_WAIT);
     // waits for the leader if it has got away, never runs away from it
     let cap = vSC;
-    if (lead) { const gap = rcRoadGap(t, ph, lead.phys); if (gap > 120) cap = Math.min(cap, Math.max(10, lead.phys.speed - 3)); }
+    if (lead && !rc.lightsOut) { const gap = rcRoadGap(t, ph, lead.phys); if (gap > 120) cap = Math.min(cap, Math.max(10, lead.phys.speed - 3)); }
     sc.ai.rcCap = cap;
     const inp = sc.ai.compute(dt, [ph]);
     ph.step(dt, inp);
@@ -501,7 +519,7 @@ function rcScStep(G, dt) {
   if (rc.mode === 'sc') {
     rc.timer -= dt;
     // everyone has caught up: lapped cars may now overtake (once)
-    if (!rc.unlapMsg && rc.scLaps >= 1 && lead) {
+    if (!rc.unlapMsg && lead && (rc.bunched || rc.timer < -60)) {
       const lapped = run.filter(c => c !== lead && lead.phys.totalDist - c.phys.totalDist > L - 150);
       rc.unlapMsg = true;
       if (lapped.length) {
@@ -514,8 +532,12 @@ function rcScStep(G, dt) {
       // done once every unlapping car is past the safety car
       rc.unlapDone = !G.cars.some(c => c.rcUnlap && !c.rcPastSC && !c.retired && !c.finished);
     }
-    if (rc.timer <= 0 && rc.unlapDone && rc.scLaps >= 1) {
+    // called early enough in the lap that the leader has room to play with
+    const gE = typeof pitLaneGeom === 'function' ? pitLaneGeom(t) : null;
+    const toE = sc ? (((gE ? gE.entryStart : L - 300) - sc.phys.lapDist) % L + L) % L : L;
+    if (rc.timer <= 0 && rc.unlapDone && (rc.bunched || rc.timer < -120) && toE > 0.45 * L) {
       rc.mode = 'scIn'; rc.scInT = 0;
+      rcSay(rcPick(['Safety car in this lap. Safety car in this lap.', 'Safety car is coming in this lap. Get ready for the restart.']));
       rcBanner('SAFETY CAR IN THIS LAP', 3, '#ffd12e'); rcRcMsg('RACE CONTROL: SAFETY CAR IN THIS LAP');
     }
   }
@@ -527,12 +549,29 @@ function rcScStep(G, dt) {
     sc._ld = ld;
     rc.scInT += dt;
     const crossed = (prev < entry && ld >= entry) || (prev > ld && (entry > prev || entry <= ld));
+    // lights out: some way before the pit entry (never the same place twice)
+    // the safety car goes, the leader backs the pack up and picks its moment
+    if (!rc.lightsOut) {
+      if (rc.hang == null) rc.hang = 500 + Math.random() * Math.min(1300, L * 0.3);
+      const toEntry = ((entry - ld) % L + L) % L;
+      if (toEntry < rc.hang && rc.scInT > 2) {
+        rc.lightsOut = true;
+        // how slowly the leader backs the pack up, and where it goes: anywhere
+        // from well before the last corners to right on the line
+        rc.hangPace = 0.36 + Math.random() * 0.2;
+        rc.goDist = 25 + Math.pow(Math.random(), 1.4) * Math.min(1100, L * 0.24);
+        const ltd = lead ? lead.phys.totalDist : sc.phys.totalDist;
+        rc.goAt = (Math.floor((ltd + toEntry + 1) / L) + 1) * L - rc.goDist;
+        if (lead && lead === G.player) rcSay('Safety car lights are out. You control the restart, your call.');
+        else rcSay(rcPick(['Lights are out on the safety car. Leader controls the pace, stay sharp.', 'Safety car lights out. Watch the leader, be ready.']));
+      }
+    }
     if (rc.scInT > 3 && crossed) {
       rcScRemove(G);
-      rc.mode = 'restart'; rc.timer = 0; rc.goAt = null;
-      // the leader picks the moment, somewhere between here and the line
-      const toLine = Math.max(80, L - entry);
-      rc.goAt = (lead ? lead.phys.totalDist : 0) + toLine * (0.35 + 0.5 * Math.random());
+      rc.mode = 'restart'; rc.timer = 0;
+      if (rc.goAt == null) { rc.goDist = 25 + Math.random() * 150; rc.goAt = (Math.floor((lead ? lead.phys.totalDist : 0) / L) + 1) * L - rc.goDist; rc.hangPace = 0.45; rc.lightsOut = true; }
+      // you lead: the restart is yours — everyone is released at the line
+      if (lead && lead === G.player && !G.autopilot) rc.went = true;
     }
   }
 
@@ -567,30 +606,50 @@ function rcScStep(G, dt) {
       cap = vRef / RC_VSC_PACE * 0.82;
       if (sc && rcRoadGap(t, p, sc.phys) > 40) c.rcPastSC = true;
       if (ai) { ai.rcNeutral = false; ai.rcUnlap = true; }
-    } else if (rc.mode === 'restart' && c === order[0]) {
-      // the leader: safety-car pace until it chooses to go
-      cap = rc.goAt != null && p.totalDist >= rc.goAt ? null : vRef / RC_VSC_PACE * RC_SC_PACE;
-      if (cap == null && !rc.went) { rc.went = true; rcBanner('RESTART — GREEN AT THE LINE', 2, '#2ecc71'); }
+    } else if (rc.lightsOut && c === order[0] && (rc.mode === 'restart' || rc.mode === 'scIn')) {
+      // the leader after lights out: hangs back from the safety car, backs the
+      // pack up at its own pace, then goes where it chooses (once the safety
+      // car is in the pit lane)
+      if (!rc.went && rc.mode === 'restart' && rc.goAt != null && p.totalDist >= rc.goAt) {
+        rc.went = true; rcBanner('RESTART — GREEN AT THE LINE', 2, '#2ecc71');
+        rcSay(rcPick(['Leader is going. Go, go, go! No overtaking before the line.', 'He has gone! Full power, pass after the line.']));
+      }
+      cap = rc.went ? null : vRef / RC_VSC_PACE * (rc.hangPace || 0.45) * (0.95 + 0.1 * Math.sin(rc.t * 0.5));
+      if (!rc.went && sc && ah === sc.phys && gap < 45) cap = Math.min(cap, Math.max(0, ah.speed + 0.35 * (gap - 30)));
+      c.rcQueued = true; c.rcGhost = null; c.rcDelta = null;
       if (ai) { ai.rcNeutral = true; ai.rcUnlap = false; }
-    } else if (gap > 80 && !(rc.mode === 'restart')) {
+    } else if (gap > 60 && rc.mode !== 'restart' && !rc.lightsOut) {
       // still catching the queue: stay above the minimum time
       if (c.rcGhost == null) c.rcGhost = p.totalDist + Math.max(10, p.speed * 2.0);
-      const vg = rcRefSpeed(t, rcIdxAt(t, c.rcGhost));
+      const kC = RC_SC_CATCH / RC_VSC_PACE;
+      const vg = rcRefSpeed(t, rcIdxAt(t, c.rcGhost)) * kC;
       c.rcGhost += vg * dt;
-      c.rcDelta = (c.rcGhost - p.totalDist) / Math.max(8, vRef);
-      cap = vRef * Math.max(0.55, Math.min(1.08, 1 + (c.rcDelta - 0.4) * 0.35));
+      c.rcDelta = (c.rcGhost - p.totalDist) / Math.max(8, vRef * kC);
+      cap = vRef * kC * Math.max(0.55, Math.min(1.08, 1 + (c.rcDelta - 0.4) * 0.35));
       c.rcQueued = false;
       if (ai) { ai.rcNeutral = true; ai.rcUnlap = false; }
     } else {
       // in the queue: hold station ~20 m behind the car ahead
       c.rcQueued = true; c.rcGhost = null; c.rcDelta = null;
       const vA = ah ? ah.speed : vRef;
-      cap = Math.max(0, Math.min(vA + 6, vA + 0.35 * (gap - 20)));
+      const want = RC_SC_GAP + 0.3 * p.speed;      // ~1.5-2 car lengths in the slow stuff, more at speed
+      cap = Math.max(0, Math.min(vA + 8, vA + 0.4 * (gap - want)));
+      c.rcTight = gap < want + 14;
       if (c.rcPastSC) { c.rcUnlap = false; }
       if (ai) { ai.rcNeutral = true; ai.rcUnlap = false; }
     }
     if (ai) ai.rcCap = c.failing ? 0 : cap;
     c.rcGap = gap;
+  }
+  // bunched: every car on the road has reached the queue
+  if (rc.mode === 'sc') {
+    // (re-checked all the time: cars rejoining from the pits have to catch up too)
+    // (cars a lap down — or as good as: on the road just ahead of the leader —
+    // are waved round rather than waited for)
+    const q = run.filter(c => !c.rcUnlap && !(lead && c !== lead && lead.phys.totalDist - c.phys.totalDist > L - 150));
+    const all = q.length && q.every(c => c.rcQueued && c.rcTight) && !G.cars.some(c => c.pitState && !c.retired && !c.finished) && rc.t - (rc.since || 0) > 8;
+    if (all && !rc.bunched && !rc.bunchMsg) { rc.bunchMsg = true; rcRcMsg('RACE CONTROL: FIELD BUNCHED UP BEHIND THE SAFETY CAR'); }
+    rc.bunched = !!all;
   }
   // everyone's through the line (or 25 s after the leader went): racing
   if (rc.mode === 'restart' && rc.went) {
@@ -620,7 +679,7 @@ function rcRedFlag(G, why) {
   for (const c of G.cars) { c.rcGhost = null; c.rcUnlap = false; c.rcGo = false; c.rcQueued = false; c.rcPastSC = false; }
   rcBanner('RED FLAG — ' + rc.redWhy, 3.5, '#ff4040');
   rcRcMsg('RACE CONTROL: RED FLAG — ' + rc.redWhy + '. All cars to the pit lane.', 'coll');
-  rcRadio('Red flag. Box, box — we can change tyres and fix the car.');
+  rcRadio('Red flag. Red flag. The race is stopped. We can change tyres and fix the car.');
 }
 
 // what a team fits for the rest of the race under a red flag
@@ -688,6 +747,7 @@ function rcRedResume(G, playerTyre) {
     G.countdown = { phase: 0, t: 2.0 };
     rcBanner('STANDING RESTART', 2.5, '#ffd12e');
   }
+  rcSay(rc.redRolling ? 'We are resuming behind the safety car.' : 'Standing restart. Back on the grid. Watch the lights.');
   rcRcMsg('RACE CONTROL: RACE RESUMING' + (rc.redRolling ? ' BEHIND THE SAFETY CAR' : ' — STANDING START'));
 }
 

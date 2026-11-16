@@ -4884,7 +4884,7 @@ setInterval(() => {
 window.__G = G; // debug handle
 G.__scene = scene;   // (race control adds the safety car to it)
 // race control (racecontrol.js) lives outside this closure: its way in
-G.__hooks = { showBanner, stewardMsg, radio, addPenalty, armPit, aiCompoundFor };
+G.__hooks = { showBanner, stewardMsg, radio, addPenalty, armPit, aiCompoundFor, say: t => AUDIO.say && AUDIO.say(t) };
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 114';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 115';
 })();
