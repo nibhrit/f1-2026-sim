@@ -51,9 +51,10 @@ function rcFn(name) {
 }
 function rcRcMsg(text, kind) { const f = rcFn('stewardMsg'); if (f) f(text, kind || 'limits'); }
 function rcBanner(text, secs, col) { const f = rcFn('showBanner'); if (f) f(text, secs, col); }
-function rcRadio(text) { const f = rcFn('radio'); if (f) f(text); rcSay(text); }
+function rcRadio(text, id) { const f = rcFn('radio'); if (f) f(text); if (id) rcSay(id, text); }
 // the race engineer, out loud (AUDIO.say via the hook; silent in the harness)
-function rcSay(text) { const f = rcG && rcG.__hooks && rcG.__hooks.say; if (f && rcG.player && !rcG.player.retired) f(String(text).replace(/—/g, ',')); }
+// (BUILD 116: by line id — main.js plays the recorded line, or speaks the text)
+function rcSay(id, text) { const f = rcG && rcG.__hooks && rcG.__hooks.say; if (f && rcG.player && !rcG.player.retired) f(id, String(text).replace(/—/g, ',')); }
 function rcPick(a) { return a[Math.floor(Math.random() * a.length)]; }
 function rcPenalty(car, secs, why) { const f = rcFn('addPenalty'); if (f) f(car, secs, why); }
 
@@ -106,7 +107,7 @@ function rcStep(G, dt) {
       rcRcMsg(c.driver.id + ' — ' + nm + ', slowing', 'coll');
       if (c.driver.player) {
         rcBanner(nm + ' — PULL OVER', 4, '#ff5c5c');
-        rcRadio('We have lost the car. ' + nm.toLowerCase() + '. Pull over safely.');
+        rcRadio('We have lost the car. ' + nm.toLowerCase() + '. Pull over safely.', 'failure');
       }
     }
     if (c.failing) {
@@ -148,7 +149,7 @@ function rcStep(G, dt) {
     if (rc.timer <= 0) {
       rc.mode = 'vscEnding'; rc.timer = 10 + Math.random() * 5;
       rcBanner('VSC ENDING', 2.5, '#ffd12e'); rcRcMsg('RACE CONTROL: VSC ENDING');
-      rcSay(rcPick(['V S C ending. Get ready.', 'V S C ending, be ready to go on green.']));
+      rcSay('vsc_end', rcPick(['V S C ending. Get ready.', 'V S C ending, be ready to go on green.']));
     }
   } else if (rc.mode === 'vscEnding') {
     rc.timer -= dt;
@@ -177,23 +178,27 @@ function rcIncident(G, c) {
   // crash), or a big impact with the barriers: red flag
   const recent = rc.incidents.filter(x => rc.t - x.at < 12 && x.onTrack).length;
   const lvl = rcLevel(G);
-  if (onTrack && ((recent >= 2 && Math.random() < 0.5 * lvl) || ((p.lastImpact || 0) > 32 && Math.random() < 0.3 * lvl))) {
+  if (onTrack && ((recent >= 2 && Math.random() < Math.min(0.6, 0.3 * lvl)) || ((p.lastImpact || 0) > 32 && Math.random() < Math.min(0.3, 0.1 * lvl)))) {
     rcRedFlag(G, recent >= 2 ? 'MULTI-CAR INCIDENT' : 'BARRIER REPAIRS'); return;
   }
   const r = Math.random();
+  // a crash (big impact) leaves debris and a wreck: usually a safety car;
+  // a car that coasted to a stop can often be cleared under a VSC
+  const crash = (p.lastImpact || 0) > 14;
   if (!onTrack) {
-    if (r < 0.4) { rcRcMsg('YELLOW FLAG — ' + c.driver.id + ' stopped off the track'); return; }
+    if (crash) { if (r < 0.6) rcDeploySC(G, 70 + Math.random() * 60); else rcDeployVSC(G, 35 + Math.random() * 40); return; }
+    if (r < 0.35) { rcRcMsg('YELLOW FLAG — ' + c.driver.id + ' stopped off the track'); return; }
     if (r < 0.85) { rcDeployVSC(G, 28 + Math.random() * 40); return; }
     rcDeploySC(G, 70 + Math.random() * 60);       // a crane job
     return;
   }
   // stopped on (or at the edge of) the road: marshals on track
-  if (r < 0.3) rcDeployVSC(G, 45 + Math.random() * 40);
+  if (r < (crash ? 0.15 : 0.35)) rcDeployVSC(G, 45 + Math.random() * 40);
   else rcDeploySC(G, 80 + Math.random() * 70);
 }
 function rcDebris(G, c) {
   rcRcMsg('RACE CONTROL: DEBRIS ON TRACK after contact involving ' + c.driver.id);
-  rcSay('Debris on track.');
+  rcSay('debris', 'Debris on track.');
   G.rc.incidents.push({ id: c.driver.id, lapDist: Math.round(c.phys.lapDist), onTrack: true, at: +G.rc.t.toFixed(1), why: 'debris' });
   if (Math.random() < 0.55) rcDeployVSC(G, 30 + Math.random() * 30);
   else rcDeploySC(G, 60 + Math.random() * 50);
@@ -209,7 +214,7 @@ function rcDeployVSC(G, dur) {
   rc.pl = { warned: 0, sec: null, pass: null, passT: 0 };
   rcBanner('VIRTUAL SAFETY CAR', 3, '#ffd12e');
   rcRcMsg('RACE CONTROL: VSC DEPLOYED');
-  rcSay(rcPick(['Virtual safety car. Virtual safety car. Stay positive on the delta, no overtaking.', 'V S C deployed. Slow down, keep the delta positive.', 'Virtual safety car. Watch your delta.']));
+  rcSay('vsc', rcPick(['Virtual safety car. Virtual safety car. Stay positive on the delta, no overtaking.', 'V S C deployed. Slow down, keep the delta positive.', 'Virtual safety car. Watch your delta.']));
   rcCheapStops(G, 'vsc');
 }
 
@@ -226,7 +231,7 @@ function rcGreen(G) {
   const lead = Math.max(...G.cars.filter(c => !c.retired).map(c => c.phys.lap));
   rc.drsOffUntilLap = lead + (rc.wasSC ? 2 : 1);  // DRS back 2 laps after an SC restart, 1 after a VSC
   rc.wasSC = false;
-  if (rc.mode0 !== 'restart') rcSay(rcPick(['Green flag. Push now.', 'Track is clear. Green, green, green.']));
+  if (rc.mode0 !== 'restart') rcSay('green', rcPick(['Green flag. Push now.', 'Track is clear. Green, green, green.']));
   rcBanner('GREEN FLAG', 2, '#2ecc71'); rcRcMsg('RACE CONTROL: TRACK CLEAR — GREEN FLAG');
 }
 
@@ -332,7 +337,7 @@ function rcCheapStops(G, kind) {
   if (pl && !pl.finished && !pl.retired && !pl.pitState) {
     const owes = pitsOpen && !pl.pitted && !pl.usedWet;
     if ((owes && pl.phys.lap >= G.raceLaps * 0.25) || pl.phys.tyreLife < 0.5)
-      rcRadio((kind === 'vsc' ? 'VSC' : 'Safety car') + ' — a cheap stop if you box this lap.');
+      rcRadio((kind === 'vsc' ? 'VSC' : 'Safety car') + ' — a cheap stop if you box this lap.', 'box_cheap');
   }
 }
 
@@ -451,7 +456,7 @@ function rcDeploySC(G, dur) {
   rcScSpawn(G, lead ? lead.phys.totalDist + 260 : 0);
   rcBanner('SAFETY CAR DEPLOYED', 3.2, '#ffd12e');
   rcRcMsg('RACE CONTROL: SAFETY CAR DEPLOYED');
-  rcSay(rcPick(['Safety car. Safety car. Slow down, catch the queue on the delta. No overtaking.', 'Safety car deployed. Keep the delta positive and close up to the pack.', 'Safety car is out. Bring it back to the queue, no overtaking.']));
+  rcSay('sc', rcPick(['Safety car. Safety car. Slow down, catch the queue on the delta. No overtaking.', 'Safety car deployed. Keep the delta positive and close up to the pack.', 'Safety car is out. Bring it back to the queue, no overtaking.']));
   rcCheapStops(G, 'sc');
 }
 
@@ -525,7 +530,7 @@ function rcScStep(G, dt) {
       if (lapped.length) {
         for (const c of lapped) c.rcUnlap = true;
         rcBanner('LAPPED CARS MAY NOW OVERTAKE', 3, '#ffd12e'); rcRcMsg('RACE CONTROL: LAPPED CARS MAY NOW OVERTAKE');
-        if (G.player && G.player.rcUnlap) rcRadio('You are a lap down — you may overtake the safety car and unlap yourself.');
+        if (G.player && G.player.rcUnlap) rcRadio('You are a lap down — you may overtake the safety car and unlap yourself.', 'unlap');
       } else rc.unlapDone = true;
     }
     if (rc.unlapMsg && !rc.unlapDone) {
@@ -537,7 +542,7 @@ function rcScStep(G, dt) {
     const toE = sc ? (((gE ? gE.entryStart : L - 300) - sc.phys.lapDist) % L + L) % L : L;
     if (rc.timer <= 0 && rc.unlapDone && (rc.bunched || rc.timer < -120) && toE > 0.45 * L) {
       rc.mode = 'scIn'; rc.scInT = 0;
-      rcSay(rcPick(['Safety car in this lap. Safety car in this lap.', 'Safety car is coming in this lap. Get ready for the restart.']));
+      rcSay('sc_in', rcPick(['Safety car in this lap. Safety car in this lap.', 'Safety car is coming in this lap. Get ready for the restart.']));
       rcBanner('SAFETY CAR IN THIS LAP', 3, '#ffd12e'); rcRcMsg('RACE CONTROL: SAFETY CAR IN THIS LAP');
     }
   }
@@ -562,8 +567,8 @@ function rcScStep(G, dt) {
         rc.goDist = 25 + Math.pow(Math.random(), 1.4) * Math.min(1100, L * 0.24);
         const ltd = lead ? lead.phys.totalDist : sc.phys.totalDist;
         rc.goAt = (Math.floor((ltd + toEntry + 1) / L) + 1) * L - rc.goDist;
-        if (lead && lead === G.player) rcSay('Safety car lights are out. You control the restart, your call.');
-        else rcSay(rcPick(['Lights are out on the safety car. Leader controls the pace, stay sharp.', 'Safety car lights out. Watch the leader, be ready.']));
+        if (lead && lead === G.player) rcSay('sc_lights_you', 'Safety car lights are out. You control the restart, your call.');
+        else rcSay('sc_lights', rcPick(['Lights are out on the safety car. Leader controls the pace, stay sharp.', 'Safety car lights out. Watch the leader, be ready.']));
       }
     }
     if (rc.scInT > 3 && crossed) {
@@ -612,7 +617,7 @@ function rcScStep(G, dt) {
       // car is in the pit lane)
       if (!rc.went && rc.mode === 'restart' && rc.goAt != null && p.totalDist >= rc.goAt) {
         rc.went = true; rcBanner('RESTART — GREEN AT THE LINE', 2, '#2ecc71');
-        rcSay(rcPick(['Leader is going. Go, go, go! No overtaking before the line.', 'He has gone! Full power, pass after the line.']));
+        rcSay('restart_go', rcPick(['Leader is going. Go, go, go! No overtaking before the line.', 'He has gone! Full power, pass after the line.']));
       }
       cap = rc.went ? null : vRef / RC_VSC_PACE * (rc.hangPace || 0.45) * (0.95 + 0.1 * Math.sin(rc.t * 0.5));
       if (!rc.went && sc && ah === sc.phys && gap < 45) cap = Math.min(cap, Math.max(0, ah.speed + 0.35 * (gap - 30)));
@@ -679,7 +684,7 @@ function rcRedFlag(G, why) {
   for (const c of G.cars) { c.rcGhost = null; c.rcUnlap = false; c.rcGo = false; c.rcQueued = false; c.rcPastSC = false; }
   rcBanner('RED FLAG — ' + rc.redWhy, 3.5, '#ff4040');
   rcRcMsg('RACE CONTROL: RED FLAG — ' + rc.redWhy + '. All cars to the pit lane.', 'coll');
-  rcRadio('Red flag. Red flag. The race is stopped. We can change tyres and fix the car.');
+  rcRadio('Red flag. Red flag. The race is stopped. We can change tyres and fix the car.', 'red');
 }
 
 // what a team fits for the rest of the race under a red flag
@@ -747,7 +752,7 @@ function rcRedResume(G, playerTyre) {
     G.countdown = { phase: 0, t: 2.0 };
     rcBanner('STANDING RESTART', 2.5, '#ffd12e');
   }
-  rcSay(rc.redRolling ? 'We are resuming behind the safety car.' : 'Standing restart. Back on the grid. Watch the lights.');
+  rcSay(rc.redRolling ? 'resume_sc' : 'resume_grid', rc.redRolling ? 'We are resuming behind the safety car.' : 'Standing restart. Back on the grid. Watch the lights.');
   rcRcMsg('RACE CONTROL: RACE RESUMING' + (rc.redRolling ? ' BEHIND THE SAFETY CAR' : ' — STANDING START'));
 }
 

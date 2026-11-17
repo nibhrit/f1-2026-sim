@@ -28,8 +28,10 @@ const AUDIO = (() => {
   // sound + music switches survive restarts
   let prefs = {}; try { prefs = JSON.parse(localStorage.getItem('outlap_audio') || '{}'); } catch (e) {}
   let muted = prefs.sound === false;
+  let radioOn = prefs.radio !== false;          // engineer radio (BUILD 116)
+  let bus = null;
   let musicOn = prefs.music !== false;
-  const savePrefs = () => { try { localStorage.setItem('outlap_audio', JSON.stringify({ sound: !muted, music: musicOn })); } catch (e) {} };
+  const savePrefs = () => { try { localStorage.setItem('outlap_audio', JSON.stringify({ sound: !muted, music: musicOn, radio: radioOn })); } catch (e) {} };
   let volume = 0.55;
   let player = null;               // player voice
   const opp = [];                  // rival voices
@@ -99,14 +101,14 @@ const AUDIO = (() => {
     v.lp = ctx.createBiquadFilter(); v.lp.type = 'lowpass'; v.lp.frequency.value = 3000; v.lp.Q.value = 0.6;
     v.gain = ctx.createGain(); v.gain.gain.value = 0;
     sum.connect(v.lp); v.lp.connect(v.gain);
-    if (ctx.createStereoPanner) { v.pan = ctx.createStereoPanner(); v.gain.connect(v.pan); v.pan.connect(master); }
-    else v.gain.connect(master);
+    if (ctx.createStereoPanner) { v.pan = ctx.createStereoPanner(); v.gain.connect(v.pan); v.pan.connect(bus); }
+    else v.gain.connect(bus);
     v.osc.start(); v.osc2.start();
     // turbo whistle (player only)
     if (isPlayer) {
       v.turbo = ctx.createOscillator(); v.turbo.type = 'sine';
       v.turboG = ctx.createGain(); v.turboG.gain.value = 0;
-      v.turbo.connect(v.turboG); v.turboG.connect(master); v.turbo.start();
+      v.turbo.connect(v.turboG); v.turboG.connect(bus); v.turbo.start();
     }
     v.car = null; v.lastD = null;
     return v;
@@ -114,12 +116,15 @@ const AUDIO = (() => {
 
   function init() {
     primeSay();
-    if (ctx) return;
+    if (ctx) { loadVoice(); return; }
     try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) { return; }
     noiseBuf = makeNoise();
     master = ctx.createGain();
     master.gain.value = muted ? 0 : volume;
     master.connect(ctx.destination);
+    // BUILD 116: car sounds go through their own bus so the engineer's radio
+    // can duck them; radio and music go straight to master
+    bus = ctx.createGain(); bus.gain.value = 1; bus.connect(master);
     engWave = makeEngineWave();
     player = makeVoice(true);
     for (let i = 0; i < 3; i++) opp.push(makeVoice(false));
@@ -127,19 +132,20 @@ const AUDIO = (() => {
     // MGU-K whine
     kWhine = ctx.createOscillator(); kWhine.type = 'triangle';
     kGain = ctx.createGain(); kGain.gain.value = 0;
-    kWhine.connect(kGain); kGain.connect(master); kWhine.start();
+    kWhine.connect(kGain); kGain.connect(bus); kWhine.start();
 
     // tyre screech
     const scrSrc = ctx.createBufferSource(); scrSrc.buffer = noiseBuf; scrSrc.loop = true;
     const scrBP = ctx.createBiquadFilter(); scrBP.type = 'bandpass'; scrBP.frequency.value = 950; scrBP.Q.value = 3.5;
     screechGain = ctx.createGain(); screechGain.gain.value = 0;
-    scrSrc.connect(scrBP); scrBP.connect(screechGain); screechGain.connect(master); scrSrc.start();
+    scrSrc.connect(scrBP); scrBP.connect(screechGain); screechGain.connect(bus); scrSrc.start();
 
     // wind
     const windSrc = ctx.createBufferSource(); windSrc.buffer = noiseBuf; windSrc.loop = true;
     const windLP = ctx.createBiquadFilter(); windLP.type = 'lowpass'; windLP.frequency.value = 400;
     windGain = ctx.createGain(); windGain.gain.value = 0;
-    windSrc.connect(windLP); windLP.connect(windGain); windGain.connect(master); windSrc.start();
+    windSrc.connect(windLP); windLP.connect(windGain); windGain.connect(bus); windSrc.start();
+    loadVoice();
   }
 
   function ensureRunning() { if (ctx && ctx.state === 'suspended') ctx.resume(); }
@@ -151,7 +157,7 @@ const AUDIO = (() => {
     const f = ctx.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q || 0.8;
     const g = ctx.createGain();
     g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0008, t + dur);
-    src.connect(f); f.connect(g); g.connect(master);
+    src.connect(f); f.connect(g); g.connect(bus);
     const off = Math.random() * 1.5;
     src.start(t, off); src.stop(t + dur + 0.02);
   }
@@ -450,39 +456,111 @@ const AUDIO = (() => {
     window.addEventListener('pageshow', () => { if (!document.hidden) background(false); });
   }
 
-  // ---- race engineer voice (BUILD 115) ----
-  // Spoken radio: the browser's own speech voice, after a radio click. Follows
-  // the SOUND switch. Phones only allow speech after a tap, so the first
-  // init() (always from a tap) primes it with a silent utterance.
-  let voice = null, sayPrimed = false;
+  // ---- race engineer radio (BUILD 116) ----
+  // 1st choice: recorded lines in voice/ (manifest.json), played through Web
+  //   Audio with a radio filter and the car sounds ducked underneath. Web Audio
+  //   is what already works everywhere (your engine note), including iPhone
+  //   home-screen apps, where speech synthesis is unreliable.
+  // fallback: the browser's speech voice (needs a tap to unlock on phones).
+  let voiceLines = {}, voiceTried = false, radioUntil = 0;
+  function loadVoice() {
+    if (voiceTried || !ctx || typeof fetch !== 'function') return;
+    voiceTried = true;
+    fetch('voice/manifest.json', { cache: 'no-cache' }).then(r => r.ok ? r.json() : null).then(m => {
+      if (!m || !m.lines) return;
+      for (const id of Object.keys(m.lines)) for (const f of m.lines[id]) {
+        fetch('voice/' + f).then(r => r.ok ? r.arrayBuffer() : Promise.reject())
+          .then(ab => new Promise((res, rej) => { try { const p = ctx.decodeAudioData(ab, res, rej); if (p && p.catch) p.catch(rej); } catch (e) { rej(e); } }))
+          .then(buf => { (voiceLines[id] = voiceLines[id] || []).push(buf); })
+          .catch(() => {});
+      }
+    }).catch(() => {});
+  }
+  let shaper = null;
+  function radioShaper() {
+    if (shaper) return shaper;
+    shaper = ctx.createWaveShaper();
+    const n = 1024, c = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const x = i / (n - 1) * 2 - 1; c[i] = Math.tanh(2.2 * x) / Math.tanh(2.2); }
+    shaper.curve = c;
+    return shaper;
+  }
+  function squelch(t, len) {
+    const src = ctx.createBufferSource(); src.buffer = noiseBuf;
+    const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 2200; f.Q.value = 0.9;
+    const g = ctx.createGain(); g.gain.setValueAtTime(0.05, t); g.gain.exponentialRampToValueAtTime(0.0008, t + len);
+    src.connect(f); f.connect(g); g.connect(master);
+    src.start(t, Math.random()); src.stop(t + len + 0.02);
+  }
+  function playClip(buf) {
+    ensureRunning();
+    const now = ctx.currentTime;
+    if (radioUntil - now > 4) return false;               // don't stack up a backlog
+    const t0 = Math.max(now + 0.03, radioUntil);
+    squelch(t0, 0.09);
+    const src = ctx.createBufferSource(); src.buffer = buf;
+    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 330;
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3400;
+    const g = ctx.createGain(); g.gain.value = 1.5;
+    src.connect(hp); hp.connect(lp); lp.connect(radioShaper()); shaper.connect(g); g.connect(master);
+    src.start(t0 + 0.08);
+    const end = t0 + 0.08 + buf.duration;
+    squelch(end, 0.12);
+    // the car goes quiet under the radio
+    if (bus) { bus.gain.setTargetAtTime(0.3, t0, 0.06); bus.gain.setTargetAtTime(1, end + 0.1, 0.3); }
+    radioUntil = end + 0.35;
+    return true;
+  }
+  // speech fallback
+  let voice = null, sayOk = false;
   const synth = () => (typeof window !== 'undefined' && window.speechSynthesis && typeof window.SpeechSynthesisUtterance === 'function') ? window.speechSynthesis : null;
   function pickVoice() {
     const sy = synth(); if (!sy) return null;
     const vs = sy.getVoices() || [];
     if (!vs.length) return null;
     const en = vs.filter(v => /^en/i.test(v.lang));
-    return en.find(v => /en-GB/i.test(v.lang) && /male|daniel|arthur|george/i.test(v.name)) || en.find(v => /en-GB/i.test(v.lang)) || en[0] || vs[0];
+    return en.find(v => /en-GB/i.test(v.lang) && /daniel|arthur|jamie|oliver|male/i.test(v.name)) || en.find(v => /en-GB/i.test(v.lang)) || en[0] || vs[0];
   }
+  if (typeof window !== 'undefined' && window.speechSynthesis && window.speechSynthesis.addEventListener)
+    window.speechSynthesis.addEventListener('voiceschanged', () => { voice = pickVoice(); });
+  // phones only let a page speak after a tap: until speech has really worked
+  // once, every tap tries a near-silent word
   function primeSay() {
-    const sy = synth(); if (!sy || sayPrimed) return;
-    sayPrimed = true;
-    try { const u = new window.SpeechSynthesisUtterance(' '); u.volume = 0; sy.speak(u); } catch (e) {}
+    const sy = synth(); if (!sy || sayOk) return;
+    try {
+      const u = new window.SpeechSynthesisUtterance('ok'); u.volume = 0.01; u.rate = 2;
+      u.onstart = () => { sayOk = true; };
+      if (sy.paused) sy.resume();
+      sy.speak(u);
+    } catch (e) {}
   }
+  if (typeof window !== 'undefined') window.addEventListener('pointerup', primeSay, { passive: true });
   function say(text) {
     const sy = synth();
-    if (!sy || muted || !text || (typeof document !== 'undefined' && document.hidden)) return false;
+    if (!sy || muted || !radioOn || !text || (typeof document !== 'undefined' && document.hidden)) return false;
     try {
       if (!voice) voice = pickVoice();
       const u = new window.SpeechSynthesisUtterance(String(text));
       if (voice) u.voice = voice;
-      u.rate = 1.12; u.pitch = 0.95; u.volume = 1;
-      if (sy.pending) sy.cancel();          // the newest call matters most
-      beep(1250, 0.05, 0.08);               // radio click
-      sy.speak(u);
+      u.rate = 1.1; u.pitch = 0.95; u.volume = 1;
+      u.onstart = () => { sayOk = true; };
+      if (ctx) beep(1250, 0.05, 0.08);       // radio click
+      if (sy.paused) sy.resume();
+      if (sy.speaking || sy.pending) { sy.cancel(); setTimeout(() => { try { sy.speak(u); } catch (e) {} }, 80); }
+      else sy.speak(u);
       return true;
     } catch (e) { return false; }
   }
   function shutUp() { const sy = synth(); if (sy) { try { sy.cancel(); } catch (e) {} } }
+  // a line by id (recorded if we have it, spoken otherwise)
+  function radioLine(id, text) {
+    if (muted || !radioOn) return false;
+    const bufs = voiceLines[id];
+    if (ctx && bufs && bufs.length && playClip(bufs[Math.floor(Math.random() * bufs.length)])) return true;
+    return say(text);
+  }
+  function setRadio(on) { radioOn = !!on; if (!radioOn) shutUp(); savePrefs(); return radioOn; }
+  function voiceInfo() { return { clips: Object.keys(voiceLines).length, speech: !!synth(), speechOk: sayOk }; }
 
-  return { say, shutUp, primeSay, init, update, beep, crash, whoosh, toggleMute, setMusic, get musicOn(){return musicOn;}, musicStart, musicDuck, background, get muted(){return muted;} };
+  return { say, shutUp, primeSay, radioLine, setRadio, get radioOn(){return radioOn;}, voiceInfo, init, update, beep, crash, whoosh, toggleMute, setMusic, get musicOn(){return musicOn;}, musicStart, musicDuck, background, get muted(){return muted;} };
 })();

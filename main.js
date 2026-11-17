@@ -735,12 +735,24 @@ function syncAssistButtons() {
     if (m) { m.textContent = 'MUSIC ' + (AUDIO.musicOn ? 'ON' : 'OFF'); m.classList.toggle('selected', AUDIO.musicOn); }
     if (sd) { sd.textContent = 'SOUND ' + (AUDIO.muted ? 'OFF' : 'ON'); sd.classList.toggle('selected', !AUDIO.muted); }
     if (m2) m2.textContent = 'Music: ' + (AUDIO.musicOn ? 'On' : 'Off');
+    const rd = document.getElementById('as-radio');
+    if (rd) { rd.textContent = 'ENGINEER ' + (AUDIO.radioOn ? 'ON' : 'OFF'); rd.classList.toggle('selected', AUDIO.radioOn); }
   };
   window.__audioLabels = audioLabels;
   const onClick = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener('click', () => { AUDIO.init(); fn(); audioLabels(); }); };
   onClick('as-music', () => AUDIO.setMusic(!AUDIO.musicOn));
   onClick('btn-music2', () => AUDIO.setMusic(!AUDIO.musicOn));
   onClick('as-sound', () => AUDIO.toggleMute());
+  onClick('as-radio', () => AUDIO.setRadio(!AUDIO.radioOn));
+  // radio check: plays a line straight from the tap (which is also what lets
+  // a phone speak at all) and says which voice is in use
+  onClick('as-radio-test', () => {
+    if (!AUDIO.radioOn) AUDIO.setRadio(true);
+    const ok = AUDIO.radioLine('test', 'Radio check. Loud and clear.');
+    const vi = AUDIO.voiceInfo ? AUDIO.voiceInfo() : {};
+    const b = document.getElementById('as-radio-test');
+    if (b) { b.textContent = !ok ? 'NO RADIO — SOUND OFF?' : vi.clips ? 'RADIO: RECORDED VOICE' : 'RADIO: DEVICE VOICE'; setTimeout(() => { b.textContent = 'TEST RADIO'; }, 2600); }
+  });
   audioLabels();
   const ln = document.getElementById('loading-note'); if (ln) ln.addEventListener('click', () => GFX.toggleStats());
   syncAssistButtons();
@@ -3568,7 +3580,8 @@ function pitEvent(c) {
     const left = G.raceLaps - pl.phys.lap;
     const owes = G.raceLaps > 20 && !pl.pitted && !pl.usedWet;
     if (Math.abs(g) < Math.max(40, pl.phys.speed * 2.5) && left >= 4 && (owes || pl.phys.tyreLife < 0.6) && !/^(inter|wet)$/.test(c.phys.compound))
-      radio(c.driver.id + (g > 0 ? ' ahead' : ' behind') + ' has pitted — box this lap to cover the undercut?');
+      { radio(c.driver.id + (g > 0 ? ' ahead' : ' behind') + ' has pitted — box this lap to cover the undercut?');
+        if (AUDIO.radioLine) AUDIO.radioLine(g > 0 ? 'cover_ahead' : 'cover_behind', (g > 0 ? 'The car ahead' : 'The car behind') + ' has pitted. Box this lap to cover?'); }
   }
 }
 // an AI car racing the one that just pitted covers it, or not, by character
@@ -4066,7 +4079,8 @@ function frame(now) {
   updatePitUI();
 
   // audio
-  AUDIO.update(G.player && G.player.phys, rawDt, G.cars, G.state === 'driving');
+  // (no engine under a red flag: the race is frozen and the cars are in the pit lane)
+  AUDIO.update(G.player && G.player.phys, rawDt, G.cars, G.state === 'driving' && !(G.rc && G.rc.mode === 'red'));
   // overtake whoosh: passing close to another car at a speed difference
   if (G.player && G.state === 'driving') {
     const pp = G.player.phys;
@@ -4884,7 +4898,7 @@ setInterval(() => {
 window.__G = G; // debug handle
 G.__scene = scene;   // (race control adds the safety car to it)
 // race control (racecontrol.js) lives outside this closure: its way in
-G.__hooks = { showBanner, stewardMsg, radio, addPenalty, armPit, aiCompoundFor, say: t => AUDIO.say && AUDIO.say(t) };
+G.__hooks = { showBanner, stewardMsg, radio, addPenalty, armPit, aiCompoundFor, say: (id, t) => AUDIO.radioLine && AUDIO.radioLine(id, t) };
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 115';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 116';
 })();
