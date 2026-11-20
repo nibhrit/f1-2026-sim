@@ -35,6 +35,7 @@ function classifyRace(cars, o) {
       }
     }
     if (status !== 'dnf' && (c.dsq || (o.mandatoryStop && !c.pitted))) status = 'dsq';
+    if (c.dsqWhy) status = 'dsq';                 // black flag: DSQ even though stopped
     const corrected = time != null ? time + pen : null;
     return { src: c, id: c.id, status, laps, time, pen, corrected };
   });
@@ -51,8 +52,8 @@ function classifyRace(cars, o) {
   const avgLap = win && win.laps > 0 ? win.time / win.laps : 90;
   rows.forEach((r, i) => {
     r.pos = i + 1;
-    if (r.status === 'dnf') { r.text = 'DNF — damage'; return; }
-    if (r.status === 'dsq') { r.text = 'DSQ — no mandatory stop'; return; }
+    if (r.status === 'dnf') { r.text = 'DNF — ' + (r.src && r.src.why ? r.src.why : 'damage'); return; }
+    if (r.status === 'dsq') { r.text = 'DSQ — ' + (r.src && r.src.dsqWhy ? r.src.dsqWhy : 'no mandatory stop'); return; }
     if (i === 0) { r.text = null; r.gap = 0; return; }
     const down = win.laps - r.laps;
     if (down <= 0) { r.gap = r.corrected - win.corrected; r.text = '+' + r.gap.toFixed(3); }

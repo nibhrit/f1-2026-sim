@@ -1123,6 +1123,7 @@ function sessionProgress() {
   if (G.mode === 'race' && G.raceLaps > 0 && G.player) {
     return Math.max(0, Math.min(1, (G.player.phys.lap - 1) / G.raceLaps));
   }
+  if (G.mode === 'qualify') return Math.max(0, Math.min(1, (QUALI_TIME - (G.qualiTime || 0)) / QUALI_TIME));
   return Math.max(0, Math.min(1, G.simTime / 180));
 }
 
@@ -1617,77 +1618,132 @@ function spawnPracticeTraffic(wet) {
   });
 }
 
-// Qualifying times are DRIVEN, not estimated. The old point-mass estimate
-// ignored the weather (Madring pole 1:36 dry AND wet) and didn't match the
-// AI's real pace. Each AI car now does a real flying lap with the race physics
-// and AI, in the current conditions, a slice per frame while you drive your
-// own session. The estimate only fills in until a car's lap is done.
-function startQualiSim() {
-  const wet = G.weather ? G.weather.wetness : 0;
-  const tyre = compoundForCategory(idealCategory(wet), 'soft');
-  G.qualiAITimes = simulateQualiTimes();
-  G.qualiAITimes.forEach(q => { q.tyre = tyre; });
-  G.qualiSim = { i: 0, cur: null, done: false, tyre };
+// Qualifying times are DRIVEN, not estimated. BUILD 117: and they're driven
+// LIVE, on the session clock, in whatever the weather is doing at that moment.
+// Every AI car leaves the garage at its own time — straight away when rain is
+// forecast, later on a drying track — does an out-lap, then flying laps until
+// the chequered flag, keeping its best. (They used to all be driven in the
+// first seconds of the session, in the dry, so rain arriving on your first
+// lap always left you last.)
+function qualiTyreNow() {
+  const wet = typeof TRACK_WETNESS !== 'undefined' ? TRACK_WETNESS : 0;
+  return compoundForCategory(idealCategory(wet), 'soft');
 }
-function stepQualiSim(budget) {
-  const S = G.qualiSim;
-  if (!S || S.done || !G.qualiAITimes) return;
-  const t = G.track, rows = G.qualiAITimes;
-  let n = 0;
-  while (n < budget) {
-    if (!S.cur) {
-      if (S.i >= rows.length) { S.done = true; return; }
-      const q = rows[S.i];
-      const c = new CarPhysics(t);
-      // flying lap: run up from 600 m before the line
-      const k0 = t.idxAtDist((t.length - 600) % t.length);
-      const p = t.posAt(k0, 0);
-      c.placeAt(p.x, p.z, Math.atan2(t.tx[k0], t.tz[k0]));
-      c.setTyre(S.tyre); c.tyreTemp = 0.72; c.speed = 45;
-      const perf = aiPerf(q.driver);
-      c.gripBonus = perf.gripBonus;
-      const ai = new AIDriver(c, t, q.driver);
-      ai.diff = G.difficulty; ai.buildCornerSpeeds(); ai.setSkill(Object.assign({}, perf.skill, { mistake: 0 }));
-      S.cur = { q, c, ai, T: 0, t0: null };
-    }
-    const cur = S.cur;
-    cur.c.step(FIXED, cur.ai.compute(FIXED, [cur.c]));
-    cur.T += FIXED; n++;
-    if (cur.t0 != null) {                       // sector splits on the flying lap
-      const f = cur.c.lapDist / t.length, sec = f < 1/3 ? 0 : f < 2/3 ? 1 : 2;
-      if (cur.sec == null) cur.sec = 0;
-      if (sec === cur.sec + 1) { (cur.splits = cur.splits || []).push(cur.T); cur.sec = sec; }
-    }
-    if (cur.c.crossedLine) {
-      if (cur.t0 == null) cur.t0 = cur.T;
-      else {
-        if (cur.splits && cur.splits.length === 2) {
-          const sp = [cur.splits[0] - cur.t0, cur.splits[1] - cur.splits[0], cur.T - cur.splits[1]];
-          sp.forEach((x, i) => addAISector(i, x));
-        }
-        // a little lap-to-lap variability, more for the less consistent drivers
-        cur.q.time = (cur.T - cur.t0) * (1 + Math.random() * (0.006 - cur.q.driver.skill * 0.004));
-        cur.q.driven = true;
-        S.cur = null; S.i++;
+function startQualiSim() {
+  G.qualiAITimes = simulateQualiTimes();          // estimates (only used if a car never sets a time)
+  const w = G.weather, T = QUALI_TIME;
+  const rush = w.scenario === 'incoming';          // rain on the way: everyone out at once
+  const late = w.scenario === 'drying';            // drying: the end of the session is quickest
+  const runs = [];
+  for (const q of G.qualiAITimes) {
+    q.est = q.time; q.driven = false; q.tyre = qualiTyreNow();
+    const start = rush ? Math.random() * 0.06 * T
+                : late ? (0.25 + Math.random() * 0.25) * T
+                : Math.random() * 0.3 * T;
+    runs.push({ q, start, state: 'wait' });
+  }
+  G.qualiSim = { runs, done: false, flagAt: T };
+}
+function qualiRunSpawn(run) {
+  const t = G.track, q = run.q;
+  const c = new CarPhysics(t);
+  // the same start you get: rolling up to the line from just behind it, so
+  // the first lap is already timed (you have no out-lap either)
+  const k0 = t.idxAtDist((t.length - 60) % t.length), p = t.posAt(k0, 0);
+  c.placeAt(p.x, p.z, Math.atan2(t.tx[k0], t.tz[k0]));
+  c.speed = 12;
+  run.tyre = qualiTyreNow();
+  c.setTyre(run.tyre); c.tyreTemp = 0.72;          // tyre blankets
+  const perf = aiPerf(q.driver);
+  c.gripBonus = perf.gripBonus;
+  const ai = new AIDriver(c, t, q.driver);
+  ai.diff = G.difficulty; ai.buildCornerSpeeds(); ai.laneBlend = 1;
+  ai.setSkill(Object.assign({}, perf.skill, { mistake: 0 }));
+  Object.assign(run, { c, ai, T: 0, t0: null, sec: null, splits: null, state: 'run' });
+}
+// one physics step of one run; returns true when it finished a timed lap
+function qualiRunStep(run, dt, now) {
+  const t = G.track, c = run.c;
+  c.step(dt, run.ai.compute(dt, [c]));
+  run.T += dt;
+  if (run.t0 != null) {                           // sector splits on the flying lap
+    const f = c.lapDist / t.length, sec = f < 1/3 ? 0 : f < 2/3 ? 1 : 2;
+    if (run.sec == null) run.sec = 0;
+    if (sec === run.sec + 1) { (run.splits = run.splits || []).push(run.T); run.sec = sec; }
+  }
+  if (c.crossedLine) {
+    if (run.t0 != null) {
+      if (run.splits && run.splits.length === 2) {
+        const sp = [run.splits[0] - run.t0, run.splits[1] - run.splits[0], run.T - run.splits[1]];
+        sp.forEach((x, i) => addAISector(i, x));
       }
+      // a little lap-to-lap variability, more for the less consistent drivers
+      const lap = (run.T - run.t0) * (1 + Math.random() * (0.006 - run.q.driver.skill * 0.004));
+      if (!run.q.driven || lap < run.q.time) { run.q.time = lap; run.q.tyre = run.tyre; }
+      run.q.driven = true;
+      if (run.oneLap) { run.state = 'done'; return true; }
     }
-    if (cur.T > 400) { S.cur = null; S.i++; }   // never hang: keep the estimate
+    // the next lap is timed only if it starts before the chequered flag; and
+    // a car on the wrong tyres for the conditions now pits and ends its run
+    const wrong = wantedCategory(tyreCategory(c.compound), typeof TRACK_WETNESS !== 'undefined' ? TRACK_WETNESS : 0) !== tyreCategory(c.compound);
+    if (now >= G.qualiSim.flagAt || wrong) {
+      run.state = 'done';
+      // time for another go on the right tyres?
+      if (wrong && now + 25 + 2 * (run.q.est || 100) < G.qualiSim.flagAt + (run.q.est || 100) * 0.9)
+        G.qualiSim.runs.push({ q: run.q, start: now + 25, state: 'wait' });
+      return true;
+    }
+    run.t0 = run.T; run.sec = 0; run.splits = null;
+  }
+  if (run.T > 1200) run.state = 'done';             // never hang
+  return false;
+}
+// every sim step of the session: the AI cars on track drive alongside you
+function qualiSimStep(dt) {
+  const S = G.qualiSim;
+  if (!S || S.done || !G.raceStarted) return;
+  const now = QUALI_TIME - G.qualiTime;            // session clock
+  let active = 0;
+  for (const run of S.runs) {
+    if (run.state === 'wait' && now >= run.start && now < S.flagAt) qualiRunSpawn(run);
+    if (run.state === 'run') { qualiRunStep(run, dt, now); active++; }
   }
 }
-// Finish the AI laps now. fast: drive just enough cars (3) to calibrate, then
-// scale the rest of the estimates by the same driven/estimated ratio — so
-// skipping qualifying doesn't freeze the page for several seconds.
+// The session's over: laps already under way are completed (in the conditions
+// right now); cars that never set a time get a calibrated estimate.
+// fast (skipped / ended early): only calibrate, don't drive anything long.
 function finishQualiSim(fast) {
   const S = G.qualiSim;
-  if (!S || S.done) return;
-  if (!fast) { stepQualiSim(Infinity); G.qualiAITimes.forEach(q => { q.driven = true; }); return; }
-  const rows = G.qualiAITimes, est = rows.map(q => q.time);
-  while (!S.done && S.i < Math.min(rows.length, 3)) stepQualiSim(2000);
-  let ratio = 0, k = 0;
-  for (let i = 0; i < S.i; i++) { ratio += rows[i].time / est[i]; k++; }
-  if (k) { ratio /= k; for (let i = S.i; i < rows.length; i++) rows[i].time = est[i] * ratio; }
-  rows.forEach(q => { q.driven = true; });
-  S.done = true; S.cur = null;
+  if (!S || S.done || !G.qualiAITimes) return;
+  const now = Math.max(S.flagAt, QUALI_TIME - (G.qualiTime || 0));
+  if (!fast) {
+    for (const run of S.runs) {
+      if (run.state !== 'run' || run.t0 == null) continue;
+      let n = 0;
+      while (run.state === 'run' && n++ < 120 * 300) { if (qualiRunStep(run, FIXED, now)) break; }
+    }
+  }
+  const rows = G.qualiAITimes;
+  let need = rows.filter(q => !q.driven);
+  if (need.length) {
+    // calibrate the estimates on cars driven now (up to 3), or on what's been set
+    let ratio = 0, k = 0;
+    for (const q of rows) if (q.driven && q.est) { ratio += q.time / q.est; k++; }
+    if (!k) {
+      for (const q of need.slice(0, 3)) {
+        const run = { q, state: 'wait', oneLap: true };     // one timed lap, then stop
+        qualiRunSpawn(run);
+        let n = 0;
+        while (run.state === 'run' && n++ < 120 * 400) qualiRunStep(run, FIXED, 0);
+        if (q.driven && q.est) { ratio += q.time / q.est; k++; }
+      }
+      need = rows.filter(q => !q.driven);
+    }
+    ratio = k ? ratio / k : 1;
+    for (const q of need) { q.time = q.est * ratio; q.driven = true; }
+  }
+  for (const run of S.runs) if (run.state === 'run') run.state = 'done';
+  S.done = true;
 }
 
 // simulate AI qualifying lap times via point-mass over corner speeds
@@ -2210,7 +2266,7 @@ function endRaceNow() {
   const proj = new Map();
   for (const c of run) {
     const lt = lapPace(c), rem = Math.max(0, total - c.phys.totalDist);
-    const owes = mandatoryStopMissed(c) && !c.pitState ? PIT_LOSS : 0;
+    const owes = (mandatoryStopMissed(c) && !c.pitState ? PIT_LOSS : 0) + (c.driveThrough && !c.pitState ? 20 : 0);
     proj.set(c, { lt, t: now + rem / L * lt + owes });
   }
   // the winner's time: earliest of anyone already finished or projected
@@ -2291,6 +2347,7 @@ function endRace() {
   // Mandatory-stop rule (races > 20 laps) is a disqualification.
   const cls = classifyRace(G.cars.map(c => ({
     id: c.driver.id, retired: !!c.retired, dsq: !!c.dsq, finished: !!c.finished,
+    dsqWhy: c.dsqWhy || null, why: c.retireReason ? c.retireReason.toLowerCase() : null,
     finishTime: c.finishTime,
     // laps from distance (see lapsByDist), never more than the race distance
     lapsDone: c.finished ? Math.min(G.raceLaps, c.finishDist != null
@@ -2658,7 +2715,7 @@ function restoreRace(snap) {
     // damage, retirements and outstanding stewards' business
     p.dmgWing = cs.dmgWing || 0; p.dmgFloor = cs.dmgFloor || 0; p.puncture = cs.puncture || 0;
     car.dsq = !!cs.dsq; car.stewPen = cs.stewPen || 0;
-    car.driveThrough = !!cs.driveThrough;
+    car.driveThrough = !!cs.driveThrough; car.dtDue = cs.dtDue != null ? cs.dtDue : (car.driveThrough && d.player ? car.phys.lap + 1 : null);
     car.pitArmed = !!cs.pitArmed; car.pitArmLap = cs.pitArmLap != null ? cs.pitArmLap : null;
     restorePitState(car, cs);
     if (cs.retired) {
@@ -2765,7 +2822,7 @@ function saveRaceSnapshot() {
         dmgWing: c.phys.dmgWing || 0, dmgFloor: c.phys.dmgFloor || 0,
         puncture: c.phys.puncture || 0,
         retired: !!c.retired, dsq: !!c.dsq,
-        driveThrough: !!c.driveThrough,
+        driveThrough: !!c.driveThrough, dtDue: c.dtDue != null ? c.dtDue : null,
         pitArmed: !!c.pitArmed, pitArmLap: c.pitArmLap != null ? c.pitArmLap : null,
         stewPen: c.stewPen || 0,
         // pit-lane state, so a car saved mid-stop resumes IN the pit lane
@@ -3205,8 +3262,10 @@ function updateHUD() {
     $('tyre-fill').style.background = life > 0.5 ? '#2ecc71' : life > 0.25 ? '#f5c518' : '#e74c3c';
     // pulse a pit reminder while the mandatory stop is outstanding
     const needPit = G.mode === 'race' && G.raceLaps > 20 && !p.pitted && !p.usedWet && !p.pitState && p.phys.lap >= 2;
-    $('tyre-letter').textContent = cw.label + (needPit ? '  ·  P—PIT' : '');
-    $('tyre-letter').style.color = needPit && (G.simTime % 1 < 0.5) ? '#ffd12e' : '#fff';
+    // an outstanding drive-through: how many laps are left to serve it
+    const dtLeft = (G.mode === 'race' && p.driveThrough && p.dtDue != null && !p.pitState) ? p.dtDue - p.phys.lap + 1 : 0;
+    $('tyre-letter').textContent = cw.label + (dtLeft > 0 ? '  ·  D-T: BOX WITHIN ' + dtLeft + (dtLeft === 1 ? ' LAP' : ' LAPS') : needPit ? '  ·  P—PIT' : '');
+    $('tyre-letter').style.color = dtLeft > 0 ? ((G.simTime % 1 < 0.5) ? '#ff5c5c' : '#fff') : needPit && (G.simTime % 1 < 0.5) ? '#ffd12e' : '#fff';
     // tyre temperature: blue = cold, green = in the window, red = overheating
     const T = p.phys.tyreTemp;
     const tempC = Math.round(45 + T * 75); // display as ~50-130°C
@@ -3655,14 +3714,47 @@ function updatePitApproach(c) {
   c.ai.speedCap = a ? a.vCap : null;
 }
 
+// FIA: a drive-through must be served within three laps of being notified,
+// and one handed out too late to serve becomes 20 s on race time. You pick
+// the lap (BUILD 117 — it used to steer you straight in); the AI serves at once.
+const DT_LAPS = 3;
 function orderDriveThrough(car, reason) {
-  if (car.finished || car.driveThroughServed) return;
-  car.driveThrough = true;
-  armPit(car);
+  if (car.finished || car.driveThroughServed || car.driveThrough) return;
   G.penaltyFlash = G.penaltyFlash || {};
   G.penaltyFlash[car.driver.id] = G.simTime;
+  if (G.mode === 'race' && G.raceLaps - car.phys.lap < DT_LAPS) {
+    car.driveThroughServed = true;
+    addPenalty(car, 20, reason + ' (drive-through too late to serve)');
+    return;
+  }
+  car.driveThrough = true;
   stewardMsg('STEWARDS: ' + car.driver.id + '  DRIVE-THROUGH — ' + reason, 'coll');
-  if (car.driver.player) showBanner('DRIVE-THROUGH PENALTY — ' + reason.toUpperCase(), 3, '#ff5c5c');
+  if (car.driver.player) {
+    car.dtDue = car.phys.lap + DT_LAPS - 1;     // the last lap on which you can come in
+    showBanner('DRIVE-THROUGH — ' + reason.toUpperCase() + ' · SERVE WITHIN ' + DT_LAPS + ' LAPS (PIT)', 3.5, '#ff5c5c');
+    radio('Drive-through penalty. Serve it within ' + DT_LAPS + ' laps — box when you choose.');
+    if (AUDIO.radioLine) AUDIO.radioLine('dt', 'Drive-through penalty. Serve it within three laps. Box when you choose.');
+  } else armPit(car);
+}
+// your outstanding drive-through: reminders, and the black flag if it's ignored
+function dtWatch() {
+  const pl = G.player;
+  if (!pl || G.mode !== 'race' || !pl.driveThrough || pl.dtDue == null || pl.finished || pl.retired) return;
+  if (pl.pitState || pl.pitArmed) return;                      // on its way in
+  const left = pl.dtDue - pl.phys.lap;                         // laps after this one
+  if (left !== pl._dtLeft) {
+    pl._dtLeft = left;
+    if (left === 0) {
+      showBanner('LAST LAP TO SERVE YOUR DRIVE-THROUGH — BOX THIS LAP', 3.5, '#ff5c5c');
+      if (AUDIO.radioLine) AUDIO.radioLine('dt_last', 'Last lap to serve the drive-through. Box this lap, box this lap.');
+    }
+  }
+  if (left < 0) {
+    pl.dsq = true; pl.dsqWhy = 'drive-through not served';
+    pl.retireReason = 'BLACK FLAG — DRIVE-THROUGH NOT SERVED';
+    pl.phys.dead = true;
+    stewardMsg('STEWARDS: ' + pl.driver.id + ' BLACK FLAG — drive-through not served', 'coll');
+  }
 }
 
 function addPenalty(car, secs, reason, kind) {
@@ -3962,7 +4054,6 @@ function frame(now) {
     v.heading = pv.h + dh * alpha;
   }
   // the AI's qualifying laps are driven in the background, a slice per frame
-  if (G.mode === 'qualify' && G.qualiSim && !G.qualiSim.done) stepQualiSim(240);
   if (typeof racingLineUpdate === 'function') racingLineUpdate();
 
   // visuals
@@ -4651,6 +4742,7 @@ function stepSim(dt) {
   updateDRS();
   checkRetirements();
   if (started && typeof rcStep === 'function') rcStep(G, dt);
+  if (started) dtWatch();
   updateBlueFlags(dt);
   // qualifying clock: count down; drop the chequered flag at zero
   if (started && G.mode === 'qualify') {
@@ -4669,6 +4761,7 @@ function stepSim(dt) {
     }
   }
   updateWeather(dt);
+  if (started && G.mode === 'qualify') qualiSimStep(dt);   // the AI's live runs (BUILD 117)
   const pitsOpen = G.mode === 'race' && G.raceLaps > 20;
   // cars in the pit are ghosts: other cars' AI ignores them entirely
   const physList = [];
@@ -4900,5 +4993,5 @@ G.__scene = scene;   // (race control adds the safety car to it)
 // race control (racecontrol.js) lives outside this closure: its way in
 G.__hooks = { showBanner, stewardMsg, radio, addPenalty, armPit, aiCompoundFor, say: (id, t) => AUDIO.radioLine && AUDIO.radioLine(id, t) };
 requestAnimationFrame(frame);
-$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 116';
+$('loading-note').textContent = 'Ready — select a mode   ·   BUILD 117';
 })();

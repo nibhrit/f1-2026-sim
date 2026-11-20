@@ -286,9 +286,25 @@ function rcPlayerChecks(G, dt) {
     const was = c._rcRel;
     c._rcRel = g;
     if (was != null && was > 0 && g < 0 && Math.abs(g) < 30 && !c.pitState && !c.failing && !c.rcUnlap
-        && c.phys.speed > 0.5 * rcRefSpeed(t, c.phys.trackIdx) && !st.pass) {
+        && c.phys.speed > 0.5 * rcRefSpeed(t, c.phys.trackIdx) && !c.rcSlow && !st.pass) {
       st.pass = c; st.passT = 10;
       rcBanner((rc.mode === 'vsc' || rc.mode === 'vscEnding' ? 'VSC' : 'SAFETY CAR') + ' — NO OVERTAKING: GIVE THE PLACE BACK TO ' + c.driver.id, 3, '#ff8a85');
+      rcSay('give_back', 'No overtaking! Give the place back to ' + c.driver.id + '.');
+    }
+  }
+  const vscNow = rc.mode === 'vsc' || rc.mode === 'vscEnding';
+  // the safety car itself: nobody passes it (unless waved by to unlap)
+  if (rc.sc && (rc.mode === 'sc' || rc.mode === 'scIn')) {
+    const gSC = rcRoadGap(t, pl.phys, rc.sc.phys);           // + = you're ahead of it
+    if (gSC > 4 && gSC < 600 && !st.scPass) {
+      st.scPass = true; st.scPassT = 8;
+      rcBanner('YOU PASSED THE SAFETY CAR — DROP BACK BEHIND IT', 3, '#ff5c5c');
+      rcSay('give_back_sc', 'You passed the safety car! Drop back behind it, now.');
+    }
+    if (st.scPass) {
+      st.scPassT -= dt;
+      if (gSC < 0) st.scPass = false;                               // behind it again
+      else if (st.scPassT <= 0) { rcPenalty(pl, 10, 'overtaking the safety car'); st.scPass = false; st.scPassDone = (st.scPassDone || 0) + 1; }
     }
   }
   if (st.pass) {
@@ -297,7 +313,7 @@ function rcPlayerChecks(G, dt) {
     st.passT -= dt;
     if (g > 0 || st.pass.retired || st.pass.pitState) st.pass = null;          // given back
     else if (st.passT <= 0) {
-      rcPenalty(pl, 5, rc.mode === 'vsc' || rc.mode === 'vscEnding' ? 'overtaking under the VSC' : 'overtaking under the safety car');
+      rcPenalty(pl, vscNow ? 5 : 10, vscNow ? 'overtaking under the VSC' : 'overtaking under the safety car');
       st.pass = null;
     }
   }
@@ -580,6 +596,15 @@ function rcScStep(G, dt) {
     }
   }
 
+  // ---- a car crawling or stopped in the queue (a problem, or you parking it)
+  //      is not a car to queue behind: the cars behind go round it (BUILD 117)
+  for (const c of run) {
+    const vQ = rcRefSpeed(t, c.phys.trackIdx) / RC_VSC_PACE * RC_SC_WAIT;
+    const slowNow = c.phys.speed < Math.max(5, 0.45 * vQ) && !(rc.lightsOut && c === lead);
+    c.rcSlowT = slowNow ? (c.rcSlowT || 0) + dt : 0;
+    c.rcSlow = c.rcSlowT > 1.2;
+  }
+
   // ---- every car ----
   const order = run.slice().sort((a, b) => b.phys.totalDist - a.phys.totalDist);
   for (const c of G.cars) {
@@ -598,7 +623,7 @@ function rcScStep(G, dt) {
     }
     // the car (or safety car) ahead of us on the road
     let ah = null, gap = 1e9;
-    const objs = run.map(x => x.phys); if (sc) objs.push(sc.phys);
+    const objs = run.filter(x => !x.rcSlow).map(x => x.phys); if (sc) objs.push(sc.phys);
     for (const o of objs) {
       if (o === p) continue;
       const g = rcRoadGap(t, o, p);
@@ -651,7 +676,7 @@ function rcScStep(G, dt) {
     // (re-checked all the time: cars rejoining from the pits have to catch up too)
     // (cars a lap down — or as good as: on the road just ahead of the leader —
     // are waved round rather than waited for)
-    const q = run.filter(c => !c.rcUnlap && !(lead && c !== lead && lead.phys.totalDist - c.phys.totalDist > L - 150));
+    const q = run.filter(c => !c.rcUnlap && !c.rcSlow && !(lead && c !== lead && lead.phys.totalDist - c.phys.totalDist > L - 150));
     const all = q.length && q.every(c => c.rcQueued && c.rcTight) && !G.cars.some(c => c.pitState && !c.retired && !c.finished) && rc.t - (rc.since || 0) > 8;
     if (all && !rc.bunched && !rc.bunchMsg) { rc.bunchMsg = true; rcRcMsg('RACE CONTROL: FIELD BUNCHED UP BEHIND THE SAFETY CAR'); }
     rc.bunched = !!all;

@@ -46,6 +46,11 @@ cover_ahead|The car ahead has pitted. Box this lap to cover?
 cover_behind|The car behind has pitted. Box this lap to cover the undercut?
 unlap|You're a lap down. You can overtake the safety car and unlap yourself.
 failure|We've lost the car. Pull over safely. Sorry, mate.
+give_back|No overtaking! Give the place back, now.
+give_back|You can't pass under the safety car. Give that place back.
+give_back_sc|You passed the safety car! Drop back behind it, now.
+dt|Drive-through penalty. Serve it within three laps. Box when you choose.
+dt_last|Last lap to serve the drive-through. Box this lap, box this lap.
 EOF
 )
 
